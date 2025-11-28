@@ -1,0 +1,23 @@
+name: Validate Source Branch
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check source branch
+        run: |
+          SOURCE_BRANCH="${{ github.head_ref }}"
+          
+          if [ "$SOURCE_BRANCH" != "develop" ]; then
+            echo "❌ Error: Pull requests to 'main' must come from 'develop' branch"
+            echo "Current source branch: $SOURCE_BRANCH"
+            exit 1
+          fi
+          
+          echo "✓ Source branch validation passed"
+          echo "Source: $SOURCE_BRANCH → main"
