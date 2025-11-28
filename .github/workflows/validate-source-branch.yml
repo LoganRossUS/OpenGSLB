@@ -12,15 +12,12 @@ jobs:
       - name: Check source branch
         run: |
           SOURCE_BRANCH="${{ github.head_ref }}"
-          TARGET_BRANCH="${{ github.base_ref }}"
           
-          if [ "$TARGET_BRANCH" = "main" ]; then
-            if [ "$SOURCE_BRANCH" != "develop" ]; then
-              echo "Error: Pull requests to 'main' must come from 'develop' branch"
-              echo "Current source branch: $SOURCE_BRANCH"
-              exit 1
-            fi
+          if [ "$SOURCE_BRANCH" != "develop" ]; then
+            echo "❌ Error: Pull requests to 'main' must come from 'develop' branch"
+            echo "Current source branch: $SOURCE_BRANCH"
+            exit 1
           fi
           
           echo "✓ Source branch validation passed"
-          echo "Source: $SOURCE_BRANCH → Target: $TARGET_BRANCH"
+          echo "Source: $SOURCE_BRANCH → main"
