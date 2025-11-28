@@ -1,0 +1,24 @@
+# OpenGSLB Code Owners
+# This file defines individuals responsible for code in this repository.
+# 
+# GitHub uses this file to automatically request reviews from code owners
+# when pull requests are created that modify their code.
+#
+# Each line is a file pattern followed by one or more owners.
+# Order is important; the last matching pattern takes precedence.
+# 
+# More info: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything in the repo
+* @loganrossus
+
+# You can add specific ownership patterns as the project grows:
+# Examples (commented out for now):
+# /docs/ @loganrossus
+# *.go @loganrossus
+# /pkg/dns/ @loganrossus
+# /pkg/routing/ @loganrossus
+# /configs/ @loganrossus
+# /.github/ @loganrossus
+# Dockerfile @loganrossus
+# docker-compose*.yml @loganrossus
