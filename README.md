@@ -1,6 +1,6 @@
 # OpenGSLB Project Summary
 [![CI](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml/badge.svg)](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml)
-[![Docker Build](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml/badge.svg)](https://github.com/<your-username>/opengslb/actions/workflows/docker-build.yml)
+[![Docker Build](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml/badge.svg)](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml)
 ## Overview
 OpenGSLB is an open-source, self-hosted Global Server Load Balancing (GSLB) system designed for intelligent traffic distribution across multiple data centers and cloud regions. Built for organizations that require complete control over their infrastructure, OpenGSLB provides enterprise-grade global load balancing without vendor lock-in or dependency on third-party services.
 
