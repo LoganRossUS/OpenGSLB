@@ -63,6 +63,7 @@ jobs:
         with:
           version: latest
           args: --timeout=5m
+          install-mode: "goinstall"
 
   build:
     name: Build
