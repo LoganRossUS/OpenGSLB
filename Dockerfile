@@ -7,7 +7,7 @@ RUN apk add --no-cache git ca-certificates
 # Set working directory
 WORKDIR /app
 
-# Copy go mod files first (better layer caching)
+# Copy go mod files first
 COPY go.mod go.sum* ./
 RUN go mod download
 
