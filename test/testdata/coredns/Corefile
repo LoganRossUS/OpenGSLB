@@ -1,0 +1,8 @@
+. {
+    hosts /etc/coredns/hosts {
+        fallthrough
+    }
+    health :8080
+    log
+    errors
+}
