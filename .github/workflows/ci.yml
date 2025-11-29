@@ -61,9 +61,8 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v3
         with:
-          version: latest
+          version: v1.61.0
           args: --timeout=5m
-          install-mode: "goinstall"
 
   build:
     name: Build
