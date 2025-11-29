@@ -1,0 +1,47 @@
+# Integration test environment for OpenGSLB
+# Usage: docker compose -f docker-compose.test.yml up -d
+
+services:
+  # Mock backend server 1 - simulates a healthy upstream
+  backend1:
+    image: nginx:alpine
+    networks:
+      - testnet
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # Mock backend server 2 - simulates a healthy upstream
+  backend2:
+    image: nginx:alpine
+    networks:
+      - testnet
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # Mock DNS resolver for testing DNS queries
+  dns-mock:
+    image: coredns/coredns:latest
+    command: -conf /etc/coredns/Corefile
+    volumes:
+      - ./test/testdata/coredns:/etc/coredns:ro
+    networks:
+      testnet:
+        ipv4_address: 172.28.0.100
+    healthcheck:
+      test: ["CMD", "nslookup", "health.check", "127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+networks:
+  testnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

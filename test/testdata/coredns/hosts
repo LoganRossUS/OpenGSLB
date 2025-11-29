@@ -1,0 +1,5 @@
+# Mock DNS entries for integration tests
+127.0.0.1 health.check
+172.28.0.10 backend1.test.local
+172.28.0.11 backend2.test.local
+172.28.0.50 gslb.test.local
