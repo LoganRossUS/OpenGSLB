@@ -22,9 +22,7 @@ linters:
     - bodyclose     # Check for HTTP response body close
     - unconvert     # Remove unnecessary type conversions
     - unparam       # Report unused function parameters
-    
-  disable:
-    - typecheck     # Already done by compilation
+    - shadow        # Check for variable shadowing (replaces govet.check-shadowing)
 
 linters-settings:
   errcheck:
@@ -32,7 +30,7 @@ linters-settings:
     check-blank: true
   
   govet:
-    check-shadowing: true
+    enable-all: true
   
   gofmt:
     simplify: true
@@ -70,6 +68,7 @@ issues:
   max-same-issues: 0
 
 output:
-  format: colored-line-number
+  formats:
+    - format: colored-line-number
   print-issued-lines: true
   print-linter-name: true
