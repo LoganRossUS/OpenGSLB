@@ -22,7 +22,6 @@ linters:
     - bodyclose     # Check for HTTP response body close
     - unconvert     # Remove unnecessary type conversions
     - unparam       # Report unused function parameters
-    - shadow        # Check for variable shadowing (replaces govet.check-shadowing)
 
 linters-settings:
   errcheck:
