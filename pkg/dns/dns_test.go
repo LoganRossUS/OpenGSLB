@@ -15,7 +15,7 @@ type mockRouter struct {
 	returnErr error
 }
 
-func (m *mockRouter) Route(_ context.Context, servers []ServerInfo) (*ServerInfo, error) {
+func (m *mockRouter) Route(_ context.Context, _ string, servers []ServerInfo) (*ServerInfo, error) {
 	if m.returnErr != nil {
 		return nil, m.returnErr
 	}
@@ -23,6 +23,10 @@ func (m *mockRouter) Route(_ context.Context, servers []ServerInfo) (*ServerInfo
 		return nil, nil
 	}
 	return &servers[0], nil
+}
+
+func (m *mockRouter) Algorithm() string {
+	return "mock"
 }
 
 // mockHealthProvider allows control over which servers are healthy.
