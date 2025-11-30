@@ -194,3 +194,48 @@ When `return_last_healthy: true`, the system will cache and return the last IP a
 - v2 (codeberg.org/miekg/dns) exists but has zero production adoption
 
 **Review Date**: Q4 2026 - reassess if v2 reaches maturity
+
+## ADR-011: Router Terminology for Server Selection
+**Status**: Accepted
+
+**Context**: OpenGSLB is an authoritative DNS server that returns A records pointing to backend servers. It does not route network traffic - clients receive an IP address and connect directly to backends. We needed terminology for the component that selects which server IP to return in DNS responses.
+
+**Decision**: Use "Router" to describe the server selection component, with clear documentation that this refers to *DNS response routing* (selecting which IP to return), not network traffic routing.
+
+**Terminology**:
+- **Router**: The component that selects which backend server IP to include in a DNS response
+- **Route()**: The method that performs server selection from a pool of candidates
+- **Routing Algorithm**: The strategy used for selection (round-robin, weighted, geolocation, etc.)
+
+**Rationale**:
+- "Routing" is commonly used in load balancing contexts to describe request distribution decisions
+- The term aligns with the project documentation and Sprint 2 planning materials
+- Alternative terms considered:
+  - `Selector` / `ServerSelector` - more literal but less common in load balancing literature
+  - `Balancer` / `LoadBalancer` - implies traffic handling, not just DNS
+  - `Picker` - too informal for the codebase style
+- The interface is already defined in `pkg/dns/handler.go` and changing it would require modifications to merged code
+
+**Interface Definition** (in `pkg/dns/handler.go`):
+```go
+// Router selects a server from a pool of servers.
+// This interface will be implemented by routing algorithms in pkg/routing.
+type Router interface {
+    Route(ctx context.Context, servers []ServerInfo) (*ServerInfo, error)
+}
+```
+
+**Important Clarification**: The Router does NOT:
+- Handle network traffic
+- Proxy requests
+- Manage connections to backends
+
+The Router ONLY:
+- Receives a pre-filtered list of healthy servers from the DNS handler
+- Selects one server based on its algorithm
+- Returns the selected server for inclusion in the DNS response
+
+**Consequences**:
+- Documentation and code comments should clarify "routing" means server selection
+- New contributors should understand this is DNS-level decision making
+- The `pkg/routing/` package contains selection algorithms, not network routing logic
