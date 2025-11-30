@@ -1,0 +1,121 @@
+# OpenGSLB Example Configuration
+# 
+# This file demonstrates all available configuration options.
+# Copy this file and modify it for your deployment.
+
+# DNS server configuration
+dns:
+  # Address and port to listen on for DNS queries
+  # Format: "ip:port" or ":port" for all interfaces
+  # Default: ":53"
+  listen_address: ":53"
+  
+  # Default TTL (Time To Live) for DNS responses in seconds
+  # Clients will cache responses for this duration
+  # Lower values = faster failover, higher DNS query volume
+  # Default: 60
+  default_ttl: 60
+
+# Logging configuration
+logging:
+  # Log level: debug, info, warn, error
+  # Default: info
+  level: info
+  
+  # Log format: json, text
+  # Default: json
+  format: json
+
+# Region definitions
+# Each region represents a geographic location or data center
+regions:
+  - name: us-east-1
+    # Servers in this region
+    servers:
+      - address: 10.0.1.10
+        port: 80        # Default: 80
+        weight: 100     # Default: 100, range: 1-1000
+      - address: 10.0.1.11
+        port: 80
+        weight: 100
+    
+    # Health check configuration for this region
+    health_check:
+      # Check type: http, https, tcp
+      # Default: http
+      type: http
+      
+      # How often to check server health
+      # Default: 30s
+      interval: 30s
+      
+      # Timeout for each health check (must be < interval)
+      # Default: 5s
+      timeout: 5s
+      
+      # HTTP/HTTPS path to check
+      # Default: /health
+      path: /health
+      
+      # Consecutive failures before marking unhealthy
+      # Default: 3, range: 1-10
+      failure_threshold: 3
+      
+      # Consecutive successes before marking healthy
+      # Default: 2, range: 1-10
+      success_threshold: 2
+
+  - name: us-west-2
+    servers:
+      - address: 10.0.2.10
+        port: 80
+        weight: 150     # Higher weight = more traffic
+      - address: 10.0.2.11
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+
+  - name: eu-west-1
+    servers:
+      - address: 10.0.3.10
+        port: 8080      # Custom port
+        weight: 100
+    health_check:
+      type: tcp         # TCP-only check (no HTTP)
+      interval: 15s
+      timeout: 3s
+
+# Domain routing configuration
+# Each domain can use different routing algorithms and regions
+domains:
+  - name: app.example.com
+    # Routing algorithm: round-robin, weighted, geolocation, latency
+    # Default: round-robin
+    routing_algorithm: round-robin
+    
+    # Regions to route traffic to (order matters for some algorithms)
+    regions:
+      - us-east-1
+      - us-west-2
+    
+    # TTL for this domain's DNS responses (overrides dns.default_ttl)
+    # Default: uses dns.default_ttl
+    ttl: 30
+
+  - name: api.example.com
+    routing_algorithm: weighted
+    regions:
+      - us-east-1
+      - us-west-2
+      - eu-west-1
+    ttl: 60
+
+  - name: static.example.com
+    routing_algorithm: round-robin
+    regions:
+      - us-west-2
+    ttl: 300    # Longer TTL for static content
