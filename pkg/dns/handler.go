@@ -9,8 +9,11 @@ import (
 
 // Router selects a server from a pool of servers.
 // This interface will be implemented by routing algorithms in pkg/routing.
+// Note: "Router" refers to DNS response routing (selecting which IP to return),
+// not network traffic routing. See ADR-011 for terminology rationale.
 type Router interface {
-	Route(ctx context.Context, servers []ServerInfo) (*ServerInfo, error)
+	Route(ctx context.Context, domain string, servers []ServerInfo) (*ServerInfo, error)
+	Algorithm() string
 }
 
 // HealthStatusProvider provides health status for servers.
@@ -120,7 +123,7 @@ func (h *Handler) handleA(msg *dns.Msg, q dns.Question) {
 
 	// Use router to select a server
 	ctx := context.Background()
-	server, err := h.router.Route(ctx, healthyServers)
+	server, err := h.router.Route(ctx, entry.Name, healthyServers)
 	if err != nil {
 		h.logger.Error("routing failed",
 			"domain", entry.Name,
