@@ -13,8 +13,8 @@ import (
 // TestBackendHTTPConnectivity verifies mock backend servers are reachable
 func TestBackendHTTPConnectivity(t *testing.T) {
 	backends := []string{
-		"http://172.28.0.2:80",  // backend1
-		"http://172.28.0.3:80",  // backend2
+		"http://172.28.0.2:80", // backend1
+		"http://172.28.0.3:80", // backend2
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
