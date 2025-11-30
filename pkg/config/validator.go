@@ -86,7 +86,8 @@ func validateRegions(regions []Region) []error {
 	}
 
 	seen := make(map[string]bool)
-	for i, r := range regions {
+	for i := range regions {
+		r := &regions[i]
 		prefix := fmt.Sprintf("regions[%d]", i)
 
 		if r.Name == "" {
