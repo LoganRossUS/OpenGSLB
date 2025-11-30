@@ -181,3 +181,16 @@ When `return_last_healthy: true`, the system will cache and return the last IP a
 - Operators must explicitly opt-in to stale responses
 - Monitoring should alert when serving stale responses
 - Stale responses should be logged for operational visibility
+
+## ADR-010: DNS Library Selection
+**Status**: Accepted
+
+**Decision**: Use github.com/miekg/dns v1.x
+
+**Rationale**:
+- Industry standard (15,000+ importers including CoreDNS/Kubernetes)
+- Active maintenance with security updates
+- Stable API suitable for our A/AAAA record needs
+- v2 (codeberg.org/miekg/dns) exists but has zero production adoption
+
+**Review Date**: Q4 2026 - reassess if v2 reaches maturity
