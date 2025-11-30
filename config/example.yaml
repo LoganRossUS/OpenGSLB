@@ -15,6 +15,12 @@ dns:
   # Lower values = faster failover, higher DNS query volume
   # Default: 60
   default_ttl: 60
+  
+  # When all servers are unhealthy, return last known good IP instead of SERVFAIL
+  # false = return SERVFAIL (default, more correct DNS behavior)
+  # true = return last healthy IP (degraded service over no service)
+  # Default: false
+  return_last_healthy: false
 
 # Logging configuration
 logging:
