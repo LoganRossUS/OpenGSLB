@@ -13,8 +13,9 @@ type Config struct {
 
 // DNSConfig defines the DNS server settings.
 type DNSConfig struct {
-	ListenAddress string `yaml:"listen_address"`
-	DefaultTTL    int    `yaml:"default_ttl"`
+	ListenAddress     string `yaml:"listen_address"`
+	DefaultTTL        int    `yaml:"default_ttl"`
+	ReturnLastHealthy bool   `yaml:"return_last_healthy"`
 }
 
 // Region defines a geographic region with its servers and health check configuration.
