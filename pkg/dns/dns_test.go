@@ -2,6 +2,7 @@ package dns
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -31,21 +32,23 @@ func (m *mockRouter) Algorithm() string {
 
 // mockHealthProvider allows control over which servers are healthy.
 type mockHealthProvider struct {
-	healthyAddresses map[string]bool
+	healthyServers map[string]bool // key is "address:port"
 }
 
 func newMockHealthProvider() *mockHealthProvider {
 	return &mockHealthProvider{
-		healthyAddresses: make(map[string]bool),
+		healthyServers: make(map[string]bool),
 	}
 }
 
-func (m *mockHealthProvider) SetHealthy(address string, healthy bool) {
-	m.healthyAddresses[address] = healthy
+func (m *mockHealthProvider) SetHealthy(address string, port int, healthy bool) {
+	key := fmt.Sprintf("%s:%d", address, port)
+	m.healthyServers[key] = healthy
 }
 
-func (m *mockHealthProvider) IsHealthy(address string) bool {
-	healthy, ok := m.healthyAddresses[address]
+func (m *mockHealthProvider) IsHealthy(address string, port int) bool {
+	key := fmt.Sprintf("%s:%d", address, port)
+	healthy, ok := m.healthyServers[key]
 	if !ok {
 		return true // Default to healthy if not explicitly set
 	}
@@ -263,8 +266,8 @@ func TestHandler(t *testing.T) {
 		})
 
 		healthProvider := newMockHealthProvider()
-		healthProvider.SetHealthy("10.0.1.10", false) // Mark first server unhealthy
-		healthProvider.SetHealthy("10.0.1.11", true)
+		healthProvider.SetHealthy("10.0.1.10", 80, false) // Mark first server unhealthy
+		healthProvider.SetHealthy("10.0.1.11", 80, true)
 
 		handler := NewHandler(HandlerConfig{
 			Registry:       registry,
@@ -301,7 +304,7 @@ func TestHandler(t *testing.T) {
 		})
 
 		healthProvider := newMockHealthProvider()
-		healthProvider.SetHealthy("10.0.1.10", false)
+		healthProvider.SetHealthy("10.0.1.10", 80, false)
 
 		handler := NewHandler(HandlerConfig{
 			Registry:       registry,
