@@ -183,6 +183,34 @@ func TestApplicationInitialize(t *testing.T) {
 	})
 }
 
+// lifecycleTestConfig uses a unique port to avoid conflicts with other tests.
+const lifecycleTestConfig = `
+dns:
+  listen_address: "127.0.0.1:25353"
+  default_ttl: 60
+
+regions:
+  - name: us-east-1
+    servers:
+      - address: "10.0.1.10"
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      interval: 60s
+      timeout: 5s
+      path: /health
+      failure_threshold: 3
+      success_threshold: 2
+
+domains:
+  - name: app.example.com
+    routing_algorithm: round-robin
+    regions:
+      - us-east-1
+    ttl: 30
+`
+
 func TestApplicationLifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping lifecycle test in short mode")
@@ -192,7 +220,8 @@ func TestApplicationLifecycle(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "config.yaml")
 
-		if err := os.WriteFile(configPath, []byte(validConfigContent), 0600); err != nil {
+		// Use config with longer health check interval and unique port
+		if err := os.WriteFile(configPath, []byte(lifecycleTestConfig), 0600); err != nil {
 			t.Fatalf("failed to write config: %v", err)
 		}
 
@@ -210,26 +239,27 @@ func TestApplicationLifecycle(t *testing.T) {
 		}()
 
 		// Give it time to start
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		// Trigger shutdown
 		cancel()
 
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-
-		if err := app.Shutdown(shutdownCtx); err != nil {
-			t.Errorf("Shutdown error: %v", err)
-		}
-
-		// Wait for Start to return
+		// Wait for Start to return first (it handles DNS shutdown)
 		select {
 		case err := <-errChan:
 			if err != nil {
 				t.Errorf("Start returned error: %v", err)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Error("Start did not return after shutdown")
+		}
+
+		// Then shutdown remaining components (health manager)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+
+		if err := app.Shutdown(shutdownCtx); err != nil {
+			t.Errorf("Shutdown error: %v", err)
 		}
 	})
 }

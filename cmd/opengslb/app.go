@@ -196,7 +196,7 @@ func (a *Application) Start(ctx context.Context) error {
 	}
 	a.logger.Info("health manager started")
 
-	// Start DNS server (blocks until context is cancelled)
+	// Start DNS server (blocks until context is canceled)
 	a.logger.Info("starting DNS server", "address", a.config.DNS.ListenAddress)
 	if err := a.dnsServer.Start(ctx); err != nil {
 		return fmt.Errorf("DNS server error: %w", err)

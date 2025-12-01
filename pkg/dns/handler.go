@@ -19,7 +19,7 @@ type Router interface {
 // HealthStatusProvider provides health status for servers.
 // This interface will be implemented by the health manager in pkg/health.
 type HealthStatusProvider interface {
-	IsHealthy(address string) bool
+	IsHealthy(address string, port int) bool
 }
 
 // Handler processes DNS queries.
@@ -169,7 +169,7 @@ func (h *Handler) filterHealthyServers(servers []ServerInfo) []ServerInfo {
 
 	healthy := make([]ServerInfo, 0, len(servers))
 	for _, s := range servers {
-		if h.healthProvider.IsHealthy(s.Address.String()) {
+		if h.healthProvider.IsHealthy(s.Address.String(), s.Port) {
 			healthy = append(healthy, s)
 		}
 	}
