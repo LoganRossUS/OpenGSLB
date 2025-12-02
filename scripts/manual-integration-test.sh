@@ -198,6 +198,10 @@ domains:
 logging:
   level: info
   format: text
+
+metrics:
+  enabled: true
+  address: "127.0.0.1:19090"
 EOF
     
     chmod 600 "$CONFIG_FILE"
@@ -351,10 +355,10 @@ test_ttl() {
     echo "  TTL in response: $ttl"
     
     if [ "$ttl" -le 10 ] && [ "$ttl" -gt 0 ]; then
-        log_info "PASSED: TTL is correct (≤10)"
+        log_info "PASSED: TTL is correct (\u226410)"
         return 0
     else
-        log_error "FAILED: Expected TTL ≤10, got: $ttl"
+        log_error "FAILED: Expected TTL \u226410, got: $ttl"
         return 1
     fi
 }
@@ -461,44 +465,44 @@ test_logging_output() {
     # Check for expected startup messages
     echo "  Checking for startup messages..."
     if grep -q "OpenGSLB starting" "$log_file"; then
-        echo "    ✓ Found 'OpenGSLB starting'"
+        echo "    \u2713 Found 'OpenGSLB starting'"
     else
-        echo "    ✗ Missing 'OpenGSLB starting'"
+        echo "    \u2717 Missing 'OpenGSLB starting'"
         pass=false
     fi
     
     if grep -q "configuration loaded" "$log_file"; then
-        echo "    ✓ Found 'configuration loaded'"
+        echo "    \u2713 Found 'configuration loaded'"
     else
-        echo "    ✗ Missing 'configuration loaded'"
+        echo "    \u2717 Missing 'configuration loaded'"
         pass=false
     fi
     
     if grep -q "router initialized" "$log_file"; then
-        echo "    ✓ Found 'router initialized'"
+        echo "    \u2713 Found 'router initialized'"
     else
-        echo "    ✗ Missing 'router initialized'"
+        echo "    \u2717 Missing 'router initialized'"
         pass=false
     fi
     
     if grep -q "health manager initialized" "$log_file"; then
-        echo "    ✓ Found 'health manager initialized'"
+        echo "    \u2713 Found 'health manager initialized'"
     else
-        echo "    ✗ Missing 'health manager initialized'"
+        echo "    \u2717 Missing 'health manager initialized'"
         pass=false
     fi
     
     if grep -q "DNS server initialized" "$log_file"; then
-        echo "    ✓ Found 'DNS server initialized'"
+        echo "    \u2713 Found 'DNS server initialized'"
     else
-        echo "    ✗ Missing 'DNS server initialized'"
+        echo "    \u2717 Missing 'DNS server initialized'"
         pass=false
     fi
     
     if grep -q "OpenGSLB running" "$log_file"; then
-        echo "    ✓ Found 'OpenGSLB running'"
+        echo "    \u2713 Found 'OpenGSLB running'"
     else
-        echo "    ✗ Missing 'OpenGSLB running'"
+        echo "    \u2717 Missing 'OpenGSLB running'"
         pass=false
     fi
     
@@ -507,19 +511,19 @@ test_logging_output() {
     # Check that log format is text (not JSON) as configured
     echo "  Checking log format (expecting text, not JSON)..."
     if head -1 "$log_file" | grep -q "^{"; then
-        echo "    ✗ Log appears to be JSON format, expected text"
+        echo "    \u2717 Log appears to be JSON format, expected text"
         pass=false
     else
-        echo "    ✓ Log format is text (not JSON)"
+        echo "    \u2713 Log format is text (not JSON)"
     fi
     
     # Check for log level indicator (slog text format uses level=INFO style)
     echo ""
     echo "  Checking for log level indicators..."
     if grep -qE "level=(INFO|WARN|ERROR|DEBUG)" "$log_file"; then
-        echo "    ✓ Found log level indicators"
+        echo "    \u2713 Found log level indicators"
     else
-        echo "    ✗ Missing log level indicators"
+        echo "    \u2717 Missing log level indicators"
         pass=false
     fi
     
@@ -609,12 +613,12 @@ EOF
     local second_line=$(sed -n '2p' "$json_log")
     
     if [ -z "$second_line" ]; then
-        echo "    ✗ Log file has fewer than 2 lines"
+        echo "    \u2717 Log file has fewer than 2 lines"
         pass=false
     elif echo "$second_line" | python3 -c "import sys, json; json.load(sys.stdin)" 2>/dev/null; then
-        echo "    ✓ Log output is valid JSON (after bootstrap)"
+        echo "    \u2713 Log output is valid JSON (after bootstrap)"
     else
-        echo "    ✗ Log output is not valid JSON"
+        echo "    \u2717 Log output is not valid JSON"
         echo "    Line 2: $second_line"
         pass=false
     fi
@@ -623,23 +627,23 @@ EOF
     echo ""
     echo "  Checking for expected JSON fields..."
     if echo "$second_line" | grep -q '"time"'; then
-        echo "    ✓ Found 'time' field"
+        echo "    \u2713 Found 'time' field"
     else
-        echo "    ✗ Missing 'time' field"
+        echo "    \u2717 Missing 'time' field"
         pass=false
     fi
     
     if echo "$second_line" | grep -q '"level"'; then
-        echo "    ✓ Found 'level' field"
+        echo "    \u2713 Found 'level' field"
     else
-        echo "    ✗ Missing 'level' field"
+        echo "    \u2717 Missing 'level' field"
         pass=false
     fi
     
     if echo "$second_line" | grep -q '"msg"'; then
-        echo "    ✓ Found 'msg' field"
+        echo "    \u2713 Found 'msg' field"
     else
-        echo "    ✗ Missing 'msg' field"
+        echo "    \u2717 Missing 'msg' field"
         pass=false
     fi
     
@@ -647,9 +651,9 @@ EOF
     echo ""
     echo "  Checking for DEBUG level messages..."
     if grep -q '"level":"DEBUG"' "$json_log"; then
-        echo "    ✓ Found DEBUG level messages (level config working)"
+        echo "    \u2713 Found DEBUG level messages (level config working)"
     else
-        echo "    ✗ No DEBUG messages found (level config may not be working)"
+        echo "    \u2717 No DEBUG messages found (level config may not be working)"
         # Not a hard failure - DEBUG messages depend on code paths exercised
         log_warn "DEBUG messages not found - this may be OK if no debug-level logging occurs during startup"
     fi
@@ -673,6 +677,94 @@ EOF
         return 0
     else
         log_error "FAILED: JSON logging issues detected"
+        return 1
+    fi
+}
+
+test_metrics_endpoint() {
+    log_test "TEST 9: Prometheus Metrics Endpoint"
+    echo "Verifying metrics endpoint is accessible and returns expected metrics"
+    echo ""
+    
+    local metrics_url="http://127.0.0.1:19090/metrics"
+    local health_url="http://127.0.0.1:19090/health"
+    local pass=true
+    
+    # Check health endpoint
+    echo "  Checking health endpoint..."
+    local health_response=$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null)
+    if [ "$health_response" == "200" ]; then
+        echo "    \u2713 Health endpoint returned 200 OK"
+    else
+        echo "    \u2717 Health endpoint returned $health_response (expected 200)"
+        pass=false
+    fi
+    
+    # Check metrics endpoint
+    echo ""
+    echo "  Checking metrics endpoint..."
+    local metrics_response=$(curl -s "$metrics_url" 2>/dev/null)
+    
+    if [ -z "$metrics_response" ]; then
+        echo "    \u2717 No response from metrics endpoint"
+        return 1
+    fi
+    
+    echo "    \u2713 Metrics endpoint is accessible"
+    
+    # Check for OpenGSLB-specific metrics
+    echo ""
+    echo "  Checking for OpenGSLB metrics..."
+    
+    if echo "$metrics_response" | grep -q "opengslb_app_info"; then
+        echo "    \u2713 Found opengslb_app_info"
+    else
+        echo "    \u2717 Missing opengslb_app_info"
+        pass=false
+    fi
+    
+    if echo "$metrics_response" | grep -q "opengslb_configured_domains"; then
+        echo "    \u2713 Found opengslb_configured_domains"
+    else
+        echo "    \u2717 Missing opengslb_configured_domains"
+        pass=false
+    fi
+    
+    if echo "$metrics_response" | grep -q "opengslb_configured_servers"; then
+        echo "    \u2713 Found opengslb_configured_servers"
+    else
+        echo "    \u2717 Missing opengslb_configured_servers"
+        pass=false
+    fi
+    
+    if echo "$metrics_response" | grep -q "opengslb_config_load_timestamp_seconds"; then
+        echo "    \u2713 Found opengslb_config_load_timestamp_seconds"
+    else
+        echo "    \u2717 Missing opengslb_config_load_timestamp_seconds"
+        pass=false
+    fi
+    
+    # Check for Go runtime metrics (standard Prometheus)
+    echo ""
+    echo "  Checking for Go runtime metrics..."
+    if echo "$metrics_response" | grep -q "go_goroutines"; then
+        echo "    \u2713 Found go_goroutines"
+    else
+        echo "    \u2717 Missing go_goroutines"
+        pass=false
+    fi
+    
+    # Show some sample metrics
+    echo ""
+    echo "  Sample OpenGSLB metrics:"
+    echo "$metrics_response" | grep "^opengslb_" | head -10 | sed 's/^/    /'
+    echo ""
+    
+    if $pass; then
+        log_info "PASSED: Metrics endpoint working correctly"
+        return 0
+    else
+        log_error "FAILED: Metrics endpoint issues detected"
         return 1
     fi
 }
@@ -747,6 +839,12 @@ main() {
     fi
     
     if test_logging_json_format; then
+        passed=$((passed + 1))
+    else
+        failed=$((failed + 1))
+    fi
+    
+    if test_metrics_endpoint; then
         passed=$((passed + 1))
     else
         failed=$((failed + 1))
