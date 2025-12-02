@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/loganrossus/OpenGSLB/pkg/config"
 )
 
 // validConfigContent provides a minimal valid configuration for testing.
@@ -13,6 +15,10 @@ const validConfigContent = `
 dns:
   listen_address: "127.0.0.1:15353"
   default_ttl: 60
+
+logging:
+  level: info
+  format: text
 
 regions:
   - name: us-east-1
@@ -36,9 +42,25 @@ domains:
     ttl: 30
 `
 
+// loadTestConfig is a helper that writes config content to a temp file and loads it.
+func loadTestConfig(t *testing.T, content string) *config.Config {
+	t.Helper()
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	return cfg
+}
+
 func TestCheckConfigPermissions(t *testing.T) {
 	t.Run("secure permissions allowed", func(t *testing.T) {
-		// Create temp config file with secure permissions
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "config.yaml")
 
@@ -46,8 +68,7 @@ func TestCheckConfigPermissions(t *testing.T) {
 			t.Fatalf("failed to write config: %v", err)
 		}
 
-		app := NewApplication(configPath, nil)
-		if err := app.checkConfigPermissions(); err != nil {
+		if err := checkConfigPermissions(configPath, nil); err != nil {
 			t.Errorf("expected no error for 0600, got: %v", err)
 		}
 	})
@@ -60,8 +81,7 @@ func TestCheckConfigPermissions(t *testing.T) {
 			t.Fatalf("failed to write config: %v", err)
 		}
 
-		app := NewApplication(configPath, nil)
-		if err := app.checkConfigPermissions(); err != nil {
+		if err := checkConfigPermissions(configPath, nil); err != nil {
 			t.Errorf("expected no error for 0640, got: %v", err)
 		}
 	})
@@ -74,8 +94,7 @@ func TestCheckConfigPermissions(t *testing.T) {
 			t.Fatalf("failed to write config: %v", err)
 		}
 
-		app := NewApplication(configPath, nil)
-		err := app.checkConfigPermissions()
+		err := checkConfigPermissions(configPath, nil)
 		if err == nil {
 			t.Error("expected error for world-readable config")
 		}
@@ -89,16 +108,14 @@ func TestCheckConfigPermissions(t *testing.T) {
 			t.Fatalf("failed to write config: %v", err)
 		}
 
-		app := NewApplication(configPath, nil)
-		err := app.checkConfigPermissions()
+		err := checkConfigPermissions(configPath, nil)
 		if err == nil {
 			t.Error("expected error for world-readable config")
 		}
 	})
 
 	t.Run("missing file returns error", func(t *testing.T) {
-		app := NewApplication("/nonexistent/path/config.yaml", nil)
-		err := app.checkConfigPermissions()
+		err := checkConfigPermissions("/nonexistent/path/config.yaml", nil)
 		if err == nil {
 			t.Error("expected error for missing config file")
 		}
@@ -106,39 +123,40 @@ func TestCheckConfigPermissions(t *testing.T) {
 }
 
 func TestNewApplication(t *testing.T) {
-	t.Run("uses default config path when empty", func(t *testing.T) {
-		app := NewApplication("", nil)
-		if app.configPath != DefaultConfigPath {
-			t.Errorf("expected default path %s, got %s", DefaultConfigPath, app.configPath)
+	t.Run("accepts config and logger", func(t *testing.T) {
+		cfg := loadTestConfig(t, validConfigContent)
+		app := NewApplication(cfg, nil)
+
+		if app.config != cfg {
+			t.Error("expected config to be set")
+		}
+		if app.logger == nil {
+			t.Error("expected default logger when nil provided")
 		}
 	})
 
-	t.Run("uses provided config path", func(t *testing.T) {
-		customPath := "/custom/config.yaml"
-		app := NewApplication(customPath, nil)
-		if app.configPath != customPath {
-			t.Errorf("expected %s, got %s", customPath, app.configPath)
+	t.Run("uses default logger when nil", func(t *testing.T) {
+		cfg := loadTestConfig(t, validConfigContent)
+		app := NewApplication(cfg, nil)
+
+		if app.logger == nil {
+			t.Error("expected logger to be set to default")
 		}
 	})
 }
 
 func TestApplicationInitialize(t *testing.T) {
 	t.Run("initializes with valid config", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "config.yaml")
+		cfg := loadTestConfig(t, validConfigContent)
+		app := NewApplication(cfg, nil)
 
-		if err := os.WriteFile(configPath, []byte(validConfigContent), 0600); err != nil {
-			t.Fatalf("failed to write config: %v", err)
-		}
-
-		app := NewApplication(configPath, nil)
 		if err := app.Initialize(); err != nil {
 			t.Fatalf("Initialize failed: %v", err)
 		}
 
 		// Verify components are initialized
 		if app.config == nil {
-			t.Error("config should be initialized")
+			t.Error("config should be set")
 		}
 		if app.router == nil {
 			t.Error("router should be initialized")
@@ -150,37 +168,6 @@ func TestApplicationInitialize(t *testing.T) {
 			t.Error("DNS server should be initialized")
 		}
 	})
-
-	t.Run("fails with insecure permissions", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "config.yaml")
-
-		if err := os.WriteFile(configPath, []byte(validConfigContent), 0644); err != nil {
-			t.Fatalf("failed to write config: %v", err)
-		}
-
-		app := NewApplication(configPath, nil)
-		err := app.Initialize()
-		if err == nil {
-			t.Error("expected error for insecure permissions")
-		}
-	})
-
-	t.Run("fails with invalid config", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "config.yaml")
-
-		invalidConfig := "invalid: yaml: content: ["
-		if err := os.WriteFile(configPath, []byte(invalidConfig), 0600); err != nil {
-			t.Fatalf("failed to write config: %v", err)
-		}
-
-		app := NewApplication(configPath, nil)
-		err := app.Initialize()
-		if err == nil {
-			t.Error("expected error for invalid config")
-		}
-	})
 }
 
 // lifecycleTestConfig uses a unique port to avoid conflicts with other tests.
@@ -188,6 +175,10 @@ const lifecycleTestConfig = `
 dns:
   listen_address: "127.0.0.1:25353"
   default_ttl: 60
+
+logging:
+  level: info
+  format: text
 
 regions:
   - name: us-east-1
@@ -217,15 +208,9 @@ func TestApplicationLifecycle(t *testing.T) {
 	}
 
 	t.Run("start and shutdown", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "config.yaml")
+		cfg := loadTestConfig(t, lifecycleTestConfig)
+		app := NewApplication(cfg, nil)
 
-		// Use config with longer health check interval and unique port
-		if err := os.WriteFile(configPath, []byte(lifecycleTestConfig), 0600); err != nil {
-			t.Fatalf("failed to write config: %v", err)
-		}
-
-		app := NewApplication(configPath, nil)
 		if err := app.Initialize(); err != nil {
 			t.Fatalf("Initialize failed: %v", err)
 		}

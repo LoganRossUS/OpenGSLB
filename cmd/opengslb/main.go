@@ -141,6 +141,8 @@ func checkConfigPermissions(configPath string, logger *slog.Logger) error {
 		)
 	}
 
-	logger.Debug("config file permissions verified", "path", configPath, "mode", fmt.Sprintf("%04o", mode))
+	if logger != nil {
+		logger.Debug("config file permissions verified", "path", configPath, "mode", fmt.Sprintf("%04o", mode))
+	}
 	return nil
 }
