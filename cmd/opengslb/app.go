@@ -73,7 +73,12 @@ func (a *Application) Initialize() error {
 
 // initializeHealthManager creates and configures the health manager.
 func (a *Application) initializeHealthManager() error {
-	checker := health.NewHTTPChecker()
+	// Create composite checker with both HTTP and TCP support
+	checker := health.NewCompositeChecker()
+	checker.Register("http", health.NewHTTPChecker())
+	checker.Register("tcp", health.NewTCPChecker())
+
+	a.logger.Debug("registered health checkers", "types", checker.RegisteredTypes())
 
 	// Build manager config from first region's health check settings
 	// (assuming consistent thresholds across regions for now)
@@ -94,11 +99,18 @@ func (a *Application) initializeHealthManager() error {
 	for _, region := range a.config.Regions {
 		hc := region.HealthCheck
 		for _, server := range region.Servers {
+			// Determine scheme based on health check type
+			// The scheme field is used by CompositeChecker to dispatch to the right checker
+			scheme := hc.Type
+			if scheme == "" {
+				scheme = "http" // Default to HTTP
+			}
+
 			serverCfg := health.ServerConfig{
 				Address:  server.Address,
 				Port:     server.Port,
 				Path:     hc.Path,
-				Scheme:   "http", // Default to HTTP; HTTPS support can be added later
+				Scheme:   scheme,
 				Interval: hc.Interval,
 				Timeout:  hc.Timeout,
 			}
@@ -112,6 +124,7 @@ func (a *Application) initializeHealthManager() error {
 				"region", region.Name,
 				"address", server.Address,
 				"port", server.Port,
+				"check_type", scheme,
 			)
 		}
 	}
