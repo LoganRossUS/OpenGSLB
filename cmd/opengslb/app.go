@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"log/slog"
-	"os"
 	"time"
 
 	"github.com/loganrossus/OpenGSLB/pkg/config"
@@ -14,18 +12,8 @@ import (
 	"github.com/loganrossus/OpenGSLB/pkg/routing"
 )
 
-const (
-	// DefaultConfigPath is the default location for the configuration file.
-	DefaultConfigPath = "/etc/opengslb/config.yaml"
-
-	// MaxInsecureFileMode represents the most permissive acceptable file mode.
-	// Config files must not be world-readable (no 'other' read permission).
-	MaxInsecureFileMode fs.FileMode = 0o004
-)
-
 // Application manages the lifecycle of all OpenGSLB components.
 type Application struct {
-	configPath    string
 	config        *config.Config
 	dnsServer     *dns.Server
 	healthManager *health.Manager
@@ -33,39 +21,20 @@ type Application struct {
 	logger        *slog.Logger
 }
 
-// NewApplication creates a new Application instance.
-func NewApplication(configPath string, logger *slog.Logger) *Application {
+// NewApplication creates a new Application instance with pre-loaded configuration.
+func NewApplication(cfg *config.Config, logger *slog.Logger) *Application {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if configPath == "" {
-		configPath = DefaultConfigPath
-	}
 	return &Application{
-		configPath: configPath,
-		logger:     logger,
+		config: cfg,
+		logger: logger,
 	}
 }
 
-// Initialize loads configuration and sets up all components.
+// Initialize sets up all components using the loaded configuration.
 func (a *Application) Initialize() error {
-	a.logger.Info("initializing application", "config_path", a.configPath)
-
-	// Check config file permissions
-	if err := a.checkConfigPermissions(); err != nil {
-		return err
-	}
-
-	// Load configuration
-	cfg, err := config.Load(a.configPath)
-	if err != nil {
-		return fmt.Errorf("failed to load configuration: %w", err)
-	}
-	a.config = cfg
-	a.logger.Info("configuration loaded",
-		"regions", len(cfg.Regions),
-		"domains", len(cfg.Domains),
-	)
+	a.logger.Info("initializing application")
 
 	// Initialize router
 	a.router = routing.NewRoundRobin()
@@ -81,26 +50,6 @@ func (a *Application) Initialize() error {
 		return fmt.Errorf("failed to initialize DNS server: %w", err)
 	}
 
-	return nil
-}
-
-// checkConfigPermissions verifies the config file has secure permissions.
-func (a *Application) checkConfigPermissions() error {
-	info, err := os.Stat(a.configPath)
-	if err != nil {
-		return fmt.Errorf("failed to stat config file: %w", err)
-	}
-
-	mode := info.Mode().Perm()
-	if mode&MaxInsecureFileMode != 0 {
-		return fmt.Errorf(
-			"config file %s has insecure permissions %04o (world-readable); "+
-				"run 'chmod 640 %s' or 'chmod 600 %s' to fix",
-			a.configPath, mode, a.configPath, a.configPath,
-		)
-	}
-
-	a.logger.Debug("config file permissions verified", "path", a.configPath, "mode", fmt.Sprintf("%04o", mode))
 	return nil
 }
 

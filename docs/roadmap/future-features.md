@@ -19,73 +19,52 @@ Allow operators to reload configuration without restarting the application, simi
 As an operator, I want to update the configuration and apply changes without downtime so that I can add/remove servers and domains without disrupting service.
 
 **Implementation Notes:**
-- Add SIGHUP signal handler in `main.go`
-- Add `Reload()` method to `Application` struct
-- Re-read and validate config before applying
-- Gracefully transition components:
-  - Health manager: Add new servers, remove old ones, preserve state for unchanged
-  - DNS registry: Update domain entries atomically
-  - Router: No state changes needed (stateless selection)
-- Handle validation failures (reject bad config, keep running with old)
+- Signal handler for SIGHUP
+- Re-parse and validate config before applying
+- Atomic swap of configuration in running components
+- Components need `Reload(cfg)` method or config subscription pattern
+- Log old vs new config diff for audit trail
 
-**Open Questions:**
-- Should health status be preserved for unchanged servers?
-- How to report reload success/failure to operator? (log, exit code, status endpoint?)
-- Should we support `--reload` CLI flag in addition to SIGHUP?
+**Affected Components:**
+- `pkg/config` - Add reload capability
+- `pkg/dns` - Update domain registry
+- `pkg/health` - Add/remove health checkers
+- `pkg/routing` - Update server pools
 
 **Why Deferred:**  
-Current architecture supports this without refactoring. It's an operational feature that isn't needed until production deployment.
+Core functionality must be stable before adding runtime reconfiguration. Restart-based config changes acceptable for initial release.
 
 ---
 
 ### Configuration Includes
 
 **Priority:** Medium  
-**Target:** Sprint 3 or later  
-**Identified:** 2025-12-02 (Sprint 2 manual testing)
+**Target:** Sprint 4 or later  
+**Identified:** 2025-12-02 (Sprint 2 discussion)
 
 **Description:**  
-Support including external configuration files to avoid one large monolithic config file.
+Allow splitting configuration across multiple files for better organization.
 
 **User Story:**  
-As an operator managing many regions and domains, I want to split configuration into multiple files so that I can organize and manage them independently.
+As an operator with many domains and regions, I want to organize configuration into separate files so that different teams can manage their own domains.
 
-**Proposed Syntax:**
+**Example:**
 ```yaml
-# /etc/opengslb/config.yaml
+# config.yaml
 dns:
   listen_address: ":53"
-  default_ttl: 60
 
 includes:
-  - /etc/opengslb/regions/*.yaml
-  - /etc/opengslb/domains/*.yaml
-
-logging:
-  level: info
-```
-
-```yaml
-# /etc/opengslb/regions/us-east.yaml
-regions:
-  - name: us-east-1
-    servers:
-      - address: "10.0.1.10"
-        port: 80
-    health_check:
-      type: http
-      interval: 30s
-      path: /health
+  - regions/*.yaml
+  - domains/*.yaml
 ```
 
 **Implementation Notes:**
-- Add `Includes []string` field to root config
-- Modify `config.Load()` to:
-  1. Parse main config
-  2. Expand glob patterns in `includes`
-  3. Parse each included file
-  4. Merge into main config (append to slices)
-  5. Validate merged result
+- Add `Includes []string` to config types
+- Expand globs in `config.Load()`
+- Parse each included file
+- Merge into main config (append to slices)
+- Validate merged result
 - Apply same permission checks to included files
 - Detect circular includes
 - Improve error messages to include file:line context
@@ -232,6 +211,42 @@ Expose operational metrics via Prometheus endpoint.
 
 ---
 
+### OpenTelemetry Integration
+
+**Priority:** Low  
+**Target:** Phase 4 or later  
+**Identified:** 2025-12-02 (Sprint 2 Story 6 discussion)
+
+**Description:**  
+Export logs, metrics, and traces via OpenTelemetry Protocol (OTLP) for unified observability.
+
+**User Story:**  
+As an operator using OpenTelemetry, I want OpenGSLB to export telemetry via OTLP so that I can correlate logs, metrics, and traces in my existing observability stack.
+
+**Implementation Notes:**
+- Add `go.opentelemetry.io/otel` dependencies
+- OTLP exporter for logs (bridge from slog)
+- OTLP exporter for metrics (alongside or replacing Prometheus)
+- Distributed tracing for DNS query flow
+- Configuration for OTel Collector endpoint
+
+**Example Config:**
+```yaml
+telemetry:
+  otlp:
+    enabled: true
+    endpoint: "localhost:4317"
+    insecure: true  # For non-TLS collector
+```
+
+**Why Deferred:**  
+- Adds operational complexity (requires OTel Collector)
+- Conflicts with "no external dependencies" value proposition for simple deployments
+- JSON logging + Prometheus metrics cover 90% of enterprise needs
+- Can be added later as optional feature without breaking existing deployments
+
+---
+
 ### Grafana Dashboards
 
 **Priority:** Medium  
@@ -248,7 +263,7 @@ Pre-built Grafana dashboards for OpenGSLB monitoring.
 ### Active/Standby Mode
 
 **Priority:** High  
-**Target:** Phase 3 or 4  
+**Target:** Sprint 3 or Phase 4  
 **Identified:** Project summary, ADR-005
 
 **Description:**  
@@ -305,3 +320,4 @@ Ansible module for managing OpenGSLB configuration.
 | Date | Author | Changes |
 |------|--------|---------|
 | 2025-12-02 | Logan Ross | Initial creation with hot reload and config includes |
+| 2025-12-02 | Logan Ross | Added OpenTelemetry integration |
