@@ -8,6 +8,7 @@
 #   - Round-robin load balancing
 #   - NXDOMAIN for unknown domains
 #   - SERVFAIL when no healthy servers
+#   - Logging configuration (text and JSON formats)
 #
 # Prerequisites:
 #   - OpenGSLB binary built (./opengslb)
@@ -296,7 +297,11 @@ test_round_robin() {
         log_warn "Rotation pattern may not be perfectly sequential (not a failure)"
     fi
     
-    $pass
+    if $pass; then
+        return 0
+    else
+        return 1
+    fi
 }
 
 test_unhealthy_servfail() {
@@ -435,6 +440,243 @@ test_health_recovery() {
     fi
 }
 
+test_logging_output() {
+    log_test "TEST 7: Logging Configuration (Text Format)"
+    echo "Verifying log output format and content"
+    echo ""
+    
+    local log_file="/tmp/opengslb-integration-test/opengslb.log"
+    local pass=true
+    
+    # Check log file exists and has content
+    if [ ! -s "$log_file" ]; then
+        log_error "FAILED: Log file is empty or doesn't exist"
+        return 1
+    fi
+    
+    echo "  Log file size: $(wc -c < "$log_file") bytes"
+    echo "  Log file lines: $(wc -l < "$log_file") lines"
+    echo ""
+    
+    # Check for expected startup messages
+    echo "  Checking for startup messages..."
+    if grep -q "OpenGSLB starting" "$log_file"; then
+        echo "    ✓ Found 'OpenGSLB starting'"
+    else
+        echo "    ✗ Missing 'OpenGSLB starting'"
+        pass=false
+    fi
+    
+    if grep -q "configuration loaded" "$log_file"; then
+        echo "    ✓ Found 'configuration loaded'"
+    else
+        echo "    ✗ Missing 'configuration loaded'"
+        pass=false
+    fi
+    
+    if grep -q "router initialized" "$log_file"; then
+        echo "    ✓ Found 'router initialized'"
+    else
+        echo "    ✗ Missing 'router initialized'"
+        pass=false
+    fi
+    
+    if grep -q "health manager initialized" "$log_file"; then
+        echo "    ✓ Found 'health manager initialized'"
+    else
+        echo "    ✗ Missing 'health manager initialized'"
+        pass=false
+    fi
+    
+    if grep -q "DNS server initialized" "$log_file"; then
+        echo "    ✓ Found 'DNS server initialized'"
+    else
+        echo "    ✗ Missing 'DNS server initialized'"
+        pass=false
+    fi
+    
+    if grep -q "OpenGSLB running" "$log_file"; then
+        echo "    ✓ Found 'OpenGSLB running'"
+    else
+        echo "    ✗ Missing 'OpenGSLB running'"
+        pass=false
+    fi
+    
+    echo ""
+    
+    # Check that log format is text (not JSON) as configured
+    echo "  Checking log format (expecting text, not JSON)..."
+    if head -1 "$log_file" | grep -q "^{"; then
+        echo "    ✗ Log appears to be JSON format, expected text"
+        pass=false
+    else
+        echo "    ✓ Log format is text (not JSON)"
+    fi
+    
+    # Check for log level indicator (slog text format uses level=INFO style)
+    echo ""
+    echo "  Checking for log level indicators..."
+    if grep -qE "level=(INFO|WARN|ERROR|DEBUG)" "$log_file"; then
+        echo "    ✓ Found log level indicators"
+    else
+        echo "    ✗ Missing log level indicators"
+        pass=false
+    fi
+    
+    echo ""
+    echo "  First 10 lines of log:"
+    head -10 "$log_file" | sed 's/^/    /'
+    echo ""
+    
+    if $pass; then
+        log_info "PASSED: Logging is configured and working correctly"
+        return 0
+    else
+        log_error "FAILED: Logging issues detected"
+        return 1
+    fi
+}
+
+test_logging_json_format() {
+    log_test "TEST 8: JSON Logging Format"
+    echo "Restarting OpenGSLB with JSON logging to verify format switching"
+    echo ""
+    
+    # Stop current OpenGSLB
+    if [ -n "$OPENGSLB_PID" ] && kill -0 "$OPENGSLB_PID" 2>/dev/null; then
+        kill "$OPENGSLB_PID" 2>/dev/null || true
+        wait "$OPENGSLB_PID" 2>/dev/null || true
+    fi
+    
+    # Create JSON config
+    local json_config="/tmp/opengslb-integration-test/config-json.yaml"
+    cat > "$json_config" << 'EOF'
+dns:
+  listen_address: "127.0.0.1:15353"
+  default_ttl: 30
+
+regions:
+  - name: healthy-region
+    servers:
+      - address: "127.0.0.1"
+        port: 8081
+        weight: 100
+    health_check:
+      type: http
+      interval: 2s
+      timeout: 1s
+      path: /
+      failure_threshold: 2
+      success_threshold: 1
+
+domains:
+  - name: healthy.test
+    routing_algorithm: round-robin
+    regions:
+      - healthy-region
+    ttl: 10
+
+logging:
+  level: debug
+  format: json
+EOF
+    chmod 600 "$json_config"
+    
+    # Start with JSON config
+    local json_log="/tmp/opengslb-integration-test/opengslb-json.log"
+    ./opengslb --config "$json_config" > "$json_log" 2>&1 &
+    OPENGSLB_PID=$!
+    
+    sleep 3
+    
+    # Verify it's running
+    if ! kill -0 "$OPENGSLB_PID" 2>/dev/null; then
+        log_error "OpenGSLB failed to start with JSON config"
+        cat "$json_log"
+        return 1
+    fi
+    
+    # Make a DNS query to generate log entries
+    query_dns "healthy.test" > /dev/null
+    sleep 1
+    
+    local pass=true
+    
+    # Check JSON format - note: first line is from bootstrap logger (text format)
+    # so we check line 2 which should be JSON after config is loaded
+    echo "  Checking JSON log format..."
+    echo "  (Note: Line 1 is bootstrap logger before config loads, checking line 2+)"
+    local second_line=$(sed -n '2p' "$json_log")
+    
+    if [ -z "$second_line" ]; then
+        echo "    ✗ Log file has fewer than 2 lines"
+        pass=false
+    elif echo "$second_line" | python3 -c "import sys, json; json.load(sys.stdin)" 2>/dev/null; then
+        echo "    ✓ Log output is valid JSON (after bootstrap)"
+    else
+        echo "    ✗ Log output is not valid JSON"
+        echo "    Line 2: $second_line"
+        pass=false
+    fi
+    
+    # Check for expected JSON fields in second line
+    echo ""
+    echo "  Checking for expected JSON fields..."
+    if echo "$second_line" | grep -q '"time"'; then
+        echo "    ✓ Found 'time' field"
+    else
+        echo "    ✗ Missing 'time' field"
+        pass=false
+    fi
+    
+    if echo "$second_line" | grep -q '"level"'; then
+        echo "    ✓ Found 'level' field"
+    else
+        echo "    ✗ Missing 'level' field"
+        pass=false
+    fi
+    
+    if echo "$second_line" | grep -q '"msg"'; then
+        echo "    ✓ Found 'msg' field"
+    else
+        echo "    ✗ Missing 'msg' field"
+        pass=false
+    fi
+    
+    # Check that DEBUG level messages appear (since we set level: debug)
+    echo ""
+    echo "  Checking for DEBUG level messages..."
+    if grep -q '"level":"DEBUG"' "$json_log"; then
+        echo "    ✓ Found DEBUG level messages (level config working)"
+    else
+        echo "    ✗ No DEBUG messages found (level config may not be working)"
+        # Not a hard failure - DEBUG messages depend on code paths exercised
+        log_warn "DEBUG messages not found - this may be OK if no debug-level logging occurs during startup"
+    fi
+    
+    echo ""
+    echo "  First 5 lines of JSON log:"
+    head -5 "$json_log" | sed 's/^/    /'
+    echo ""
+    
+    # Stop JSON-format OpenGSLB and restart original
+    kill "$OPENGSLB_PID" 2>/dev/null || true
+    wait "$OPENGSLB_PID" 2>/dev/null || true
+    
+    # Restart with original config for any subsequent tests
+    ./opengslb --config "$CONFIG_FILE" > /tmp/opengslb-integration-test/opengslb.log 2>&1 &
+    OPENGSLB_PID=$!
+    sleep 2
+    
+    if $pass; then
+        log_info "PASSED: JSON logging format working correctly"
+        return 0
+    else
+        log_error "FAILED: JSON logging issues detected"
+        return 1
+    fi
+}
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -456,15 +698,62 @@ main() {
     echo "Running Tests"
     echo "=============================================="
     
+    # Disable exit-on-error for test execution (tests may fail)
+    set +e
+    
     local passed=0
     local failed=0
     
-    if test_round_robin; then ((passed++)); else ((failed++)); fi
-    if test_unhealthy_servfail; then ((passed++)); else ((failed++)); fi
-    if test_nxdomain; then ((passed++)); else ((failed++)); fi
-    if test_ttl; then ((passed++)); else ((failed++)); fi
-    if test_tcp_query; then ((passed++)); else ((failed++)); fi
-    if test_health_recovery; then ((passed++)); else ((failed++)); fi
+    if test_round_robin; then
+        passed=$((passed + 1))
+    else
+        failed=$((failed + 1))
+    fi
+    
+    if test_unhealthy_servfail; then
+        passed=$((passed + 1))
+    else
+        failed=$((failed + 1))
+    fi
+    
+    if test_nxdomain; then
+        passed=$((passed + 1))
+    else
+        failed=$((failed + 1))
+    fi
+    
+    if test_ttl; then
+        passed=$((passed + 1))
+    else
+        failed=$((failed + 1))
+    fi
+    
+    if test_tcp_query; then
+        passed=$((passed + 1))
+    else
+        failed=$((failed + 1))
+    fi
+    
+    if test_health_recovery; then
+        passed=$((passed + 1))
+    else
+        failed=$((failed + 1))
+    fi
+    
+    if test_logging_output; then
+        passed=$((passed + 1))
+    else
+        failed=$((failed + 1))
+    fi
+    
+    if test_logging_json_format; then
+        passed=$((passed + 1))
+    else
+        failed=$((failed + 1))
+    fi
+    
+    # Re-enable exit-on-error
+    set -e
     
     echo ""
     echo "=============================================="
