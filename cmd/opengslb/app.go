@@ -9,7 +9,9 @@ import (
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/dns"
 	"github.com/loganrossus/OpenGSLB/pkg/health"
+	"github.com/loganrossus/OpenGSLB/pkg/metrics"
 	"github.com/loganrossus/OpenGSLB/pkg/routing"
+	"github.com/loganrossus/OpenGSLB/pkg/version"
 )
 
 // Application manages the lifecycle of all OpenGSLB components.
@@ -17,6 +19,7 @@ type Application struct {
 	config        *config.Config
 	dnsServer     *dns.Server
 	healthManager *health.Manager
+	metricsServer *metrics.Server
 	router        dns.Router
 	logger        *slog.Logger
 }
@@ -36,6 +39,16 @@ func NewApplication(cfg *config.Config, logger *slog.Logger) *Application {
 func (a *Application) Initialize() error {
 	a.logger.Info("initializing application")
 
+	// Set application info metric
+	metrics.SetAppInfo(version.Version)
+
+	// Set config metrics
+	serverCount := 0
+	for _, region := range a.config.Regions {
+		serverCount += len(region.Servers)
+	}
+	metrics.SetConfigMetrics(len(a.config.Domains), serverCount, float64(time.Now().Unix()))
+
 	// Initialize router
 	a.router = routing.NewRoundRobin()
 	a.logger.Info("router initialized", "algorithm", a.router.Algorithm())
@@ -48,6 +61,11 @@ func (a *Application) Initialize() error {
 	// Initialize DNS server
 	if err := a.initializeDNSServer(); err != nil {
 		return fmt.Errorf("failed to initialize DNS server: %w", err)
+	}
+
+	// Initialize metrics server if enabled
+	if err := a.initializeMetricsServer(); err != nil {
+		return fmt.Errorf("failed to initialize metrics server: %w", err)
 	}
 
 	return nil
@@ -135,6 +153,27 @@ func (a *Application) initializeDNSServer() error {
 	return nil
 }
 
+// initializeMetricsServer creates and configures the metrics server.
+func (a *Application) initializeMetricsServer() error {
+	if !a.config.Metrics.Enabled {
+		a.logger.Info("metrics server disabled")
+		return nil
+	}
+
+	address := a.config.Metrics.Address
+	if address == "" {
+		address = ":9090" // Default metrics port
+	}
+
+	a.metricsServer = metrics.NewServer(metrics.ServerConfig{
+		Address: address,
+		Logger:  a.logger,
+	})
+
+	a.logger.Info("metrics server initialized", "address", address)
+	return nil
+}
+
 // Start begins all application components.
 func (a *Application) Start(ctx context.Context) error {
 	a.logger.Info("starting application")
@@ -144,6 +183,15 @@ func (a *Application) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start health manager: %w", err)
 	}
 	a.logger.Info("health manager started")
+
+	// Start metrics server in background if enabled
+	if a.metricsServer != nil {
+		go func() {
+			if err := a.metricsServer.Start(ctx); err != nil {
+				a.logger.Error("metrics server error", "error", err)
+			}
+		}()
+	}
 
 	// Start DNS server (blocks until context is canceled)
 	a.logger.Info("starting DNS server", "address", a.config.DNS.ListenAddress)
@@ -161,7 +209,7 @@ func (a *Application) Shutdown(ctx context.Context) error {
 	var shutdownErr error
 
 	// Note: DNS server shutdown is handled by context cancellation in Start()
-	// We just need to stop the health manager here
+	// Metrics server also handles its own shutdown via context cancellation
 
 	// Stop health manager
 	if a.healthManager != nil {
