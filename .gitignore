@@ -1,33 +1,236 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+# =============================================================================
+# OpenGSLB .gitignore
+# =============================================================================
+
+# =============================================================================
+# Go
+# =============================================================================
+
+# Binaries
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+opengslb
 
-# Test binary, built with `go test -c`
+# Test binaries
 *.test
 
-# Code coverage profiles and other test artifacts
+# Output of go coverage
 *.out
-coverage.*
-*.coverprofile
-profile.cov
-
-# Dependency directories (remove the comment below to include it)
-# vendor/
+coverage.out
+coverage.html
 
 # Go workspace file
 go.work
 go.work.sum
 
-# env file
-.env
+# Vendor directory (uncomment if not vendoring)
+# vendor/
 
-# Editor/IDE
-# .idea/
-# .vscode/
-opengslb
+# Go build cache (usually in ~/.cache, but just in case)
+.cache/
+
+# =============================================================================
+# IDE & Editors
+# =============================================================================
+
+# JetBrains IDEs (GoLand, IntelliJ, etc.)
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# Vim
+*.swp
+*.swo
+*.swn
+*~
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# TextMate
+*.tmproj
+*.tmproject
+tmtags
+
+# =============================================================================
+# Operating Systems
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# =============================================================================
+# Build & Distribution
+# =============================================================================
+
+# Build output directory
+/bin/
+/dist/
+/build/
+/release/
+
+# Compiled object files
+*.o
+*.a
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# =============================================================================
+# Docker
+# =============================================================================
+
+# Docker build context exclusions are in .dockerignore
+# But ignore local docker-compose overrides
+docker-compose.override.yml
+docker-compose.local.yml
+
+# =============================================================================
+# Testing
+# =============================================================================
+
+# Test output
+/test/output/
+/test/reports/
+*.test.log
+
+# Integration test artifacts
+/tmp/opengslb-integration-test/
+
+# Benchmark results
+*.bench
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+# Local configuration overrides
+config/local.yaml
+config/*.local.yaml
+*.local.yaml
+
+# Secret files (should never be committed)
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+.secrets
+
+# Environment files
+.env
+.env.local
+.env.*.local
+*.env
+
+# =============================================================================
+# Logs
+# =============================================================================
+
+*.log
+logs/
+/var/log/
+
+# =============================================================================
+# Miscellaneous
+# =============================================================================
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.orig
+
+# Archives
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.rar
+*.7z
+
+# Core dumps
+core
+core.*
+
+# Profiling
+*.prof
+*.pprof
+cpu.out
+mem.out
+block.out
+mutex.out
+trace.out
+
+# Documentation build output
+/docs/_build/
+/site/
+
+# GitHub Copilot
+.copilot/
+
+# direnv
+.envrc
+
+# asdf
+.tool-versions
+
+# Task runner
+.task/
+
+# Air (live reload for Go)
+tmp/
+
+# Delve debugger
+debug
+__debug_bin*

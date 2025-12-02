@@ -9,6 +9,7 @@ type Config struct {
 	Regions []Region      `yaml:"regions"`
 	Domains []Domain      `yaml:"domains"`
 	Logging LoggingConfig `yaml:"logging"`
+	Metrics MetricsConfig `yaml:"metrics"`
 }
 
 // DNSConfig defines the DNS server settings.
@@ -54,4 +55,10 @@ type Domain struct {
 type LoggingConfig struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
+}
+
+// MetricsConfig defines Prometheus metrics settings.
+type MetricsConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Address string `yaml:"address"`
 }
