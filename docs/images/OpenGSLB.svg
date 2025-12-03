@@ -1,0 +1,71 @@
+<svg width="400" height="300" viewBox="0 0 200 150" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .stencil-line {
+        fill: none;
+        stroke: #005696; /* Technical Blue */
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .stencil-fill {
+        fill: #E6F2FF; /* Light Blue Fill */
+        stroke: #005696;
+        stroke-width: 2;
+      }
+      .arrowhead {
+        fill: #005696;
+        stroke: none;
+      }
+      .text-label {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        font-weight: bold;
+        font-size: 16px;
+        fill: #333333;
+        text-anchor: middle;
+      }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrowhead" />
+    </marker>
+  </defs>
+
+  <g transform="translate(100, 70)">
+    
+    <circle r="50" class="stencil-fill" cx="0" cy="0"/>
+    
+    <path d="M-50,0 A50,50 0 0,1 50,0" class="stencil-line" opacity="0.4"/>
+    <path d="M-50,0 A50,50 0 0,0 50,0" class="stencil-line" opacity="0.4"/>
+    <path d="M0,-50 A25,50 0 0,1 0,50" class="stencil-line" opacity="0.4"/>
+    <path d="M0,-50 A25,50 0 0,0 0,50" class="stencil-line" opacity="0.4"/>
+    <line x1="-50" y1="0" x2="50" y2="0" class="stencil-line" opacity="0.4"/>
+    <line x1="0" y1="-50" x2="0" y2="50" class="stencil-line" opacity="0.4"/>
+
+    <line x1="0" y1="-75" x2="0" y2="-15" class="stencil-line" marker-end="url(#arrow)" stroke-width="3"/>
+    
+    <circle r="6" fill="#005696" cx="0" cy="-10"/>
+
+    <path d="M-5,-5 L-35,20" class="stencil-line" marker-end="url(#arrow)"/>
+    <path d="M0,0 L0,35" class="stencil-line" marker-end="url(#arrow)"/>
+    <path d="M5,-5 L35,20" class="stencil-line" marker-end="url(#arrow)"/>
+
+    <g transform="translate(-42, 25)">
+      <rect x="-6" y="0" width="12" height="16" rx="2" class="stencil-fill"/>
+      <line x1="-3" y1="5" x2="3" y2="5" class="stencil-line" stroke-width="1"/>
+      <line x1="-3" y1="10" x2="3" y2="10" class="stencil-line" stroke-width="1"/>
+    </g>
+    <g transform="translate(0, 40)">
+       <rect x="-6" y="0" width="12" height="16" rx="2" class="stencil-fill"/>
+      <line x1="-3" y1="5" x2="3" y2="5" class="stencil-line" stroke-width="1"/>
+      <line x1="-3" y1="10" x2="3" y2="10" class="stencil-line" stroke-width="1"/>
+    </g>
+    <g transform="translate(42, 25)">
+       <rect x="-6" y="0" width="12" height="16" rx="2" class="stencil-fill"/>
+      <line x1="-3" y1="5" x2="3" y2="5" class="stencil-line" stroke-width="1"/>
+      <line x1="-3" y1="10" x2="3" y2="10" class="stencil-line" stroke-width="1"/>
+    </g>
+
+  </g>
+
+  <text x="100" y="145" class="text-label">OpenGSLB</text>
+</svg>
