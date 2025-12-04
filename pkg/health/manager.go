@@ -286,3 +286,98 @@ func (m *Manager) ServerCount() int {
 func serverKey(address string, port int) string {
 	return fmt.Sprintf("%s:%d", address, port)
 }
+
+// Reconfigure updates the health manager with a new set of servers.
+// It compares the new configuration with the current state and:
+//   - Stops health checks for removed servers
+//   - Starts health checks for added servers
+//   - Updates configuration for existing servers (restarts their check loops)
+//
+// Returns the number of servers added, removed, and updated.
+func (m *Manager) Reconfigure(newServers []ServerConfig) (added, removed, updated int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Build map of new servers for quick lookup
+	newServerMap := make(map[string]ServerConfig, len(newServers))
+	for _, cfg := range newServers {
+		// Apply defaults
+		if cfg.Interval == 0 {
+			cfg.Interval = m.config.DefaultInterval
+		}
+		if cfg.Timeout == 0 {
+			cfg.Timeout = m.config.DefaultTimeout
+		}
+		key := serverKey(cfg.Address, cfg.Port)
+		newServerMap[key] = cfg
+	}
+
+	// Find servers to remove (in current but not in new)
+	var toRemove []string
+	for key := range m.servers {
+		if _, exists := newServerMap[key]; !exists {
+			toRemove = append(toRemove, key)
+		}
+	}
+
+	// Remove old servers
+	for _, key := range toRemove {
+		entry := m.servers[key]
+		close(entry.stopCh)
+		delete(m.servers, key)
+		removed++
+	}
+
+	// Add or update servers
+	for key, cfg := range newServerMap {
+		if entry, exists := m.servers[key]; exists {
+			// Server exists - check if config changed
+			if configChanged(entry.config, cfg) {
+				// Stop old check loop
+				close(entry.stopCh)
+
+				// Create new entry with updated config
+				newEntry := &serverEntry{
+					config: cfg,
+					health: entry.health, // Preserve health state
+					stopCh: make(chan struct{}),
+				}
+				m.servers[key] = newEntry
+
+				// Start new check loop if manager is running
+				if m.running {
+					m.wg.Add(1)
+					go m.checkLoop(newEntry)
+				}
+				updated++
+			}
+			// If config hasn't changed, leave it alone
+		} else {
+			// New server - add it
+			entry := &serverEntry{
+				config: cfg,
+				health: NewServerHealth(key, m.config.FailThreshold, m.config.PassThreshold),
+				stopCh: make(chan struct{}),
+			}
+			m.servers[key] = entry
+
+			// Start check loop if manager is running
+			if m.running {
+				m.wg.Add(1)
+				go m.checkLoop(entry)
+			}
+			added++
+		}
+	}
+
+	return added, removed, updated
+}
+
+// configChanged returns true if the server configuration has changed
+// in a way that requires restarting the health check loop.
+func configChanged(old, new ServerConfig) bool {
+	return old.Path != new.Path ||
+		old.Scheme != new.Scheme ||
+		old.Interval != new.Interval ||
+		old.Timeout != new.Timeout
+}

@@ -1,0 +1,57 @@
+# OpenGSLB Failover (Active/Standby) Routing Example
+#
+# This configuration demonstrates failover routing where traffic
+# always goes to the highest-priority healthy server.
+#
+# Server priority is determined by order in the configuration:
+#   1. primary-server (10.0.1.10) - receives all traffic when healthy
+#   2. secondary-server (10.0.1.11) - used only when primary is down
+#   3. tertiary-server (10.0.1.12) - used only when primary AND secondary are down
+#
+# When a higher-priority server recovers, traffic automatically
+# returns to it (return-to-primary behavior).
+
+dns:
+  listen_address: ":53"
+  default_ttl: 60
+
+regions:
+  - name: disaster-recovery
+    servers:
+      # Primary - always used when healthy
+      - address: "10.0.1.10"
+        port: 80
+        weight: 100  # Weight is ignored for failover routing
+
+      # Secondary - first fallback
+      - address: "10.0.1.11"
+        port: 80
+        weight: 100
+
+      # Tertiary - last resort
+      - address: "10.0.1.12"
+        port: 80
+        weight: 100
+
+    health_check:
+      type: http
+      interval: 10s      # Check frequently for fast failover
+      timeout: 3s
+      path: /health
+      failure_threshold: 2  # Fail fast: 2 failures = unhealthy
+      success_threshold: 3  # Recover carefully: 3 successes = healthy
+
+domains:
+  - name: critical-app.example.com
+    routing_algorithm: failover
+    regions:
+      - disaster-recovery
+    ttl: 15  # Short TTL for faster client failover
+
+logging:
+  level: info
+  format: text
+
+metrics:
+  enabled: true
+  address: ":9090"

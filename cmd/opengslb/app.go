@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/loganrossus/OpenGSLB/pkg/config"
@@ -17,7 +18,9 @@ import (
 // Application manages the lifecycle of all OpenGSLB components.
 type Application struct {
 	config        *config.Config
+	configMu      sync.RWMutex // Protects config during reload
 	dnsServer     *dns.Server
+	dnsRegistry   *dns.Registry
 	healthManager *health.Manager
 	metricsServer *metrics.Server
 	router        dns.Router
@@ -49,9 +52,10 @@ func (a *Application) Initialize() error {
 	}
 	metrics.SetConfigMetrics(len(a.config.Domains), serverCount, float64(time.Now().Unix()))
 
-	// Initialize router
-	a.router = routing.NewRoundRobin()
-	a.logger.Info("router initialized", "algorithm", a.router.Algorithm())
+	// Initialize router based on configuration
+	if err := a.initializeRouter(); err != nil {
+		return fmt.Errorf("failed to initialize router: %w", err)
+	}
 
 	// Initialize health manager
 	if err := a.initializeHealthManager(); err != nil {
@@ -68,6 +72,24 @@ func (a *Application) Initialize() error {
 		return fmt.Errorf("failed to initialize metrics server: %w", err)
 	}
 
+	return nil
+}
+
+// initializeRouter creates the router based on configuration.
+func (a *Application) initializeRouter() error {
+	// Use the first domain's algorithm, or default if none configured
+	algorithm := "round-robin"
+	if len(a.config.Domains) > 0 && a.config.Domains[0].RoutingAlgorithm != "" {
+		algorithm = a.config.Domains[0].RoutingAlgorithm
+	}
+
+	router, err := routing.NewRouter(algorithm)
+	if err != nil {
+		return err
+	}
+
+	a.router = router
+	a.logger.Info("router initialized", "algorithm", a.router.Algorithm())
 	return nil
 }
 
@@ -96,11 +118,22 @@ func (a *Application) initializeHealthManager() error {
 	a.healthManager = health.NewManager(checker, mgrCfg)
 
 	// Register all servers from all regions for health checking
+	if err := a.registerHealthCheckServers(); err != nil {
+		return err
+	}
+
+	a.logger.Info("health manager initialized",
+		"servers", a.healthManager.ServerCount(),
+	)
+	return nil
+}
+
+// registerHealthCheckServers registers all configured servers with the health manager.
+func (a *Application) registerHealthCheckServers() error {
 	for _, region := range a.config.Regions {
 		hc := region.HealthCheck
 		for _, server := range region.Servers {
 			// Determine scheme based on health check type
-			// The scheme field is used by CompositeChecker to dispatch to the right checker
 			scheme := hc.Type
 			if scheme == "" {
 				scheme = "http" // Default to HTTP
@@ -128,10 +161,6 @@ func (a *Application) initializeHealthManager() error {
 			)
 		}
 	}
-
-	a.logger.Info("health manager initialized",
-		"servers", a.healthManager.ServerCount(),
-	)
 	return nil
 }
 
@@ -142,6 +171,7 @@ func (a *Application) initializeDNSServer() error {
 	if err != nil {
 		return fmt.Errorf("failed to build DNS registry: %w", err)
 	}
+	a.dnsRegistry = registry
 
 	// Create DNS handler with all dependencies
 	handler := dns.NewHandler(dns.HandlerConfig{
@@ -211,6 +241,147 @@ func (a *Application) Start(ctx context.Context) error {
 	if err := a.dnsServer.Start(ctx); err != nil {
 		return fmt.Errorf("DNS server error: %w", err)
 	}
+
+	return nil
+}
+
+// Reload applies a new configuration without restarting.
+// It updates domains, servers, health checks, and routing algorithm.
+// DNS listen address and metrics port changes require a full restart.
+func (a *Application) Reload(newCfg *config.Config) error {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
+	oldCfg := a.config
+
+	a.logger.Info("reloading configuration",
+		"old_domains", len(oldCfg.Domains),
+		"new_domains", len(newCfg.Domains),
+		"old_regions", len(oldCfg.Regions),
+		"new_regions", len(newCfg.Regions),
+	)
+
+	// Check for changes that require restart
+	if oldCfg.DNS.ListenAddress != newCfg.DNS.ListenAddress {
+		a.logger.Warn("DNS listen address change requires restart",
+			"old", oldCfg.DNS.ListenAddress,
+			"new", newCfg.DNS.ListenAddress,
+		)
+	}
+	if oldCfg.Metrics.Address != newCfg.Metrics.Address {
+		a.logger.Warn("metrics address change requires restart",
+			"old", oldCfg.Metrics.Address,
+			"new", newCfg.Metrics.Address,
+		)
+	}
+
+	// Update router if algorithm changed
+	newAlgorithm := "round-robin"
+	if len(newCfg.Domains) > 0 && newCfg.Domains[0].RoutingAlgorithm != "" {
+		newAlgorithm = newCfg.Domains[0].RoutingAlgorithm
+	}
+	if a.router.Algorithm() != newAlgorithm {
+		newRouter, err := routing.NewRouter(newAlgorithm)
+		if err != nil {
+			metrics.RecordReload(false)
+			return fmt.Errorf("failed to create new router: %w", err)
+		}
+		a.router = newRouter
+		a.logger.Info("router updated", "algorithm", newAlgorithm)
+	}
+
+	// Update DNS registry
+	if err := a.reloadDNSRegistry(newCfg); err != nil {
+		metrics.RecordReload(false)
+		return fmt.Errorf("failed to reload DNS registry: %w", err)
+	}
+
+	// Update health manager
+	if err := a.reloadHealthManager(newCfg); err != nil {
+		metrics.RecordReload(false)
+		return fmt.Errorf("failed to reload health manager: %w", err)
+	}
+
+	// Update config metrics
+	serverCount := 0
+	for _, region := range newCfg.Regions {
+		serverCount += len(region.Servers)
+	}
+	metrics.SetConfigMetrics(len(newCfg.Domains), serverCount, float64(time.Now().Unix()))
+
+	// Store new config
+	a.config = newCfg
+
+	// Record successful reload
+	metrics.RecordReload(true)
+
+	a.logger.Info("configuration reload complete",
+		"domains", len(newCfg.Domains),
+		"servers", serverCount,
+	)
+
+	return nil
+}
+
+// reloadDNSRegistry updates the DNS registry with new domain configuration.
+func (a *Application) reloadDNSRegistry(newCfg *config.Config) error {
+	// Build new registry entries
+	newRegistry, err := dns.BuildRegistry(newCfg)
+	if err != nil {
+		return fmt.Errorf("failed to build new registry: %w", err)
+	}
+
+	// Get all entries from new registry and replace in current registry
+	// This preserves the registry pointer that the handler uses
+	var entries []*dns.DomainEntry
+	for _, name := range newRegistry.Domains() {
+		if entry := newRegistry.Lookup(name); entry != nil {
+			entries = append(entries, entry)
+		}
+	}
+
+	a.dnsRegistry.ReplaceAll(entries)
+
+	a.logger.Debug("DNS registry updated",
+		"domains", a.dnsRegistry.Count(),
+	)
+
+	return nil
+}
+
+// reloadHealthManager updates health checks for the new server configuration.
+func (a *Application) reloadHealthManager(newCfg *config.Config) error {
+	// Build list of new server configs
+	var newServers []health.ServerConfig
+
+	for _, region := range newCfg.Regions {
+		hc := region.HealthCheck
+		for _, server := range region.Servers {
+			scheme := hc.Type
+			if scheme == "" {
+				scheme = "http"
+			}
+
+			newServers = append(newServers, health.ServerConfig{
+				Address:  server.Address,
+				Port:     server.Port,
+				Path:     hc.Path,
+				Scheme:   scheme,
+				Interval: hc.Interval,
+				Timeout:  hc.Timeout,
+			})
+		}
+	}
+
+	// Reconfigure health manager
+	added, removed, updated := a.healthManager.Reconfigure(newServers)
+
+	a.logger.Info("health manager reconfigured",
+		"added", added,
+		"removed", removed,
+		"updated", updated,
+		"total", a.healthManager.ServerCount(),
+	)
 
 	return nil
 }

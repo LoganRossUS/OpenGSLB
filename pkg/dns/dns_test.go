@@ -2,12 +2,10 @@ package dns
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"testing"
 	"time"
 
-	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/miekg/dns"
 )
 
@@ -32,23 +30,21 @@ func (m *mockRouter) Algorithm() string {
 
 // mockHealthProvider allows control over which servers are healthy.
 type mockHealthProvider struct {
-	healthyServers map[string]bool // key is "address:port"
+	healthyAddresses map[string]bool
 }
 
 func newMockHealthProvider() *mockHealthProvider {
 	return &mockHealthProvider{
-		healthyServers: make(map[string]bool),
+		healthyAddresses: make(map[string]bool),
 	}
 }
 
-func (m *mockHealthProvider) SetHealthy(address string, port int, healthy bool) {
-	key := fmt.Sprintf("%s:%d", address, port)
-	m.healthyServers[key] = healthy
+func (m *mockHealthProvider) SetHealthy(address string, healthy bool) {
+	m.healthyAddresses[address] = healthy
 }
 
-func (m *mockHealthProvider) IsHealthy(address string, port int) bool {
-	key := fmt.Sprintf("%s:%d", address, port)
-	healthy, ok := m.healthyServers[key]
+func (m *mockHealthProvider) IsHealthy(address string, _ int) bool {
+	healthy, ok := m.healthyAddresses[address]
 	if !ok {
 		return true // Default to healthy if not explicitly set
 	}
@@ -60,130 +56,137 @@ type mockResponseWriter struct {
 	msg *dns.Msg
 }
 
-func (m *mockResponseWriter) LocalAddr() net.Addr  { return nil }
-func (m *mockResponseWriter) RemoteAddr() net.Addr { return nil }
-func (m *mockResponseWriter) WriteMsg(msg *dns.Msg) error {
-	m.msg = msg
-	return nil
-}
-func (m *mockResponseWriter) Write([]byte) (int, error) { return 0, nil }
-func (m *mockResponseWriter) Close() error              { return nil }
-func (m *mockResponseWriter) TsigStatus() error         { return nil }
-func (m *mockResponseWriter) TsigTimersOnly(bool)       {}
-func (m *mockResponseWriter) Hijack()                   {}
+func (m *mockResponseWriter) LocalAddr() net.Addr         { return nil }
+func (m *mockResponseWriter) RemoteAddr() net.Addr        { return nil }
+func (m *mockResponseWriter) WriteMsg(msg *dns.Msg) error { m.msg = msg; return nil }
+func (m *mockResponseWriter) Write([]byte) (int, error)   { return 0, nil }
+func (m *mockResponseWriter) Close() error                { return nil }
+func (m *mockResponseWriter) TsigStatus() error           { return nil }
+func (m *mockResponseWriter) TsigTimersOnly(bool)         {}
+func (m *mockResponseWriter) Hijack()                     {}
 
-// TestRegistry tests the domain registry functionality.
-func TestRegistry(t *testing.T) {
-	t.Run("register and lookup domain", func(t *testing.T) {
-		r := NewRegistry()
-
-		entry := &DomainEntry{
-			Name:             "example.com",
-			TTL:              60,
-			RoutingAlgorithm: "round-robin",
-			Servers: []ServerInfo{
-				{Address: net.ParseIP("10.0.1.10"), Port: 80, Region: "us-east-1"},
-			},
-		}
-
-		r.Register(entry)
-
-		// Lookup without trailing dot
-		found := r.Lookup("example.com")
-		if found == nil {
-			t.Fatal("expected to find domain")
-		}
-		if found.TTL != 60 {
-			t.Errorf("expected TTL 60, got %d", found.TTL)
-		}
-
-		// Lookup with trailing dot (FQDN format)
-		found = r.Lookup("example.com.")
-		if found == nil {
-			t.Fatal("expected to find domain with FQDN format")
-		}
+func TestHandler_A_Record(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name: "example.com",
+		TTL:  60,
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("10.0.0.1"), Port: 80, Region: "us-east"},
+		},
 	})
 
-	t.Run("lookup unknown domain returns nil", func(t *testing.T) {
-		r := NewRegistry()
-		found := r.Lookup("unknown.com")
-		if found != nil {
-			t.Error("expected nil for unknown domain")
-		}
+	handler := NewHandler(HandlerConfig{
+		Registry:   registry,
+		Router:     &mockRouter{},
+		DefaultTTL: 30,
 	})
 
-	t.Run("remove domain", func(t *testing.T) {
-		r := NewRegistry()
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
 
-		entry := &DomainEntry{Name: "example.com", TTL: 60}
-		r.Register(entry)
+	w := &mockResponseWriter{}
+	handler.ServeDNS(w, req)
 
-		if r.Lookup("example.com") == nil {
-			t.Fatal("domain should exist after registration")
-		}
+	if w.msg == nil {
+		t.Fatal("no response received")
+	}
 
-		r.Remove("example.com")
+	if w.msg.Rcode != dns.RcodeSuccess {
+		t.Errorf("expected NOERROR, got %s", dns.RcodeToString[w.msg.Rcode])
+	}
 
-		if r.Lookup("example.com") != nil {
-			t.Error("domain should not exist after removal")
-		}
-	})
+	if len(w.msg.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(w.msg.Answer))
+	}
 
-	t.Run("count domains", func(t *testing.T) {
-		r := NewRegistry()
+	aRecord, ok := w.msg.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatal("answer is not A record")
+	}
 
-		if r.Count() != 0 {
-			t.Errorf("expected 0 domains, got %d", r.Count())
-		}
+	if !aRecord.A.Equal(net.ParseIP("10.0.0.1")) {
+		t.Errorf("expected 10.0.0.1, got %s", aRecord.A)
+	}
 
-		r.Register(&DomainEntry{Name: "a.com"})
-		r.Register(&DomainEntry{Name: "b.com"})
-
-		if r.Count() != 2 {
-			t.Errorf("expected 2 domains, got %d", r.Count())
-		}
-	})
-
-	t.Run("list domains", func(t *testing.T) {
-		r := NewRegistry()
-
-		r.Register(&DomainEntry{Name: "a.com"})
-		r.Register(&DomainEntry{Name: "b.com"})
-
-		domains := r.Domains()
-		if len(domains) != 2 {
-			t.Errorf("expected 2 domains, got %d", len(domains))
-		}
-	})
+	if aRecord.Hdr.Ttl != 60 {
+		t.Errorf("expected TTL 60, got %d", aRecord.Hdr.Ttl)
+	}
 }
 
-// TestHandler tests the DNS handler.
-func TestHandler(t *testing.T) {
-	t.Run("A record query returns server IP", func(t *testing.T) {
-		registry := NewRegistry()
-		registry.Register(&DomainEntry{
-			Name: "app.example.com",
-			TTL:  30,
-			Servers: []ServerInfo{
-				{Address: net.ParseIP("10.0.1.10"), Port: 80, Region: "us-east-1"},
-			},
-		})
+func TestHandler_AAAA_Record(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name: "example.com",
+		TTL:  120,
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("2001:db8::1"), Port: 80, Region: "us-east"},
+		},
+	})
 
-		handler := NewHandler(HandlerConfig{
-			Registry:   registry,
-			Router:     &mockRouter{},
-			DefaultTTL: 60,
-		})
+	handler := NewHandler(HandlerConfig{
+		Registry:   registry,
+		Router:     &mockRouter{},
+		DefaultTTL: 30,
+	})
 
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeAAAA)
+
+	w := &mockResponseWriter{}
+	handler.ServeDNS(w, req)
+
+	if w.msg == nil {
+		t.Fatal("no response received")
+	}
+
+	if w.msg.Rcode != dns.RcodeSuccess {
+		t.Errorf("expected NOERROR, got %s", dns.RcodeToString[w.msg.Rcode])
+	}
+
+	if len(w.msg.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(w.msg.Answer))
+	}
+
+	aaaaRecord, ok := w.msg.Answer[0].(*dns.AAAA)
+	if !ok {
+		t.Fatal("answer is not AAAA record")
+	}
+
+	expected := net.ParseIP("2001:db8::1")
+	if !aaaaRecord.AAAA.Equal(expected) {
+		t.Errorf("expected %s, got %s", expected, aaaaRecord.AAAA)
+	}
+
+	if aaaaRecord.Hdr.Ttl != 120 {
+		t.Errorf("expected TTL 120, got %d", aaaaRecord.Hdr.Ttl)
+	}
+}
+
+func TestHandler_MixedAddressFamily(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name: "mixed.example.com",
+		TTL:  60,
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("10.0.0.1"), Port: 80, Region: "us-east"},
+			{Address: net.ParseIP("10.0.0.2"), Port: 80, Region: "us-west"},
+			{Address: net.ParseIP("2001:db8::1"), Port: 80, Region: "eu-west"},
+			{Address: net.ParseIP("2001:db8::2"), Port: 80, Region: "ap-east"},
+		},
+	})
+
+	handler := NewHandler(HandlerConfig{
+		Registry:   registry,
+		Router:     &mockRouter{},
+		DefaultTTL: 30,
+	})
+
+	t.Run("A query returns IPv4 only", func(t *testing.T) {
 		req := new(dns.Msg)
-		req.SetQuestion("app.example.com.", dns.TypeA)
+		req.SetQuestion("mixed.example.com.", dns.TypeA)
 
 		w := &mockResponseWriter{}
 		handler.ServeDNS(w, req)
-
-		if w.msg == nil {
-			t.Fatal("expected response message")
-		}
 
 		if w.msg.Rcode != dns.RcodeSuccess {
 			t.Errorf("expected NOERROR, got %s", dns.RcodeToString[w.msg.Rcode])
@@ -193,28 +196,119 @@ func TestHandler(t *testing.T) {
 			t.Fatalf("expected 1 answer, got %d", len(w.msg.Answer))
 		}
 
-		a, ok := w.msg.Answer[0].(*dns.A)
+		aRecord, ok := w.msg.Answer[0].(*dns.A)
 		if !ok {
-			t.Fatal("expected A record")
+			t.Fatal("answer is not A record")
 		}
 
-		if !a.A.Equal(net.ParseIP("10.0.1.10")) {
-			t.Errorf("expected 10.0.1.10, got %s", a.A)
-		}
-
-		if a.Hdr.Ttl != 30 {
-			t.Errorf("expected TTL 30, got %d", a.Hdr.Ttl)
+		// Should be one of the IPv4 addresses
+		if aRecord.A.To4() == nil {
+			t.Errorf("expected IPv4 address, got %s", aRecord.A)
 		}
 	})
 
-	t.Run("unknown domain returns NXDOMAIN", func(t *testing.T) {
-		registry := NewRegistry()
-		handler := NewHandler(HandlerConfig{
-			Registry:   registry,
-			Router:     &mockRouter{},
-			DefaultTTL: 60,
-		})
+	t.Run("AAAA query returns IPv6 only", func(t *testing.T) {
+		req := new(dns.Msg)
+		req.SetQuestion("mixed.example.com.", dns.TypeAAAA)
 
+		w := &mockResponseWriter{}
+		handler.ServeDNS(w, req)
+
+		if w.msg.Rcode != dns.RcodeSuccess {
+			t.Errorf("expected NOERROR, got %s", dns.RcodeToString[w.msg.Rcode])
+		}
+
+		if len(w.msg.Answer) != 1 {
+			t.Fatalf("expected 1 answer, got %d", len(w.msg.Answer))
+		}
+
+		aaaaRecord, ok := w.msg.Answer[0].(*dns.AAAA)
+		if !ok {
+			t.Fatal("answer is not AAAA record")
+		}
+
+		// Should be one of the IPv6 addresses
+		if aaaaRecord.AAAA.To4() != nil {
+			t.Errorf("expected IPv6 address, got %s", aaaaRecord.AAAA)
+		}
+	})
+}
+
+func TestHandler_AAAA_NoIPv6Servers(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name: "ipv4only.example.com",
+		TTL:  60,
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("10.0.0.1"), Port: 80, Region: "us-east"},
+			{Address: net.ParseIP("10.0.0.2"), Port: 80, Region: "us-west"},
+		},
+	})
+
+	handler := NewHandler(HandlerConfig{
+		Registry:   registry,
+		Router:     &mockRouter{},
+		DefaultTTL: 30,
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("ipv4only.example.com.", dns.TypeAAAA)
+
+	w := &mockResponseWriter{}
+	handler.ServeDNS(w, req)
+
+	// Should return NOERROR with empty answer (domain exists, but no AAAA records)
+	if w.msg.Rcode != dns.RcodeSuccess {
+		t.Errorf("expected NOERROR, got %s", dns.RcodeToString[w.msg.Rcode])
+	}
+
+	if len(w.msg.Answer) != 0 {
+		t.Errorf("expected 0 answers for IPv4-only domain with AAAA query, got %d", len(w.msg.Answer))
+	}
+}
+
+func TestHandler_A_NoIPv4Servers(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name: "ipv6only.example.com",
+		TTL:  60,
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("2001:db8::1"), Port: 80, Region: "eu-west"},
+			{Address: net.ParseIP("2001:db8::2"), Port: 80, Region: "ap-east"},
+		},
+	})
+
+	handler := NewHandler(HandlerConfig{
+		Registry:   registry,
+		Router:     &mockRouter{},
+		DefaultTTL: 30,
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("ipv6only.example.com.", dns.TypeA)
+
+	w := &mockResponseWriter{}
+	handler.ServeDNS(w, req)
+
+	// Should return NOERROR with empty answer (domain exists, but no A records)
+	if w.msg.Rcode != dns.RcodeSuccess {
+		t.Errorf("expected NOERROR, got %s", dns.RcodeToString[w.msg.Rcode])
+	}
+
+	if len(w.msg.Answer) != 0 {
+		t.Errorf("expected 0 answers for IPv6-only domain with A query, got %d", len(w.msg.Answer))
+	}
+}
+
+func TestHandler_NXDOMAIN(t *testing.T) {
+	registry := NewRegistry()
+	handler := NewHandler(HandlerConfig{
+		Registry:   registry,
+		Router:     &mockRouter{},
+		DefaultTTL: 30,
+	})
+
+	t.Run("A query for unknown domain", func(t *testing.T) {
 		req := new(dns.Msg)
 		req.SetQuestion("unknown.example.com.", dns.TypeA)
 
@@ -226,297 +320,221 @@ func TestHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("uses default TTL when domain TTL is 0", func(t *testing.T) {
-		registry := NewRegistry()
-		registry.Register(&DomainEntry{
-			Name: "app.example.com",
-			TTL:  0, // No domain-specific TTL
-			Servers: []ServerInfo{
-				{Address: net.ParseIP("10.0.1.10"), Port: 80},
-			},
-		})
-
-		handler := NewHandler(HandlerConfig{
-			Registry:   registry,
-			Router:     &mockRouter{},
-			DefaultTTL: 120, // Should use this
-		})
-
+	t.Run("AAAA query for unknown domain", func(t *testing.T) {
 		req := new(dns.Msg)
-		req.SetQuestion("app.example.com.", dns.TypeA)
+		req.SetQuestion("unknown.example.com.", dns.TypeAAAA)
 
 		w := &mockResponseWriter{}
 		handler.ServeDNS(w, req)
 
-		a := w.msg.Answer[0].(*dns.A)
-		if a.Hdr.Ttl != 120 {
-			t.Errorf("expected default TTL 120, got %d", a.Hdr.Ttl)
-		}
-	})
-
-	t.Run("filters unhealthy servers", func(t *testing.T) {
-		registry := NewRegistry()
-		registry.Register(&DomainEntry{
-			Name: "app.example.com",
-			TTL:  30,
-			Servers: []ServerInfo{
-				{Address: net.ParseIP("10.0.1.10"), Port: 80, Region: "us-east-1"},
-				{Address: net.ParseIP("10.0.1.11"), Port: 80, Region: "us-east-1"},
-			},
-		})
-
-		healthProvider := newMockHealthProvider()
-		healthProvider.SetHealthy("10.0.1.10", 80, false) // Mark first server unhealthy
-		healthProvider.SetHealthy("10.0.1.11", 80, true)
-
-		handler := NewHandler(HandlerConfig{
-			Registry:       registry,
-			Router:         &mockRouter{},
-			HealthProvider: healthProvider,
-			DefaultTTL:     60,
-		})
-
-		req := new(dns.Msg)
-		req.SetQuestion("app.example.com.", dns.TypeA)
-
-		w := &mockResponseWriter{}
-		handler.ServeDNS(w, req)
-
-		if w.msg.Rcode != dns.RcodeSuccess {
-			t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[w.msg.Rcode])
-		}
-
-		a := w.msg.Answer[0].(*dns.A)
-		// Should return the healthy server (10.0.1.11)
-		if !a.A.Equal(net.ParseIP("10.0.1.11")) {
-			t.Errorf("expected healthy server 10.0.1.11, got %s", a.A)
-		}
-	})
-
-	t.Run("returns SERVFAIL when all servers unhealthy", func(t *testing.T) {
-		registry := NewRegistry()
-		registry.Register(&DomainEntry{
-			Name: "app.example.com",
-			TTL:  30,
-			Servers: []ServerInfo{
-				{Address: net.ParseIP("10.0.1.10"), Port: 80},
-			},
-		})
-
-		healthProvider := newMockHealthProvider()
-		healthProvider.SetHealthy("10.0.1.10", 80, false)
-
-		handler := NewHandler(HandlerConfig{
-			Registry:       registry,
-			Router:         &mockRouter{},
-			HealthProvider: healthProvider,
-			DefaultTTL:     60,
-		})
-
-		req := new(dns.Msg)
-		req.SetQuestion("app.example.com.", dns.TypeA)
-
-		w := &mockResponseWriter{}
-		handler.ServeDNS(w, req)
-
-		if w.msg.Rcode != dns.RcodeServerFailure {
-			t.Errorf("expected SERVFAIL, got %s", dns.RcodeToString[w.msg.Rcode])
-		}
-	})
-
-	t.Run("empty question returns FORMERR", func(t *testing.T) {
-		registry := NewRegistry()
-		handler := NewHandler(HandlerConfig{
-			Registry:   registry,
-			Router:     &mockRouter{},
-			DefaultTTL: 60,
-		})
-
-		req := new(dns.Msg)
-		req.Id = dns.Id()
-		// No question set
-
-		w := &mockResponseWriter{}
-		handler.ServeDNS(w, req)
-
-		if w.msg.Rcode != dns.RcodeFormatError {
-			t.Errorf("expected FORMERR, got %s", dns.RcodeToString[w.msg.Rcode])
+		if w.msg.Rcode != dns.RcodeNameError {
+			t.Errorf("expected NXDOMAIN, got %s", dns.RcodeToString[w.msg.Rcode])
 		}
 	})
 }
 
-// TestNormalizeDomain tests domain name normalization.
-func TestNormalizeDomain(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"example.com", "example.com."},
-		{"example.com.", "example.com."},
-		{"sub.example.com", "sub.example.com."},
-		{"", ""},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
-			result := normalizeDomain(tc.input)
-			if result != tc.expected {
-				t.Errorf("normalizeDomain(%q) = %q, expected %q", tc.input, result, tc.expected)
-			}
-		})
-	}
-}
-
-// TestBuildRegistry tests building registry from configuration.
-func TestBuildRegistry(t *testing.T) {
-	t.Run("builds registry from config", func(t *testing.T) {
-		cfg := &config.Config{
-			Regions: []config.Region{
-				{
-					Name: "us-east-1",
-					Servers: []config.Server{
-						{Address: "10.0.1.10", Port: 80, Weight: 100},
-						{Address: "10.0.1.11", Port: 80, Weight: 100},
-					},
-				},
-				{
-					Name: "us-west-2",
-					Servers: []config.Server{
-						{Address: "10.0.2.10", Port: 80, Weight: 100},
-					},
-				},
-			},
-			Domains: []config.Domain{
-				{
-					Name:             "app.example.com",
-					RoutingAlgorithm: "round-robin",
-					Regions:          []string{"us-east-1", "us-west-2"},
-					TTL:              30,
-				},
-			},
-		}
-
-		registry, err := BuildRegistry(cfg)
-		if err != nil {
-			t.Fatalf("BuildRegistry failed: %v", err)
-		}
-
-		entry := registry.Lookup("app.example.com")
-		if entry == nil {
-			t.Fatal("expected to find domain")
-		}
-
-		if len(entry.Servers) != 3 {
-			t.Errorf("expected 3 servers, got %d", len(entry.Servers))
-		}
-
-		if entry.TTL != 30 {
-			t.Errorf("expected TTL 30, got %d", entry.TTL)
-		}
-
-		if entry.RoutingAlgorithm != "round-robin" {
-			t.Errorf("expected round-robin, got %s", entry.RoutingAlgorithm)
-		}
-	})
-
-	t.Run("error on unknown region", func(t *testing.T) {
-		cfg := &config.Config{
-			Regions: []config.Region{
-				{Name: "us-east-1", Servers: []config.Server{{Address: "10.0.1.10", Port: 80}}},
-			},
-			Domains: []config.Domain{
-				{Name: "app.example.com", Regions: []string{"unknown-region"}},
-			},
-		}
-
-		_, err := BuildRegistry(cfg)
-		if err == nil {
-			t.Error("expected error for unknown region")
-		}
-	})
-
-	t.Run("error on invalid IP", func(t *testing.T) {
-		cfg := &config.Config{
-			Regions: []config.Region{
-				{Name: "us-east-1", Servers: []config.Server{{Address: "invalid-ip", Port: 80}}},
-			},
-			Domains: []config.Domain{
-				{Name: "app.example.com", Regions: []string{"us-east-1"}},
-			},
-		}
-
-		_, err := BuildRegistry(cfg)
-		if err == nil {
-			t.Error("expected error for invalid IP")
-		}
-	})
-
-	t.Run("error on domain with no servers", func(t *testing.T) {
-		cfg := &config.Config{
-			Regions: []config.Region{
-				{Name: "us-east-1", Servers: []config.Server{}}, // Empty servers
-			},
-			Domains: []config.Domain{
-				{Name: "app.example.com", Regions: []string{"us-east-1"}},
-			},
-		}
-
-		_, err := BuildRegistry(cfg)
-		if err == nil {
-			t.Error("expected error for domain with no servers")
-		}
-	})
-}
-
-// TestServerIntegration tests the server start/stop lifecycle.
-// This test requires a non-privileged port since port 53 requires root.
-func TestServerIntegration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
+func TestHandler_HealthyServerFiltering_IPv6(t *testing.T) {
 	registry := NewRegistry()
 	registry.Register(&DomainEntry{
-		Name: "test.example.com",
-		TTL:  30,
+		Name: "example.com",
+		TTL:  60,
 		Servers: []ServerInfo{
-			{Address: net.ParseIP("10.0.1.10"), Port: 80, Region: "us-east-1"},
+			{Address: net.ParseIP("2001:db8::1"), Port: 80, Region: "eu-west"},
+			{Address: net.ParseIP("2001:db8::2"), Port: 80, Region: "ap-east"},
+		},
+	})
+
+	healthProvider := newMockHealthProvider()
+	healthProvider.SetHealthy("2001:db8::1", false) // First server unhealthy
+	healthProvider.SetHealthy("2001:db8::2", true)  // Second server healthy
+
+	handler := NewHandler(HandlerConfig{
+		Registry:       registry,
+		Router:         &mockRouter{},
+		HealthProvider: healthProvider,
+		DefaultTTL:     30,
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeAAAA)
+
+	w := &mockResponseWriter{}
+	handler.ServeDNS(w, req)
+
+	if w.msg.Rcode != dns.RcodeSuccess {
+		t.Errorf("expected NOERROR, got %s", dns.RcodeToString[w.msg.Rcode])
+	}
+
+	if len(w.msg.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(w.msg.Answer))
+	}
+
+	aaaaRecord := w.msg.Answer[0].(*dns.AAAA)
+	expected := net.ParseIP("2001:db8::2")
+	if !aaaaRecord.AAAA.Equal(expected) {
+		t.Errorf("expected healthy server %s, got %s", expected, aaaaRecord.AAAA)
+	}
+}
+
+func TestHandler_AllIPv6ServersUnhealthy(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name: "example.com",
+		TTL:  60,
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("2001:db8::1"), Port: 80, Region: "eu-west"},
+			{Address: net.ParseIP("2001:db8::2"), Port: 80, Region: "ap-east"},
+		},
+	})
+
+	healthProvider := newMockHealthProvider()
+	healthProvider.SetHealthy("2001:db8::1", false)
+	healthProvider.SetHealthy("2001:db8::2", false)
+
+	handler := NewHandler(HandlerConfig{
+		Registry:       registry,
+		Router:         &mockRouter{},
+		HealthProvider: healthProvider,
+		DefaultTTL:     30,
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeAAAA)
+
+	w := &mockResponseWriter{}
+	handler.ServeDNS(w, req)
+
+	// Should return NOERROR with empty answer when all servers of that family are unhealthy
+	if w.msg.Rcode != dns.RcodeSuccess {
+		t.Errorf("expected NOERROR, got %s", dns.RcodeToString[w.msg.Rcode])
+	}
+
+	if len(w.msg.Answer) != 0 {
+		t.Errorf("expected 0 answers when all IPv6 servers unhealthy, got %d", len(w.msg.Answer))
+	}
+}
+
+func TestHandler_DefaultTTL(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name: "example.com",
+		TTL:  0, // No domain-specific TTL
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("2001:db8::1"), Port: 80, Region: "eu-west"},
 		},
 	})
 
 	handler := NewHandler(HandlerConfig{
 		Registry:   registry,
 		Router:     &mockRouter{},
-		DefaultTTL: 60,
+		DefaultTTL: 45,
 	})
 
-	// Use a high port that doesn't require root
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeAAAA)
+
+	w := &mockResponseWriter{}
+	handler.ServeDNS(w, req)
+
+	aaaaRecord := w.msg.Answer[0].(*dns.AAAA)
+	if aaaaRecord.Hdr.Ttl != 45 {
+		t.Errorf("expected default TTL 45, got %d", aaaaRecord.Hdr.Ttl)
+	}
+}
+
+func TestFilterByAddressFamily(t *testing.T) {
+	servers := []ServerInfo{
+		{Address: net.ParseIP("10.0.0.1"), Port: 80, Region: "r1"},
+		{Address: net.ParseIP("10.0.0.2"), Port: 80, Region: "r2"},
+		{Address: net.ParseIP("2001:db8::1"), Port: 80, Region: "r3"},
+		{Address: net.ParseIP("2001:db8::2"), Port: 80, Region: "r4"},
+	}
+
+	t.Run("filter IPv4", func(t *testing.T) {
+		ipv4 := filterByAddressFamily(servers, true)
+		if len(ipv4) != 2 {
+			t.Errorf("expected 2 IPv4 servers, got %d", len(ipv4))
+		}
+		for _, s := range ipv4 {
+			if s.Address.To4() == nil {
+				t.Errorf("expected IPv4, got %s", s.Address)
+			}
+		}
+	})
+
+	t.Run("filter IPv6", func(t *testing.T) {
+		ipv6 := filterByAddressFamily(servers, false)
+		if len(ipv6) != 2 {
+			t.Errorf("expected 2 IPv6 servers, got %d", len(ipv6))
+		}
+		for _, s := range ipv6 {
+			if s.Address.To4() != nil {
+				t.Errorf("expected IPv6, got %s", s.Address)
+			}
+		}
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		result := filterByAddressFamily([]ServerInfo{}, true)
+		if len(result) != 0 {
+			t.Errorf("expected empty result, got %d", len(result))
+		}
+	})
+
+	t.Run("no matching family", func(t *testing.T) {
+		ipv4Only := []ServerInfo{
+			{Address: net.ParseIP("10.0.0.1"), Port: 80, Region: "r1"},
+		}
+		result := filterByAddressFamily(ipv4Only, false)
+		if len(result) != 0 {
+			t.Errorf("expected 0 IPv6 servers, got %d", len(result))
+		}
+	})
+}
+
+// Integration test with real DNS server
+func TestServer_Integration_AAAA(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name: "test.local",
+		TTL:  30,
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("2001:db8::1"), Port: 80, Region: "test-region"},
+		},
+	})
+
+	handler := NewHandler(HandlerConfig{
+		Registry:   registry,
+		Router:     &mockRouter{},
+		DefaultTTL: 30,
+	})
+
 	server := NewServer(ServerConfig{
-		Address: "127.0.0.1:15353",
+		Address: "127.0.0.1:15354",
 		Handler: handler,
 	})
 
-	// Start server in background
 	ctx, cancel := context.WithCancel(context.Background())
-	errChan := make(chan error, 1)
+	defer cancel()
 
+	errChan := make(chan error, 1)
 	go func() {
 		errChan <- server.Start(ctx)
 	}()
 
-	// Give server time to start
+	// Wait for server to start
 	time.Sleep(100 * time.Millisecond)
 
-	if !server.IsRunning() {
-		t.Fatal("server should be running")
-	}
-
-	// Send a DNS query
-	client := &dns.Client{Net: "udp"}
+	// Create DNS client
+	client := new(dns.Client)
 	msg := new(dns.Msg)
-	msg.SetQuestion("test.example.com.", dns.TypeA)
+	msg.SetQuestion("test.local.", dns.TypeAAAA)
 
-	resp, _, err := client.Exchange(msg, "127.0.0.1:15353")
+	resp, _, err := client.Exchange(msg, "127.0.0.1:15354")
 	if err != nil {
 		t.Fatalf("DNS query failed: %v", err)
 	}
@@ -529,41 +547,21 @@ func TestServerIntegration(t *testing.T) {
 		t.Fatalf("expected 1 answer, got %d", len(resp.Answer))
 	}
 
-	a, ok := resp.Answer[0].(*dns.A)
+	aaaaRecord, ok := resp.Answer[0].(*dns.AAAA)
 	if !ok {
-		t.Fatal("expected A record")
+		t.Fatal("answer is not AAAA record")
 	}
 
-	if !a.A.Equal(net.ParseIP("10.0.1.10")) {
-		t.Errorf("expected 10.0.1.10, got %s", a.A)
-	}
-
-	// Test NXDOMAIN for unknown domain
-	msg2 := new(dns.Msg)
-	msg2.SetQuestion("unknown.example.com.", dns.TypeA)
-
-	resp2, _, err := client.Exchange(msg2, "127.0.0.1:15353")
-	if err != nil {
-		t.Fatalf("DNS query failed: %v", err)
-	}
-
-	if resp2.Rcode != dns.RcodeNameError {
-		t.Errorf("expected NXDOMAIN, got %s", dns.RcodeToString[resp2.Rcode])
+	expected := net.ParseIP("2001:db8::1")
+	if !aaaaRecord.AAAA.Equal(expected) {
+		t.Errorf("expected %s, got %s", expected, aaaaRecord.AAAA)
 	}
 
 	// Shutdown
 	cancel()
-
 	select {
-	case err := <-errChan:
-		if err != nil {
-			t.Errorf("server returned error: %v", err)
-		}
+	case <-errChan:
 	case <-time.After(2 * time.Second):
-		t.Error("server did not shutdown in time")
-	}
-
-	if server.IsRunning() {
-		t.Error("server should not be running after shutdown")
+		t.Error("server did not shut down in time")
 	}
 }

@@ -82,8 +82,10 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	switch q.Qtype {
 	case dns.TypeA:
 		h.handleA(msg, q)
+	case dns.TypeAAAA:
+		h.handleAAAA(msg, q)
 	default:
-		// We only handle A records for now
+		// We only handle A and AAAA records
 		// Return empty response with NOERROR for other types
 		h.logger.Debug("unsupported query type",
 			"name", q.Name,
@@ -99,9 +101,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 }
 
-// Note: Error from WriteMsg is already logged above, no further action needed
-
-// handleA processes A record queries.
+// handleA processes A record queries (IPv4).
 func (h *Handler) handleA(msg *dns.Msg, q dns.Question) {
 	entry := h.registry.Lookup(q.Name)
 	if entry == nil {
@@ -110,20 +110,24 @@ func (h *Handler) handleA(msg *dns.Msg, q dns.Question) {
 		return
 	}
 
-	// Filter to healthy servers only
+	// Filter to healthy IPv4 servers only
 	healthyServers := h.filterHealthyServers(entry.Servers)
-	if len(healthyServers) == 0 {
-		h.logger.Warn("no healthy servers available",
+	ipv4Servers := filterByAddressFamily(healthyServers, true)
+
+	if len(ipv4Servers) == 0 {
+		h.logger.Debug("no healthy IPv4 servers available",
 			"domain", entry.Name,
 			"total_servers", len(entry.Servers),
+			"healthy_servers", len(healthyServers),
 		)
-		msg.Rcode = dns.RcodeServerFailure // SERVFAIL
+		// Return empty answer (NOERROR with no records) - domain exists but no IPv4
+		// This is correct behavior per RFC when the domain exists but has no records of requested type
 		return
 	}
 
 	// Use router to select a server
 	ctx := context.Background()
-	server, err := h.router.Route(ctx, entry.Name, healthyServers)
+	server, err := h.router.Route(ctx, entry.Name, ipv4Servers)
 	if err != nil {
 		h.logger.Error("routing failed",
 			"domain", entry.Name,
@@ -154,6 +158,70 @@ func (h *Handler) handleA(msg *dns.Msg, q dns.Question) {
 
 	h.logger.Debug("routing decision",
 		"domain", entry.Name,
+		"type", "A",
+		"selected_server", server.Address.String(),
+		"region", server.Region,
+		"ttl", ttl,
+	)
+}
+
+// handleAAAA processes AAAA record queries (IPv6).
+func (h *Handler) handleAAAA(msg *dns.Msg, q dns.Question) {
+	entry := h.registry.Lookup(q.Name)
+	if entry == nil {
+		h.logger.Debug("domain not found", "name", q.Name)
+		msg.Rcode = dns.RcodeNameError // NXDOMAIN
+		return
+	}
+
+	// Filter to healthy IPv6 servers only
+	healthyServers := h.filterHealthyServers(entry.Servers)
+	ipv6Servers := filterByAddressFamily(healthyServers, false)
+
+	if len(ipv6Servers) == 0 {
+		h.logger.Debug("no healthy IPv6 servers available",
+			"domain", entry.Name,
+			"total_servers", len(entry.Servers),
+			"healthy_servers", len(healthyServers),
+		)
+		// Return empty answer (NOERROR with no records) - domain exists but no IPv6
+		return
+	}
+
+	// Use router to select a server
+	ctx := context.Background()
+	server, err := h.router.Route(ctx, entry.Name, ipv6Servers)
+	if err != nil {
+		h.logger.Error("routing failed",
+			"domain", entry.Name,
+			"error", err,
+		)
+		msg.Rcode = dns.RcodeServerFailure
+		return
+	}
+
+	// Determine TTL - use domain-specific TTL if set, otherwise default
+	ttl := entry.TTL
+	if ttl == 0 {
+		ttl = h.defaultTTL
+	}
+
+	// Build AAAA record response
+	rr := &dns.AAAA{
+		Hdr: dns.RR_Header{
+			Name:   q.Name,
+			Rrtype: dns.TypeAAAA,
+			Class:  dns.ClassINET,
+			Ttl:    ttl,
+		},
+		AAAA: server.Address,
+	}
+
+	msg.Answer = append(msg.Answer, rr)
+
+	h.logger.Debug("routing decision",
+		"domain", entry.Name,
+		"type", "AAAA",
 		"selected_server", server.Address.String(),
 		"region", server.Region,
 		"ttl", ttl,
@@ -174,4 +242,19 @@ func (h *Handler) filterHealthyServers(servers []ServerInfo) []ServerInfo {
 		}
 	}
 	return healthy
+}
+
+// filterByAddressFamily filters servers by IP address family.
+// If ipv4 is true, returns only IPv4 addresses; otherwise returns only IPv6.
+func filterByAddressFamily(servers []ServerInfo, ipv4 bool) []ServerInfo {
+	filtered := make([]ServerInfo, 0, len(servers))
+	for _, s := range servers {
+		isIPv4 := s.Address.To4() != nil
+		if ipv4 && isIPv4 {
+			filtered = append(filtered, s)
+		} else if !ipv4 && !isIPv4 {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
 }

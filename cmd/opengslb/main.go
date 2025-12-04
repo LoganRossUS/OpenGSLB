@@ -25,9 +25,12 @@ const (
 	MaxInsecureFileMode fs.FileMode = 0o004
 )
 
+// configPath is stored at package level so reload handler can access it.
+var configPath string
+
 func main() {
 	// Parse command-line flags
-	configPath := flag.String("config", DefaultConfigPath, "path to configuration file")
+	flag.StringVar(&configPath, "config", DefaultConfigPath, "path to configuration file")
 	showVersion := flag.Bool("version", false, "show version information")
 	flag.Parse()
 
@@ -44,17 +47,17 @@ func main() {
 
 	bootstrapLogger.Info("OpenGSLB starting",
 		"version", version.Version,
-		"config", *configPath,
+		"config", configPath,
 	)
 
 	// Check config file permissions before loading
-	if err := checkConfigPermissions(*configPath, bootstrapLogger); err != nil {
+	if err := checkConfigPermissions(configPath, bootstrapLogger); err != nil {
 		bootstrapLogger.Error("configuration file security check failed", "error", err)
 		os.Exit(1)
 	}
 
 	// Load configuration to get logging settings
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		bootstrapLogger.Error("failed to load configuration", "error", err)
 		os.Exit(1)
@@ -90,9 +93,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle shutdown signals
+	// Handle shutdown signals (SIGINT, SIGTERM) and reload signal (SIGHUP)
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	// Start application in background
 	errChan := make(chan error, 1)
@@ -100,18 +103,35 @@ func main() {
 		errChan <- app.Start(ctx)
 	}()
 
-	logger.Info("OpenGSLB running, press Ctrl+C to stop")
+	logger.Info("OpenGSLB running",
+		"pid", os.Getpid(),
+		"reload", "send SIGHUP to reload configuration",
+	)
 
-	// Wait for shutdown signal or error
-	select {
-	case sig := <-sigChan:
-		logger.Info("received shutdown signal", "signal", sig)
-	case err := <-errChan:
-		if err != nil {
-			logger.Error("application error", "error", err)
+	// Main event loop
+	for {
+		select {
+		case sig := <-sigChan:
+			switch sig {
+			case syscall.SIGHUP:
+				logger.Info("received SIGHUP, reloading configuration")
+				if err := handleReload(app, logger); err != nil {
+					logger.Error("configuration reload failed", "error", err)
+					// Continue running with old configuration
+				}
+			case syscall.SIGINT, syscall.SIGTERM:
+				logger.Info("received shutdown signal", "signal", sig)
+				goto shutdown
+			}
+		case err := <-errChan:
+			if err != nil {
+				logger.Error("application error", "error", err)
+			}
+			goto shutdown
 		}
 	}
 
+shutdown:
 	// Graceful shutdown with timeout
 	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -123,6 +143,28 @@ func main() {
 	}
 
 	logger.Info("OpenGSLB stopped")
+}
+
+// handleReload loads and applies a new configuration.
+func handleReload(app *Application, logger *slog.Logger) error {
+	// Check file permissions first
+	if err := checkConfigPermissions(configPath, logger); err != nil {
+		return fmt.Errorf("config file security check failed: %w", err)
+	}
+
+	// Load and validate new configuration
+	newCfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to load configuration: %w", err)
+	}
+
+	// Apply the new configuration
+	if err := app.Reload(newCfg); err != nil {
+		return fmt.Errorf("failed to apply configuration: %w", err)
+	}
+
+	logger.Info("configuration reloaded successfully")
+	return nil
 }
 
 // checkConfigPermissions verifies the config file has secure permissions.
@@ -144,5 +186,6 @@ func checkConfigPermissions(configPath string, logger *slog.Logger) error {
 	if logger != nil {
 		logger.Debug("config file permissions verified", "path", configPath, "mode", fmt.Sprintf("%04o", mode))
 	}
+
 	return nil
 }
