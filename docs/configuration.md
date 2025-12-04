@@ -718,3 +718,121 @@ domains:
 ```
 
 After reload, traffic distribution will change to respect server weights.
+
+## IPv6 Support
+
+OpenGSLB supports both IPv4 and IPv6 addresses for backend servers. The DNS server automatically handles A (IPv4) and AAAA (IPv6) queries, returning only addresses of the appropriate family.
+
+### Configuration
+
+Simply configure servers with IPv6 addresses:
+
+```yaml
+regions:
+  - name: us-east
+    servers:
+      - address: "10.0.1.10"      # IPv4
+        port: 80
+        weight: 100
+      - address: "10.0.1.11"      # IPv4
+        port: 80
+        weight: 100
+      - address: "2001:db8::1"    # IPv6
+        port: 80
+        weight: 100
+      - address: "2001:db8::2"    # IPv6
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+```
+
+### Query Behavior
+
+| Query Type | Servers Considered | Response |
+|------------|-------------------|----------|
+| A (IPv4) | Only IPv4 servers | A record with IPv4 address |
+| AAAA (IPv6) | Only IPv6 servers | AAAA record with IPv6 address |
+
+### Mixed Environments
+
+In environments with both IPv4 and IPv6 servers:
+
+- **A queries** return only IPv4 addresses
+- **AAAA queries** return only IPv6 addresses
+- Each address family is load-balanced independently
+- Health checks work for both IPv4 and IPv6 endpoints
+
+### IPv4-Only or IPv6-Only Domains
+
+If a domain only has servers of one address family:
+
+- Queries for the available family return addresses normally
+- Queries for the unavailable family return `NOERROR` with an empty answer section
+
+This is standard DNS behavior indicating the domain exists but has no records of the requested type.
+
+### Example: Dual-Stack Configuration
+
+```yaml
+regions:
+  - name: primary-dc
+    servers:
+      # IPv4 servers
+      - address: "192.168.1.10"
+        port: 443
+        weight: 100
+      - address: "192.168.1.11"
+        port: 443
+        weight: 100
+      # IPv6 servers
+      - address: "2001:db8:1::10"
+        port: 443
+        weight: 100
+      - address: "2001:db8:1::11"
+        port: 443
+        weight: 100
+    health_check:
+      type: http
+      interval: 15s
+      timeout: 3s
+      path: /health
+
+domains:
+  - name: app.example.com
+    routing_algorithm: round-robin
+    regions:
+      - primary-dc
+    ttl: 30
+```
+
+### Testing IPv6
+
+```bash
+# Query for IPv4 address
+dig @localhost -p 15353 app.example.com A +short
+# Returns: 192.168.1.10 (or .11)
+
+# Query for IPv6 address
+dig @localhost -p 15353 app.example.com AAAA +short
+# Returns: 2001:db8:1::10 (or ::11)
+```
+
+### Health Checks for IPv6
+
+Health checks work identically for IPv6 servers. The health check URL is constructed using the IPv6 address in bracket notation:
+
+```
+http://[2001:db8:1::10]:443/health
+```
+
+TCP health checks connect to the IPv6 address directly.
+
+### Notes
+
+- IPv4-mapped IPv6 addresses (e.g., `::ffff:192.168.1.1`) are treated as IPv4
+- Ensure your network infrastructure supports IPv6 if configuring IPv6 servers
+- Health checks must be reachable via the configured address family
