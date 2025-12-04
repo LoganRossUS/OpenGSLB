@@ -585,3 +585,136 @@ Monitor these metrics to track failover:
 - `opengslb_health_check_results_total{result="unhealthy"}` - Health check failures
 
 A spike in traffic to the secondary server indicates a failover event.
+
+## Configuration Hot-Reload
+
+OpenGSLB supports reloading configuration without restarting the service. This allows you to add/remove domains and servers, change routing algorithms, and update health check settings with zero downtime.
+
+### Triggering a Reload
+
+Send `SIGHUP` to the OpenGSLB process:
+
+```bash
+# Find the process ID
+pgrep opengslb
+
+# Send SIGHUP
+kill -HUP $(pgrep opengslb)
+
+# Or in one command
+pkill -HUP opengslb
+```
+
+### What Can Be Reloaded
+
+| Setting | Hot-Reload | Notes |
+|---------|------------|-------|
+| Domains | ✅ Yes | Add, remove, or modify domains |
+| Servers | ✅ Yes | Add, remove, or modify servers |
+| Regions | ✅ Yes | Add, remove, or modify regions |
+| Health check settings | ✅ Yes | Interval, timeout, thresholds |
+| Routing algorithm | ✅ Yes | Change algorithm for domains |
+| DNS TTL | ✅ Yes | Per-domain or default TTL |
+| DNS listen address | ❌ No | Requires restart |
+| Metrics port | ❌ No | Requires restart |
+
+### Reload Behavior
+
+1. **Validation first**: The new configuration is fully validated before any changes are applied
+2. **Atomic swap**: Changes are applied atomically—partial updates don't happen
+3. **Health state preserved**: Existing servers retain their health state during reload
+4. **No query disruption**: In-flight DNS queries are not affected
+
+### Reload Process
+
+When you send SIGHUP:
+
+1. OpenGSLB reads and validates the configuration file
+2. If validation fails, the old configuration continues (error logged)
+3. If validation succeeds:
+   - DNS registry is updated with new domains
+   - Health checks are started for new servers
+   - Health checks are stopped for removed servers
+   - Router is updated if algorithm changed
+4. Success/failure is logged and recorded in metrics
+
+### Monitoring Reloads
+
+Check reload metrics in Prometheus:
+
+```promql
+# Total reload attempts by result
+opengslb_config_reloads_total{result="success"}
+opengslb_config_reloads_total{result="failure"}
+
+# Timestamp of last successful reload
+opengslb_config_reload_timestamp_seconds
+```
+
+### Logs
+
+Successful reload:
+```
+level=INFO msg="received SIGHUP, reloading configuration"
+level=INFO msg="reloading configuration" old_domains=2 new_domains=3 old_regions=1 new_regions=2
+level=INFO msg="health manager reconfigured" added=2 removed=0 updated=0 total=5
+level=INFO msg="configuration reload complete" domains=3 servers=5
+level=INFO msg="configuration reloaded successfully"
+```
+
+Failed reload (invalid config):
+```
+level=INFO msg="received SIGHUP, reloading configuration"
+level=ERROR msg="configuration reload failed" error="failed to load configuration: validation error: ..."
+```
+
+### Best Practices
+
+1. **Validate before reload**: Test your config changes with `opengslb --config /path/to/new/config.yaml --validate` (if available) or in a staging environment
+
+2. **Use version control**: Keep your configuration in git to track changes and enable rollback
+
+3. **Monitor after reload**: Watch metrics and logs after reloading to confirm expected behavior
+
+4. **Gradual changes**: Make incremental config changes rather than large rewrites
+
+5. **Backup config**: Keep a known-good configuration file as backup
+
+### Example: Adding a New Server
+
+Original config:
+```yaml
+regions:
+  - name: primary
+    servers:
+      - address: "10.0.1.10"
+        port: 80
+```
+
+Updated config:
+```yaml
+regions:
+  - name: primary
+    servers:
+      - address: "10.0.1.10"
+        port: 80
+      - address: "10.0.1.11"  # New server
+        port: 80
+```
+
+Reload:
+```bash
+kill -HUP $(pgrep opengslb)
+```
+
+The new server will immediately begin health checks and be added to rotation once healthy.
+
+### Example: Changing Routing Algorithm
+
+```yaml
+domains:
+  - name: app.example.com
+    routing_algorithm: weighted  # Changed from round-robin
+```
+
+After reload, traffic distribution will change to respect server weights.

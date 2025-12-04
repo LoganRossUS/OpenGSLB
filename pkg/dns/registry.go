@@ -96,3 +96,26 @@ func normalizeDomain(name string) string {
 	}
 	return name
 }
+
+// ReplaceAll atomically replaces all domain entries in the registry.
+// This is used during configuration hot-reload to swap the entire
+// domain configuration without disrupting in-flight queries.
+func (r *Registry) ReplaceAll(entries []*DomainEntry) {
+	newDomains := make(map[string]*DomainEntry, len(entries))
+	for _, entry := range entries {
+		name := normalizeDomain(entry.Name)
+		entry.Name = name
+		newDomains[name] = entry
+	}
+
+	r.mu.Lock()
+	r.domains = newDomains
+	r.mu.Unlock()
+}
+
+// Clear removes all domains from the registry.
+func (r *Registry) Clear() {
+	r.mu.Lock()
+	r.domains = make(map[string]*DomainEntry)
+	r.mu.Unlock()
+}
