@@ -120,6 +120,28 @@ var (
 	)
 )
 
+// Reload metrics
+var (
+	// ConfigReloadsTotal counts configuration reload attempts.
+	ConfigReloadsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "config_reloads_total",
+			Help:      "Total number of configuration reload attempts",
+		},
+		[]string{"result"}, // "success" or "failure"
+	)
+
+	// ConfigReloadTimestamp tracks when config was last reloaded.
+	ConfigReloadTimestamp = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "config_reload_timestamp_seconds",
+			Help:      "Timestamp of the last successful configuration reload",
+		},
+	)
+)
+
 // RecordDNSQuery records a DNS query metric.
 func RecordDNSQuery(domain, queryType, status string) {
 	DNSQueriesTotal.WithLabelValues(domain, queryType, status).Inc()
@@ -161,26 +183,6 @@ func SetConfigMetrics(domains, servers int, loadTime float64) {
 	ConfiguredServers.Set(float64(servers))
 	ConfigLoadTimestamp.Set(loadTime)
 }
-
-// Reload metrics
-var (
-	ConfigReloadsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "config_reloads_total",
-			Help:      "Total number of configuration reload attempts",
-		},
-		[]string{"result"}, // "success" or "failure"
-	)
-
-	ConfigReloadTimestamp = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "config_reload_timestamp_seconds",
-			Help:      "Timestamp of the last successful configuration reload",
-		},
-	)
-)
 
 // RecordReload records a configuration reload attempt.
 func RecordReload(success bool) {

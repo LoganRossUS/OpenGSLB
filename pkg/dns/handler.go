@@ -3,8 +3,11 @@ package dns
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/miekg/dns"
+
+	"github.com/loganrossus/OpenGSLB/pkg/metrics"
 )
 
 // Router selects a server from a pool of servers.
@@ -59,6 +62,8 @@ func NewHandler(cfg HandlerConfig) *Handler {
 // ServeDNS implements the dns.Handler interface.
 // This is the main entry point for processing DNS queries.
 func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	start := time.Now()
+
 	msg := new(dns.Msg)
 	msg.SetReply(r)
 	msg.Authoritative = true
@@ -73,9 +78,12 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 
 	q := r.Question[0]
+	domain := q.Name
+	queryType := dns.TypeToString[q.Qtype]
+
 	h.logger.Debug("received DNS query",
-		"name", q.Name,
-		"type", dns.TypeToString[q.Qtype],
+		"name", domain,
+		"type", queryType,
 		"class", dns.ClassToString[q.Qclass],
 	)
 
@@ -88,15 +96,21 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		// We only handle A and AAAA records
 		// Return empty response with NOERROR for other types
 		h.logger.Debug("unsupported query type",
-			"name", q.Name,
-			"type", dns.TypeToString[q.Qtype],
+			"name", domain,
+			"type", queryType,
 		)
 	}
+
+	// Record metrics
+	status := dns.RcodeToString[msg.Rcode]
+	duration := time.Since(start).Seconds()
+	metrics.RecordDNSQuery(domain, queryType, status)
+	metrics.RecordDNSQueryDuration(domain, status, duration)
 
 	if err := w.WriteMsg(msg); err != nil {
 		h.logger.Error("failed to write DNS response",
 			"error", err,
-			"name", q.Name,
+			"name", domain,
 		)
 	}
 }
@@ -155,6 +169,9 @@ func (h *Handler) handleA(msg *dns.Msg, q dns.Question) {
 	}
 
 	msg.Answer = append(msg.Answer, rr)
+
+	// Record routing decision metric
+	metrics.RecordRoutingDecision(entry.Name, h.router.Algorithm(), server.Address.String())
 
 	h.logger.Debug("routing decision",
 		"domain", entry.Name,
@@ -218,6 +235,9 @@ func (h *Handler) handleAAAA(msg *dns.Msg, q dns.Question) {
 	}
 
 	msg.Answer = append(msg.Answer, rr)
+
+	// Record routing decision metric
+	metrics.RecordRoutingDecision(entry.Name, h.router.Algorithm(), server.Address.String())
 
 	h.logger.Debug("routing decision",
 		"domain", entry.Name,

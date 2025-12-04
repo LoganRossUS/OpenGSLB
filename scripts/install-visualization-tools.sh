@@ -7,6 +7,7 @@
 #   - Creates Prometheus configuration to scrape OpenGSLB metrics
 #   - Deploys Prometheus and Grafana via Docker Compose
 #   - Configures Grafana with Prometheus data source
+#   - Installs pre-built OpenGSLB dashboard
 #
 # Prerequisites:
 #   - Ubuntu/Debian-based system (Pop!_OS)
@@ -61,11 +62,9 @@ check_docker() {
 install_docker() {
     log_step "Installing Docker"
     
-    # Update package index
     log_info "Updating package index..."
     sudo apt-get update
     
-    # Install prerequisites
     log_info "Installing prerequisites..."
     sudo apt-get install -y \
         ca-certificates \
@@ -73,66 +72,68 @@ install_docker() {
         gnupg \
         lsb-release
     
-    # Add Docker's official GPG key
     log_info "Adding Docker GPG key..."
     sudo install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
     sudo chmod a+r /etc/apt/keyrings/docker.gpg
     
-    # Set up the repository
     log_info "Adding Docker repository..."
     echo \
       "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-      $(. /etc/os-release && echo "$UBUNTU_CODENAME") stable" | \
+      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
       sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
     
-    # Install Docker Engine
     log_info "Installing Docker Engine..."
     sudo apt-get update
     sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
-    # Add current user to docker group
-    log_info "Adding ${USER} to docker group..."
-    sudo usermod -aG docker "${USER}"
+    log_info "Adding user to docker group..."
+    sudo usermod -aG docker "$USER"
     
-    log_info "Docker installation complete"
+    log_info "Docker installed successfully"
+}
+
+check_docker_compose() {
+    if docker compose version &> /dev/null; then
+        log_info "Docker Compose is available ($(docker compose version --short))"
+        return 0
+    else
+        log_warn "Docker Compose plugin not available"
+        return 1
+    fi
+}
+
+create_directory_structure() {
+    log_step "Creating Directory Structure"
+    
+    mkdir -p "${INSTALL_DIR}/prometheus"
+    mkdir -p "${INSTALL_DIR}/grafana/provisioning/datasources"
+    mkdir -p "${INSTALL_DIR}/grafana/provisioning/dashboards"
+    
+    log_info "Created directory structure at ${INSTALL_DIR}"
 }
 
 create_prometheus_config() {
     log_step "Creating Prometheus Configuration"
     
-    mkdir -p "${INSTALL_DIR}/prometheus"
-    
     cat > "${INSTALL_DIR}/prometheus/prometheus.yml" << EOF
-# Prometheus configuration for OpenGSLB
+# Prometheus configuration for OpenGSLB monitoring
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
-  external_labels:
-    monitor: 'opengslb-monitor'
 
-# Scrape configuration
 scrape_configs:
-  # OpenGSLB metrics
+  # Scrape OpenGSLB metrics
   - job_name: 'opengslb'
     static_configs:
       - targets: ['${OPENGSLB_METRICS_URL}']
-        labels:
-          service: 'opengslb'
-          environment: 'development'
-    
-    # Increase timeout for slower health checks
-    scrape_timeout: 10s
-    
-    # Metrics path (default is /metrics)
-    metrics_path: '/metrics'
+    metrics_path: /metrics
+    scheme: http
 
-  # Prometheus self-monitoring
+  # Scrape Prometheus itself
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
-        labels:
-          service: 'prometheus'
 EOF
     
     log_info "Prometheus configuration created at ${INSTALL_DIR}/prometheus/prometheus.yml"
@@ -141,10 +142,7 @@ EOF
 create_grafana_provisioning() {
     log_step "Creating Grafana Provisioning"
     
-    # Create datasources directory
-    mkdir -p "${INSTALL_DIR}/grafana/provisioning/datasources"
-    
-    # Prometheus datasource
+    # Datasource configuration
     cat > "${INSTALL_DIR}/grafana/provisioning/datasources/prometheus.yml" << EOF
 apiVersion: 1
 
@@ -155,12 +153,7 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     editable: true
-    jsonData:
-      timeInterval: 15s
 EOF
-    
-    # Create dashboards directory
-    mkdir -p "${INSTALL_DIR}/grafana/provisioning/dashboards"
     
     # Dashboard provider
     cat > "${INSTALL_DIR}/grafana/provisioning/dashboards/default.yml" << EOF
@@ -179,6 +172,552 @@ providers:
 EOF
     
     log_info "Grafana provisioning created"
+}
+
+create_grafana_dashboard() {
+    log_step "Creating OpenGSLB Grafana Dashboard"
+    
+    cat > "${INSTALL_DIR}/grafana/provisioning/dashboards/opengslb-overview.json" << 'DASHBOARD_EOF'
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "sum(rate(opengslb_dns_queries_total[5m])) * 60",
+          "refId": "A"
+        }
+      ],
+      "title": "DNS Queries per Minute",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "green", "value": 2 }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "count(opengslb_health_check_results_total{result=\"success\"} > 0) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "Healthy Servers",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "unit": "ms"
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["mean"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(opengslb_dns_query_duration_seconds_bucket[5m])) by (le)) * 1000",
+          "refId": "A"
+        }
+      ],
+      "title": "DNS Query Latency (p95)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "opengslb_build_info",
+          "legendFormat": "{{version}}",
+          "refId": "A"
+        }
+      ],
+      "title": "OpenGSLB Version",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "id": 5,
+      "options": {
+        "legend": { "calcs": ["mean", "lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "sum(rate(opengslb_dns_queries_total[5m])) by (status) * 60",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "title": "DNS Query Rate by Status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "id": 6,
+      "options": {
+        "legend": { "calcs": ["mean", "lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "sum(rate(opengslb_dns_queries_total[5m])) by (domain) * 60",
+          "legendFormat": "{{domain}}",
+          "refId": "A"
+        }
+      ],
+      "title": "DNS Query Rate by Domain",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Latency (ms)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "unit": "ms"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "id": 7,
+      "options": {
+        "legend": { "calcs": ["mean", "lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(opengslb_dns_query_duration_seconds_bucket[5m])) by (le)) * 1000",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(opengslb_dns_query_duration_seconds_bucket[5m])) by (le)) * 1000",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(opengslb_dns_query_duration_seconds_bucket[5m])) by (le)) * 1000",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "title": "DNS Query Latency Percentiles",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "id": 8,
+      "options": {
+        "legend": { "calcs": ["mean", "lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "sum(rate(opengslb_routing_decisions_total[5m])) by (server) * 60",
+          "legendFormat": "{{server}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Routing Decisions by Server",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "color-text" },
+            "inspect": false
+          },
+          "mappings": [
+            { "options": { "success": { "color": "green", "index": 0, "text": "Healthy" } }, "type": "value" },
+            { "options": { "failure": { "color": "red", "index": 1, "text": "Unhealthy" } }, "type": "value" }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "text", "value": null }]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Server" },
+            "properties": [{ "id": "custom.width", "value": 200 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Region" },
+            "properties": [{ "id": "custom.width", "value": 150 }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "id": 9,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "topk(100, opengslb_health_check_results_total) by (region, server, result)",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Server Health Status",
+      "transformations": [
+        { "id": "groupBy", "options": { "fields": { "region": { "aggregations": [], "operation": "groupby" }, "result": { "aggregations": ["lastNotNull"], "operation": "aggregate" }, "server": { "aggregations": [], "operation": "groupby" } } } }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "id": 10,
+      "options": {
+        "legend": { "calcs": ["mean", "lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "sum(rate(opengslb_health_check_results_total[5m])) by (result) * 60",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Health Check Results",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Latency (ms)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 100 },
+              { "color": "red", "value": 500 }
+            ]
+          },
+          "unit": "ms"
+        }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 28 },
+      "id": 11,
+      "options": {
+        "legend": { "calcs": ["mean", "lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(opengslb_health_check_duration_seconds_bucket[5m])) by (region, server, le)) * 1000",
+          "legendFormat": "{{region}}/{{server}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Health Check Latency by Server (p95)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["opengslb", "dns", "gslb"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "OpenGSLB Overview",
+  "uid": "opengslb-overview",
+  "version": 1,
+  "weekStart": ""
+}
+DASHBOARD_EOF
+    
+    log_info "Grafana dashboard created at ${INSTALL_DIR}/grafana/provisioning/dashboards/opengslb-overview.json"
 }
 
 create_docker_compose() {
@@ -249,6 +788,9 @@ create_management_script() {
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 COMPOSE_FILE="docker-compose.yml"
 
 case "$1" in
@@ -296,6 +838,107 @@ EOF
     log_info "Management script created at ${INSTALL_DIR}/manage.sh"
 }
 
+create_diagnostic_script() {
+    log_step "Creating Diagnostic Script"
+    
+    cat > "${INSTALL_DIR}/diagnose.sh" << 'EOF'
+#!/bin/bash
+# =============================================================================
+# OpenGSLB Observability Diagnostics
+# =============================================================================
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_step() { echo -e "\n${BLUE}=== $1 ===${NC}"; }
+
+log_step "Checking OpenGSLB Metrics Endpoint"
+
+if curl -s http://localhost:9090/metrics > /dev/null; then
+    log_info "OpenGSLB metrics endpoint is accessible"
+    echo ""
+    echo "Sample metrics:"
+    curl -s http://localhost:9090/metrics | grep "opengslb_" | head -10
+else
+    log_error "Cannot reach OpenGSLB metrics at http://localhost:9090/metrics"
+    log_error "Is OpenGSLB running?"
+    exit 1
+fi
+
+log_step "Checking Prometheus"
+
+if curl -s http://localhost:9091/-/healthy > /dev/null; then
+    log_info "Prometheus is running"
+else
+    log_error "Prometheus is not accessible at http://localhost:9091"
+    exit 1
+fi
+
+log_step "Checking Prometheus Targets"
+
+targets=$(curl -s http://localhost:9091/api/v1/targets | jq -r '.data.activeTargets[] | select(.labels.job=="opengslb") | .health' 2>/dev/null || echo "unknown")
+
+if [ "$targets" == "up" ]; then
+    log_info "OpenGSLB target is UP in Prometheus"
+else
+    log_error "OpenGSLB target is DOWN or unknown in Prometheus"
+    echo ""
+    echo "Target details:"
+    curl -s http://localhost:9091/api/v1/targets | jq '.data.activeTargets[] | select(.labels.job=="opengslb")' 2>/dev/null || echo "Could not fetch target details (is jq installed?)"
+fi
+
+log_step "Checking Prometheus Metrics"
+
+metric_count=$(curl -s 'http://localhost:9091/api/v1/query?query=opengslb_dns_queries_total' | jq -r '.data.result | length' 2>/dev/null || echo "0")
+
+if [ "$metric_count" -gt 0 ]; then
+    log_info "Prometheus has scraped OpenGSLB metrics ($metric_count series found)"
+    echo ""
+    echo "Sample query result:"
+    curl -s 'http://localhost:9091/api/v1/query?query=opengslb_dns_queries_total' | jq '.data.result[0]' 2>/dev/null || echo "Could not display result"
+else
+    log_error "Prometheus has not scraped any OpenGSLB metrics yet"
+    log_error "Wait a few seconds and try again, or check Prometheus logs"
+fi
+
+log_step "Checking Grafana"
+
+if curl -s http://localhost:3000/api/health > /dev/null; then
+    log_info "Grafana is running"
+else
+    log_error "Grafana is not accessible at http://localhost:3000"
+    exit 1
+fi
+
+log_step "Checking Grafana Datasource"
+
+datasource_uid=$(curl -s -u admin:admin http://localhost:3000/api/datasources 2>/dev/null | jq -r '.[0].uid' 2>/dev/null || echo "")
+
+if [ -n "$datasource_uid" ] && [ "$datasource_uid" != "null" ]; then
+    log_info "Grafana datasource UID: $datasource_uid"
+else
+    log_error "No Prometheus datasource found in Grafana or could not authenticate"
+fi
+
+log_step "All Checks Complete"
+echo ""
+echo "If all checks passed but dashboard shows 'No Data':"
+echo "  1. Make sure OpenGSLB is receiving DNS queries"
+echo "  2. Wait 30 seconds for metrics to accumulate"
+echo "  3. Try refreshing the Grafana dashboard"
+EOF
+    
+    chmod +x "${INSTALL_DIR}/diagnose.sh"
+    log_info "Diagnostic script created at ${INSTALL_DIR}/diagnose.sh"
+}
+
 create_readme() {
     log_step "Creating README"
     
@@ -315,6 +958,7 @@ This directory contains Prometheus and Grafana configured to monitor OpenGSLB.
   - Port: ${GRAFANA_PORT}
   - URL: http://localhost:${GRAFANA_PORT}
   - Default credentials: admin/admin
+  - Pre-loaded OpenGSLB dashboard
 
 ## Quick Start
 
@@ -327,6 +971,9 @@ This directory contains Prometheus and Grafana configured to monitor OpenGSLB.
 
 # Stop the stack
 ./manage.sh stop
+
+# Diagnose issues
+./diagnose.sh
 \`\`\`
 
 ## Management Commands
@@ -340,46 +987,40 @@ This directory contains Prometheus and Grafana configured to monitor OpenGSLB.
 ./manage.sh reload-prometheus  # Reload Prometheus config
 \`\`\`
 
-## Accessing Services
+## Pre-installed Dashboard
 
-### Prometheus
-1. Open http://localhost:${PROMETHEUS_PORT}
-2. Go to Status → Targets to verify OpenGSLB is being scraped
-3. Use the Graph tab to query metrics:
-   - \`opengslb_dns_queries_total\`
-   - \`opengslb_health_check_results_total\`
-   - \`opengslb_routing_decisions_total\`
+The OpenGSLB Overview dashboard is automatically loaded and includes:
 
-### Grafana
-1. Open http://localhost:${GRAFANA_PORT}
-2. Login with admin/admin (you'll be prompted to change password)
-3. Prometheus datasource is pre-configured
-4. Create dashboards or import community dashboards
-
-## Creating Grafana Dashboards
-
-1. Click "+" → Dashboard
-2. Add Panel
-3. Select Prometheus as data source
-4. Enter PromQL queries for OpenGSLB metrics
-5. Save dashboard
+- DNS Queries per Minute
+- Healthy Servers count
+- DNS Query Latency (p95)
+- OpenGSLB Version
+- DNS Query Rate by Status
+- DNS Query Rate by Domain
+- DNS Query Latency Percentiles (p50, p95, p99)
+- Routing Decisions by Server
+- Server Health Status table
+- Health Check Results
+- Health Check Latency by Server
 
 ## Troubleshooting
 
-### Prometheus can't reach OpenGSLB
+Run the diagnostic script:
+\`\`\`bash
+./diagnose.sh
+\`\`\`
+
+### Common Issues
+
+**Prometheus can't reach OpenGSLB**
 - Verify OpenGSLB is running: \`curl http://localhost:9090/metrics\`
 - Check Prometheus targets: http://localhost:${PROMETHEUS_PORT}/targets
 - View Prometheus logs: \`./manage.sh logs prometheus\`
 
-### Grafana can't connect to Prometheus
-- Check Prometheus is running: \`./manage.sh status\`
-- Verify datasource: Grafana → Configuration → Data Sources
-
-## Configuration Files
-
-- \`prometheus/prometheus.yml\` - Prometheus scrape config
-- \`grafana/provisioning/datasources/\` - Auto-configured datasources
-- \`docker-compose.yml\` - Container orchestration
+**Dashboard shows "No Data"**
+- Make sure OpenGSLB is receiving DNS queries
+- Wait 30 seconds for metrics to accumulate
+- Run \`./diagnose.sh\` to check connectivity
 
 ## Data Persistence
 
@@ -404,7 +1045,6 @@ start_stack() {
     
     cd "${INSTALL_DIR}"
     
-    # Try to start with docker compose plugin first
     if docker compose version &> /dev/null; then
         docker compose up -d
     else
@@ -431,55 +1071,44 @@ print_summary() {
     echo -e "  ./manage.sh start    # Start services"
     echo -e "  ./manage.sh stop     # Stop services"
     echo -e "  ./manage.sh logs     # View logs"
+    echo -e "  ./diagnose.sh        # Troubleshoot issues"
+    echo ""
+    echo -e "${BLUE}Dashboard:${NC}"
+    echo -e "  OpenGSLB Overview dashboard is pre-loaded in Grafana"
     echo ""
     echo -e "${BLUE}Next Steps:${NC}"
     echo -e "  1. Ensure OpenGSLB is running with metrics on port 9090"
     echo -e "  2. Open Prometheus to verify scraping: http://localhost:${PROMETHEUS_PORT}/targets"
-    echo -e "  3. Open Grafana and start building dashboards: http://localhost:${GRAFANA_PORT}"
+    echo -e "  3. Open Grafana dashboard: http://localhost:${GRAFANA_PORT}"
     echo ""
 }
 
 main() {
-    log_step "OpenGSLB Observability Stack Setup"
+    echo "=============================================="
+    echo "OpenGSLB Observability Stack Setup"
+    echo "=============================================="
     
-    # Check if Docker is installed
+    local docker_installed=false
+    
     if ! check_docker; then
         install_docker
-        
-        echo ""
-        echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${YELLOW}║                    IMPORTANT NOTICE                            ║${NC}"
-        echo -e "${YELLOW}╠════════════════════════════════════════════════════════════════╣${NC}"
-        echo -e "${YELLOW}║ Docker has been installed and you have been added to the      ║${NC}"
-        echo -e "${YELLOW}║ 'docker' group.                                               ║${NC}"
-        echo -e "${YELLOW}║                                                                ║${NC}"
-        echo -e "${YELLOW}║ You MUST log out and log back in for group changes to take    ║${NC}"
-        echo -e "${YELLOW}║ effect before you can use Docker without sudo.                ║${NC}"
-        echo -e "${YELLOW}║                                                                ║${NC}"
-        echo -e "${YELLOW}║ After logging back in, run:                                   ║${NC}"
-        echo -e "${YELLOW}║   cd ${INSTALL_DIR}${NC}"
-        echo -e "${YELLOW}║   ./manage.sh start                                           ║${NC}"
-        echo -e "${YELLOW}╚════════════════════════════════════════════════════════════════╝${NC}"
-        echo ""
-        
-        # Create config files so they're ready when user logs back in
-        create_prometheus_config
-        create_grafana_provisioning
-        create_docker_compose
-        create_management_script
-        create_readme
-        
-        exit 0
+        docker_installed=true
     fi
     
-    # Docker is already installed, proceed with setup
+    if ! check_docker_compose && ! $docker_installed; then
+        log_error "Docker Compose plugin not found. Try reinstalling Docker."
+        exit 1
+    fi
+    
+    create_directory_structure
     create_prometheus_config
     create_grafana_provisioning
+    create_grafana_dashboard
     create_docker_compose
     create_management_script
+    create_diagnostic_script
     create_readme
     
-    # Try to start (will fail if user isn't in docker group yet)
     if ! start_stack; then
         echo ""
         echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════╗${NC}"
@@ -487,7 +1116,7 @@ main() {
         echo -e "${YELLOW}║ need to log out and back in for Docker group permissions.     ║${NC}"
         echo -e "${YELLOW}║                                                                ║${NC}"
         echo -e "${YELLOW}║ After logging back in, run:                                   ║${NC}"
-        echo -e "${YELLOW}║   cd ${INSTALL_DIR}${NC}"
+        echo -e "${YELLOW}║   cd ${INSTALL_DIR}                            ║${NC}"
         echo -e "${YELLOW}║   ./manage.sh start                                           ║${NC}"
         echo -e "${YELLOW}╚════════════════════════════════════════════════════════════════╝${NC}"
         echo ""
