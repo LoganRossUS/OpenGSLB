@@ -496,3 +496,92 @@ servers:
   - address: "10.0.2.10"
     weight: 90
 ```
+
+## Failover (Active/Standby) Routing
+
+Failover routing directs all traffic to the highest-priority healthy server. When that server becomes unhealthy, traffic automatically fails over to the next server in priority order.
+
+### Configuration
+
+```yaml
+domains:
+  - name: critical-app.example.com
+    routing_algorithm: failover
+    regions:
+      - my-region
+```
+
+### How It Works
+
+Server priority is determined by the order in the configuration file:
+
+```yaml
+servers:
+  - address: "10.0.1.10"  # Priority 1 (Primary)
+  - address: "10.0.1.11"  # Priority 2 (Secondary)  
+  - address: "10.0.1.12"  # Priority 3 (Tertiary)
+```
+
+The routing behavior:
+
+| Primary | Secondary | Tertiary | Traffic Goes To |
+|---------|-----------|----------|-----------------|
+| ✅ Healthy | ✅ Healthy | ✅ Healthy | Primary |
+| ❌ Unhealthy | ✅ Healthy | ✅ Healthy | Secondary |
+| ❌ Unhealthy | ❌ Unhealthy | ✅ Healthy | Tertiary |
+| ❌ Unhealthy | ❌ Unhealthy | ❌ Unhealthy | SERVFAIL |
+
+### Return-to-Primary Behavior
+
+When a higher-priority server recovers, traffic **automatically returns** to it. This is the default and expected behavior for most disaster recovery scenarios.
+
+Example timeline:
+1. **T=0**: Primary healthy → traffic to Primary
+2. **T=5**: Primary fails health checks → traffic to Secondary
+3. **T=10**: Primary recovers → traffic returns to Primary
+
+### Use Cases
+
+- **Disaster Recovery**: Primary datacenter with hot standby
+- **Maintenance Windows**: Graceful failover during updates
+- **Cost Optimization**: Use expensive standby only when needed
+- **Regulatory Compliance**: Ensure traffic stays in primary region when possible
+
+### Comparison with Other Algorithms
+
+| Aspect | Round-Robin | Weighted | Failover |
+|--------|-------------|----------|----------|
+| Traffic pattern | Distributed | Proportional | Single server |
+| Predictability | Rotates | Probabilistic | Deterministic |
+| Failover | Automatic | Automatic | Automatic |
+| Recovery | N/A | N/A | Returns to primary |
+| Use case | Load distribution | Capacity-based | DR/Active-standby |
+
+### Health Check Recommendations
+
+For failover routing, consider:
+
+- **Short intervals** (10-15s): Detect failures quickly
+- **Low failure threshold** (2-3): Fail over promptly
+- **Higher success threshold** (3-5): Avoid flapping on recovery
+- **Short DNS TTL** (15-30s): Clients update quickly after failover
+
+```yaml
+health_check:
+  interval: 10s
+  failure_threshold: 2   # Fail fast
+  success_threshold: 3   # Recover carefully
+
+domains:
+  - name: app.example.com
+    ttl: 15  # Short TTL for failover scenarios
+```
+
+### Monitoring Failover Events
+
+Monitor these metrics to track failover:
+
+- `opengslb_routing_decisions_total{algorithm="failover",server="..."}` - Which server is receiving traffic
+- `opengslb_health_check_results_total{result="unhealthy"}` - Health check failures
+
+A spike in traffic to the secondary server indicates a failover event.
