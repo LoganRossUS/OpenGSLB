@@ -248,6 +248,7 @@ func validateDomains(domains []Domain, regions []Region) []error {
 		"weighted":    true,
 		"geolocation": true,
 		"latency":     true,
+		"failover":    true,
 	}
 
 	seen := make(map[string]bool)
@@ -274,7 +275,7 @@ func validateDomains(domains []Domain, regions []Region) []error {
 			errs = append(errs, &ValidationError{
 				Field:   prefix + ".routing_algorithm",
 				Value:   d.RoutingAlgorithm,
-				Message: "must be one of: round-robin, weighted, geolocation, latency",
+				Message: "must be one of: round-robin, weighted, geolocation, latency, failover",
 			})
 		}
 
