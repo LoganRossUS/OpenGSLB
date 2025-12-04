@@ -1,0 +1,59 @@
+# OpenGSLB Weighted Routing Example
+#
+# This configuration demonstrates weighted routing where traffic
+# is distributed proportionally based on server weights.
+#
+# In this example:
+# - server1 (weight 150) receives ~50% of traffic
+# - server2 (weight 100) receives ~33% of traffic  
+# - server3 (weight 50) receives ~17% of traffic
+
+dns:
+  listen_address: ":53"
+  default_ttl: 60
+
+regions:
+  - name: primary-dc
+    servers:
+      # High-capacity server: 50% of traffic
+      - address: "10.0.1.10"
+        port: 80
+        weight: 150
+      
+      # Standard server: 33% of traffic
+      - address: "10.0.1.11"
+        port: 80
+        weight: 100
+      
+      # Lower-capacity server: 17% of traffic
+      - address: "10.0.1.12"
+        port: 80
+        weight: 50
+      
+      # Disabled server (weight 0): excluded from rotation
+      # - address: "10.0.1.13"
+      #   port: 80
+      #   weight: 0
+
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+      failure_threshold: 3
+      success_threshold: 2
+
+domains:
+  - name: app.example.com
+    routing_algorithm: weighted
+    regions:
+      - primary-dc
+    ttl: 30
+
+logging:
+  level: info
+  format: text
+
+metrics:
+  enabled: true
+  address: ":9090"
