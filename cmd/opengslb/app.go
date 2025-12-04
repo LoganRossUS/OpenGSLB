@@ -49,9 +49,10 @@ func (a *Application) Initialize() error {
 	}
 	metrics.SetConfigMetrics(len(a.config.Domains), serverCount, float64(time.Now().Unix()))
 
-	// Initialize router
-	a.router = routing.NewRoundRobin()
-	a.logger.Info("router initialized", "algorithm", a.router.Algorithm())
+	// Initialize router based on configuration
+	if err := a.initializeRouter(); err != nil {
+		return fmt.Errorf("failed to initialize router: %w", err)
+	}
 
 	// Initialize health manager
 	if err := a.initializeHealthManager(); err != nil {
@@ -68,6 +69,24 @@ func (a *Application) Initialize() error {
 		return fmt.Errorf("failed to initialize metrics server: %w", err)
 	}
 
+	return nil
+}
+
+// initializeRouter creates the router based on configuration.
+func (a *Application) initializeRouter() error {
+	// Use the first domain's algorithm, or default if none configured
+	algorithm := "round-robin"
+	if len(a.config.Domains) > 0 && a.config.Domains[0].RoutingAlgorithm != "" {
+		algorithm = a.config.Domains[0].RoutingAlgorithm
+	}
+
+	router, err := routing.NewRouter(algorithm)
+	if err != nil {
+		return err
+	}
+
+	a.router = router
+	a.logger.Info("router initialized", "algorithm", a.router.Algorithm())
 	return nil
 }
 

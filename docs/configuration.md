@@ -422,3 +422,77 @@ OpenGSLB validates configuration on startup and will fail with descriptive error
 - Domains referencing non-existent regions
 - Timeout >= interval for health checks
 - Out-of-range threshold values
+
+## Weighted Routing
+
+Weighted routing distributes traffic proportionally based on server weights. Servers with higher weights receive more traffic.
+
+### Configuration
+
+```yaml
+domains:
+  - name: app.example.com
+    routing_algorithm: weighted
+    regions:
+      - my-region
+```
+
+### How It Works
+
+Traffic distribution is proportional to server weights:
+
+| Server | Weight | Traffic Share |
+|--------|--------|---------------|
+| server1 | 150 | 50% |
+| server2 | 100 | 33% |
+| server3 | 50 | 17% |
+
+The algorithm uses weighted random selection. On each DNS query, a server is randomly selected with probability proportional to its weight. Over many queries, the distribution matches the weight ratios.
+
+### Weight Behavior
+
+- **Weight > 0**: Server participates in selection with given weight
+- **Weight = 0**: Server is excluded from selection (useful for soft-disabling)
+- **Unhealthy servers**: Excluded regardless of weight
+
+### Use Cases
+
+- **Capacity-based distribution**: Route more traffic to higher-capacity servers
+- **Gradual migrations**: Shift traffic by adjusting weights over time
+- **Cost optimization**: Send less traffic to more expensive regions
+
+### Comparison with Round-Robin
+
+| Aspect | Round-Robin | Weighted |
+|--------|-------------|----------|
+| Distribution | Equal | Proportional to weight |
+| Server weights | Ignored | Respected |
+| Predictability | Deterministic rotation | Probabilistic |
+| Use case | Homogeneous servers | Heterogeneous capacity |
+
+### Example: Gradual Traffic Shift
+
+To gradually shift traffic from old to new servers:
+
+```yaml
+# Week 1: 90% old, 10% new
+servers:
+  - address: "10.0.1.10"  # old
+    weight: 90
+  - address: "10.0.2.10"  # new
+    weight: 10
+
+# Week 2: 50% old, 50% new
+servers:
+  - address: "10.0.1.10"
+    weight: 50
+  - address: "10.0.2.10"
+    weight: 50
+
+# Week 3: 10% old, 90% new
+servers:
+  - address: "10.0.1.10"
+    weight: 10
+  - address: "10.0.2.10"
+    weight: 90
+```
