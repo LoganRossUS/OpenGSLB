@@ -158,14 +158,112 @@ func TestApplicationInitialize(t *testing.T) {
 		if app.config == nil {
 			t.Error("config should be set")
 		}
-		if app.router == nil {
-			t.Error("router should be initialized")
-		}
 		if app.healthManager == nil {
 			t.Error("health manager should be initialized")
 		}
 		if app.dnsServer == nil {
 			t.Error("DNS server should be initialized")
+		}
+		if app.dnsRegistry == nil {
+			t.Error("DNS registry should be initialized")
+		}
+		// Verify domains are registered with routers
+		if app.dnsRegistry.Count() != 1 {
+			t.Errorf("expected 1 domain registered, got %d", app.dnsRegistry.Count())
+		}
+	})
+}
+
+// multiAlgorithmConfig tests per-domain routing
+const multiAlgorithmConfig = `
+dns:
+  listen_address: "127.0.0.1:15353"
+  default_ttl: 60
+
+logging:
+  level: info
+  format: text
+
+regions:
+  - name: us-east-1
+    servers:
+      - address: "10.0.1.10"
+        port: 80
+        weight: 100
+      - address: "10.0.1.11"
+        port: 80
+        weight: 200
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+
+  - name: us-west-1
+    servers:
+      - address: "10.0.2.10"
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+
+domains:
+  - name: roundrobin.example.com
+    routing_algorithm: round-robin
+    regions:
+      - us-east-1
+    ttl: 30
+
+  - name: weighted.example.com
+    routing_algorithm: weighted
+    regions:
+      - us-east-1
+    ttl: 30
+
+  - name: failover.example.com
+    routing_algorithm: failover
+    regions:
+      - us-east-1
+      - us-west-1
+    ttl: 30
+`
+
+func TestApplicationPerDomainRouting(t *testing.T) {
+	t.Run("each domain gets its own router", func(t *testing.T) {
+		cfg := loadTestConfig(t, multiAlgorithmConfig)
+		app := NewApplication(cfg, nil)
+
+		if err := app.Initialize(); err != nil {
+			t.Fatalf("Initialize failed: %v", err)
+		}
+
+		// Check each domain has the correct routing algorithm
+		tests := []struct {
+			domain    string
+			algorithm string
+		}{
+			{"roundrobin.example.com.", "round-robin"},
+			{"weighted.example.com.", "weighted"},
+			{"failover.example.com.", "failover"},
+		}
+
+		for _, tc := range tests {
+			entry := app.dnsRegistry.Lookup(tc.domain)
+			if entry == nil {
+				t.Errorf("domain %s not found in registry", tc.domain)
+				continue
+			}
+			if entry.Router == nil {
+				t.Errorf("domain %s has no router", tc.domain)
+				continue
+			}
+			if entry.Router.Algorithm() != tc.algorithm {
+				t.Errorf("domain %s: expected algorithm %s, got %s",
+					tc.domain, tc.algorithm, entry.Router.Algorithm())
+			}
 		}
 	})
 }

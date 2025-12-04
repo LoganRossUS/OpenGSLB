@@ -20,6 +20,7 @@ type DomainEntry struct {
 	TTL              uint32
 	RoutingAlgorithm string
 	Servers          []ServerInfo
+	Router           Router // Per-domain router instance
 }
 
 // Registry provides thread-safe lookup of domain configurations.
@@ -40,7 +41,6 @@ func (r *Registry) Register(entry *DomainEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Normalize domain name to ensure consistent lookups
 	name := normalizeDomain(entry.Name)
 	entry.Name = name
 	r.domains[name] = entry
@@ -84,13 +84,10 @@ func (r *Registry) Count() int {
 }
 
 // normalizeDomain ensures domain names are in a consistent format.
-// DNS queries typically have a trailing dot (FQDN), so we ensure all
-// stored and queried names use the same format.
 func normalizeDomain(name string) string {
 	if len(name) == 0 {
 		return name
 	}
-	// Ensure trailing dot for FQDN format
 	if name[len(name)-1] != '.' {
 		return name + "."
 	}
@@ -98,8 +95,6 @@ func normalizeDomain(name string) string {
 }
 
 // ReplaceAll atomically replaces all domain entries in the registry.
-// This is used during configuration hot-reload to swap the entire
-// domain configuration without disrupting in-flight queries.
 func (r *Registry) ReplaceAll(entries []*DomainEntry) {
 	newDomains := make(map[string]*DomainEntry, len(entries))
 	for _, entry := range entries {
