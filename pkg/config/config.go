@@ -1,65 +1,117 @@
-package dns
+package config
 
 import (
 	"fmt"
-	"net"
+	"os"
+	"path/filepath"
+	"time"
 
-	"github.com/loganrossus/OpenGSLB/pkg/config"
+	"gopkg.in/yaml.v3"
 )
 
-// BuildRegistry creates a domain registry from application configuration.
-// It maps each domain to its servers from the configured regions.
-func BuildRegistry(cfg *config.Config) (*Registry, error) {
-	registry := NewRegistry()
+// Default configuration values.
+const (
+	DefaultListenAddress    = ":53"
+	DefaultTTL              = 60
+	DefaultServerPort       = 80
+	DefaultServerWeight     = 100
+	DefaultHealthCheckType  = "http"
+	DefaultHealthInterval   = 30 * time.Second
+	DefaultHealthTimeout    = 5 * time.Second
+	DefaultHealthPath       = "/health"
+	DefaultFailureThreshold = 3
+	DefaultSuccessThreshold = 2
+	DefaultRoutingAlgorithm = "round-robin"
+	DefaultLogLevel         = "info"
+	DefaultLogFormat        = "json"
+)
 
-	// Build a map of region name -> servers for quick lookup
-	regionServers := make(map[string][]ServerInfo)
-	for _, region := range cfg.Regions {
-		servers := make([]ServerInfo, 0, len(region.Servers))
-		for _, s := range region.Servers {
-			ip := net.ParseIP(s.Address)
-			if ip == nil {
-				return nil, fmt.Errorf("invalid IP address %q in region %s", s.Address, region.Name)
-			}
-			servers = append(servers, ServerInfo{
-				Address: ip,
-				Port:    s.Port,
-				Weight:  s.Weight,
-				Region:  region.Name,
-			})
-		}
-		regionServers[region.Name] = servers
+// Load reads and parses a configuration file from the given path.
+func Load(path string) (*Config, error) {
+	cleanPath := filepath.Clean(path)
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Build domain entries
-	for _, domain := range cfg.Domains {
-		var allServers []ServerInfo
+	return Parse(data)
+}
 
-		// Collect servers from all regions assigned to this domain
-		for _, regionName := range domain.Regions {
-			servers, ok := regionServers[regionName]
-			if !ok {
-				return nil, fmt.Errorf("domain %s references unknown region %s", domain.Name, regionName)
-			}
-			allServers = append(allServers, servers...)
-		}
-
-		if len(allServers) == 0 {
-			return nil, fmt.Errorf("domain %s has no servers", domain.Name)
-		}
-
-		// Determine TTL - use domain-specific if set, otherwise will use default
-		ttl := uint32(domain.TTL)
-
-		entry := &DomainEntry{
-			Name:             domain.Name,
-			TTL:              ttl,
-			RoutingAlgorithm: domain.RoutingAlgorithm,
-			Servers:          allServers,
-		}
-
-		registry.Register(entry)
+// Parse parses configuration from YAML bytes.
+func Parse(data []byte) (*Config, error) {
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	return registry, nil
+	applyDefaults(&cfg)
+
+	if err := Validate(&cfg); err != nil {
+		return nil, fmt.Errorf("config validation failed: %w", err)
+	}
+
+	return &cfg, nil
+}
+
+func applyDefaults(cfg *Config) {
+	if cfg.DNS.ListenAddress == "" {
+		cfg.DNS.ListenAddress = DefaultListenAddress
+	}
+	if cfg.DNS.DefaultTTL == 0 {
+		cfg.DNS.DefaultTTL = DefaultTTL
+	}
+
+	if cfg.Logging.Level == "" {
+		cfg.Logging.Level = DefaultLogLevel
+	}
+	if cfg.Logging.Format == "" {
+		cfg.Logging.Format = DefaultLogFormat
+	}
+
+	for i := range cfg.Regions {
+		applyRegionDefaults(&cfg.Regions[i])
+	}
+
+	for i := range cfg.Domains {
+		applyDomainDefaults(&cfg.Domains[i], cfg.DNS.DefaultTTL)
+	}
+}
+
+func applyRegionDefaults(r *Region) {
+	for j := range r.Servers {
+		if r.Servers[j].Port == 0 {
+			r.Servers[j].Port = DefaultServerPort
+		}
+		if r.Servers[j].Weight == 0 {
+			r.Servers[j].Weight = DefaultServerWeight
+		}
+	}
+
+	if r.HealthCheck.Type == "" {
+		r.HealthCheck.Type = DefaultHealthCheckType
+	}
+	if r.HealthCheck.Interval == 0 {
+		r.HealthCheck.Interval = DefaultHealthInterval
+	}
+	if r.HealthCheck.Timeout == 0 {
+		r.HealthCheck.Timeout = DefaultHealthTimeout
+	}
+	if r.HealthCheck.Path == "" && r.HealthCheck.Type == "http" {
+		r.HealthCheck.Path = DefaultHealthPath
+	}
+	if r.HealthCheck.FailureThreshold == 0 {
+		r.HealthCheck.FailureThreshold = DefaultFailureThreshold
+	}
+	if r.HealthCheck.SuccessThreshold == 0 {
+		r.HealthCheck.SuccessThreshold = DefaultSuccessThreshold
+	}
+}
+
+func applyDomainDefaults(d *Domain, defaultTTL int) {
+	if d.RoutingAlgorithm == "" {
+		d.RoutingAlgorithm = DefaultRoutingAlgorithm
+	}
+	if d.TTL == 0 {
+		d.TTL = defaultTTL
+	}
 }
