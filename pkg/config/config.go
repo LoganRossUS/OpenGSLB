@@ -7,11 +7,9 @@ import (
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 )
 
-// RouterFactory creates a router for a given algorithm name.
-type RouterFactory func(algorithm string) (Router, error)
-
 // BuildRegistry creates a domain registry from application configuration.
-func BuildRegistry(cfg *config.Config, routerFactory RouterFactory) (*Registry, error) {
+// It maps each domain to its servers from the configured regions.
+func BuildRegistry(cfg *config.Config) (*Registry, error) {
 	registry := NewRegistry()
 
 	// Build a map of region name -> servers for quick lookup
@@ -50,25 +48,14 @@ func BuildRegistry(cfg *config.Config, routerFactory RouterFactory) (*Registry, 
 			return nil, fmt.Errorf("domain %s has no servers", domain.Name)
 		}
 
-		// Create router for this domain
-		algorithm := domain.RoutingAlgorithm
-		if algorithm == "" {
-			algorithm = "round-robin"
-		}
-
-		router, err := routerFactory(algorithm)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create router for domain %s: %w", domain.Name, err)
-		}
-
+		// Determine TTL - use domain-specific if set, otherwise will use default
 		ttl := uint32(domain.TTL)
 
 		entry := &DomainEntry{
 			Name:             domain.Name,
 			TTL:              ttl,
-			RoutingAlgorithm: algorithm,
+			RoutingAlgorithm: domain.RoutingAlgorithm,
 			Servers:          allServers,
-			Router:           router,
 		}
 
 		registry.Register(entry)
