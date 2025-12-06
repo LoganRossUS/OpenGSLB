@@ -486,3 +486,310 @@ If you've exhausted this guide:
    - Include Go version, OS, and OpenGSLB version
    - Describe expected vs. actual behavior
    - Include relevant logs and configuration
+
+---
+
+## Configuration Hot-Reload Issues
+
+### SIGHUP Not Reloading Configuration
+
+**Symptom:** Sending SIGHUP doesn't update the running configuration.
+
+**Diagnosis:**
+```bash
+# Check if reload was attempted
+grep -i "reload" /var/log/opengslb.log
+
+# Check metrics for reload attempts
+curl -s http://localhost:9090/metrics | grep opengslb_config_reloads
+```
+
+**Common causes:**
+
+1. **Configuration validation failed:**
+   ```bash
+   # Check for validation errors in logs
+   grep -i "validation\|error" /var/log/opengslb.log | tail -20
+   ```
+
+2. **Wrong PID:**
+   ```bash
+   # Verify you're sending to the right process
+   pgrep -a opengslb
+   kill -HUP $(pgrep opengslb)
+   ```
+
+3. **Permission issues on config file:**
+   ```bash
+   ls -la /etc/opengslb/config.yaml
+   # Ensure OpenGSLB process can read the file
+   ```
+
+### Configuration Reload Causes Crash
+
+**Symptom:** OpenGSLB crashes after SIGHUP.
+
+**Diagnosis:**
+```bash
+# Check for panic in logs
+grep -i "panic\|fatal" /var/log/opengslb.log
+
+# Check if process is still running
+pgrep opengslb
+```
+
+**Solution:**
+1. Validate configuration before reload:
+   ```bash
+   # Test config syntax
+   python3 -c "import yaml; yaml.safe_load(open('/etc/opengslb/config.yaml'))"
+   ```
+2. Ensure new domains reference existing regions
+3. Check for duplicate server registrations across regions
+
+---
+
+## Weighted Routing Issues
+
+### Traffic Not Distributed According to Weights
+
+**Symptom:** Server with weight 200 doesn't get 2x traffic of server with weight 100.
+
+**Explanation:** Weighted routing is probabilistic. With small sample sizes, distribution may vary.
+
+**Verification:**
+```bash
+# Query 100 times and count distribution
+for i in {1..100}; do 
+  dig @localhost app.example.com +short
+done | sort | uniq -c
+```
+
+**Expected:** Over many queries, distribution should approximate weight ratios (within ~15%).
+
+**If distribution is completely wrong:**
+1. Check that you're querying the weighted domain:
+   ```yaml
+   domains:
+     - name: app.example.com
+       routing_algorithm: weighted  # Not round-robin
+   ```
+2. Verify server weights are set correctly
+3. Check that servers are healthy (unhealthy servers excluded)
+
+### Weight 0 Server Still Receiving Traffic
+
+**Symptom:** Server with weight 0 is being returned.
+
+**Diagnosis:**
+```bash
+# Check configuration
+grep -A5 "weight: 0" /etc/opengslb/config.yaml
+```
+
+**Possible causes:**
+1. Configuration not reloaded after change
+2. Multiple server entries (one with weight > 0)
+
+---
+
+## Failover Routing Issues
+
+### Primary Server Not Used When Healthy
+
+**Symptom:** Traffic goes to secondary even when primary is healthy.
+
+**Diagnosis:**
+```bash
+# Check server health
+curl http://localhost:8080/api/v1/health/servers | jq .
+
+# Check routing algorithm
+grep -A5 "name: your-domain" /etc/opengslb/config.yaml
+```
+
+**Common causes:**
+1. Primary server actually unhealthy (check health API)
+2. Wrong routing algorithm configured
+3. Server order in configuration (first server = primary)
+
+### Failover Takes Too Long
+
+**Symptom:** Takes many seconds after primary failure before failover.
+
+**Solution:** Adjust health check settings:
+```yaml
+health_check:
+  interval: 5s         # More frequent checks
+  timeout: 2s
+  failure_threshold: 2  # Fewer failures before marking unhealthy
+
+domains:
+  - name: critical.example.com
+    ttl: 10  # Lower TTL for faster client updates
+```
+
+### Traffic Not Returning to Primary After Recovery
+
+**Symptom:** After primary recovers, traffic stays on secondary.
+
+**This is expected behavior for current implementation.** Traffic returns to primary as soon as primary passes health checks.
+
+**Verification:**
+```bash
+# Wait for success_threshold health checks to pass
+# Then query
+dig @localhost failover.example.com +short
+```
+
+---
+
+## TCP Health Check Issues
+
+### TCP Health Check Always Unhealthy
+
+**Symptom:** TCP health check fails even though service is running.
+
+**Diagnosis:**
+```bash
+# Test connectivity manually
+nc -zv 10.0.1.10 5432
+
+# Check firewall
+sudo iptables -L -n | grep 5432
+```
+
+**Common causes:**
+1. Firewall blocking connection
+2. Service not listening on expected port
+3. Timeout too short for TCP handshake
+
+### When to Use TCP vs HTTP
+
+| Scenario | Recommended |
+|----------|-------------|
+| Web applications | HTTP |
+| Databases (PostgreSQL, MySQL) | TCP |
+| Message queues (RabbitMQ, Redis) | TCP |
+| Custom protocols | TCP |
+| Services with health endpoints | HTTP |
+
+---
+
+## IPv6 / AAAA Record Issues
+
+### AAAA Query Returns Empty
+
+**Symptom:** `dig @localhost domain AAAA` returns no answer.
+
+**Possible causes:**
+
+1. **No IPv6 servers configured:**
+   ```yaml
+   servers:
+     - address: "2001:db8::1"  # Need IPv6 addresses for AAAA
+       port: 80
+   ```
+
+2. **IPv6 servers unhealthy:**
+   ```bash
+   # Check if IPv6 connectivity works
+   curl -6 http://[2001:db8::1]:80/health
+   ```
+
+3. **IPv6 not enabled on host:**
+   ```bash
+   # Check IPv6 support
+   cat /proc/sys/net/ipv6/conf/all/disable_ipv6
+   # 0 = enabled, 1 = disabled
+   ```
+
+### A Query Returns IPv6 Address (Wrong Record Type)
+
+**This shouldn't happen.** A queries only return IPv4, AAAA only returns IPv6.
+
+**If this occurs:**
+1. Check server address format in configuration
+2. IPv4-mapped IPv6 addresses (`::ffff:10.0.1.10`) are treated as IPv4
+
+---
+
+## Health Status API Issues
+
+### API Returns 403 Forbidden
+
+**Symptom:** `curl http://localhost:8080/api/v1/health/servers` returns 403.
+
+**Cause:** Your IP is not in `allowed_networks`.
+
+**Solution:**
+```yaml
+api:
+  enabled: true
+  address: "127.0.0.1:8080"
+  allowed_networks:
+    - "127.0.0.0/8"      # localhost
+    - "10.0.0.0/8"       # Add your network
+    - "192.168.0.0/16"   # Add your network
+```
+
+### API Not Responding
+
+**Symptom:** Connection refused on API port.
+
+**Checklist:**
+1. API enabled in config:
+   ```yaml
+   api:
+     enabled: true
+   ```
+
+2. Correct port:
+   ```bash
+   sudo ss -tulpn | grep 8080
+   ```
+
+3. Process running:
+   ```bash
+   pgrep opengslb
+   ```
+
+### API Shows Incorrect Health Status
+
+**Symptom:** API says server is healthy but DNS returns SERVFAIL.
+
+**Possible causes:**
+1. Health status not yet updated (wait for health check interval)
+2. Viewing wrong region/server
+3. All servers of required address family (IPv4/IPv6) are unhealthy
+
+---
+
+## Performance Issues with Sprint 3 Features
+
+### High Memory Usage with Weighted Routing
+
+Weighted routing has minimal memory overhead. If memory is high:
+1. Check number of configured servers
+2. Reduce health check frequency if too aggressive
+3. Monitor with `go_memstats_*` Prometheus metrics
+
+### Slow Failover Detection
+
+Failover speed depends on:
+- `health_check.interval` (how often we check)
+- `health_check.failure_threshold` (how many failures before unhealthy)
+- DNS TTL (how long clients cache)
+
+**Fastest failover configuration:**
+```yaml
+health_check:
+  interval: 5s
+  failure_threshold: 2
+
+domains:
+  - name: critical.example.com
+    ttl: 10
+```
+
+**Tradeoff:** More health check traffic and DNS queries.
