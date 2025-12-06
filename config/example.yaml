@@ -127,3 +127,34 @@ domains:
     regions:
       - us-west-2
     ttl: 300    # Longer TTL for static content
+
+# API Server Configuration
+# The API provides health status endpoints for monitoring and integration.
+# 
+# SECURITY NOTE: The API exposes internal infrastructure details.
+# - Default binding is localhost only (127.0.0.1)
+# - For production, use a reverse proxy (NGINX/HAProxy) for authentication
+# - See docs/security/api-hardening.md for reference architectures
+
+api:
+  # Enable the API server (default: false)
+  enabled: true
+  
+  # Listen address for the API server
+  # Default: "127.0.0.1:8080" (localhost only)
+  # For network access, use "0.0.0.0:8080" with appropriate ACLs
+  address: "127.0.0.1:8080"
+  
+  # IP networks allowed to access the API (CIDR notation)
+  # Default: ["127.0.0.1/32", "::1/128"] (localhost only)
+  # Add your management network or reverse proxy IP
+  allowed_networks:
+    - "127.0.0.1/32"
+    - "::1/128"
+    # - "10.0.0.0/8"        # Internal network
+    # - "192.168.1.100/32"  # Specific monitoring server
+  
+  # Trust X-Forwarded-For and X-Real-IP headers
+  # Only enable when behind a trusted reverse proxy
+  # Default: false
+  trust_proxy_headers: false

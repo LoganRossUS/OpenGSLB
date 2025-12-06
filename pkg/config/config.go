@@ -24,7 +24,12 @@ const (
 	DefaultRoutingAlgorithm = "round-robin"
 	DefaultLogLevel         = "info"
 	DefaultLogFormat        = "json"
+	DefaultAPIAddress       = "127.0.0.1:8080"
 )
+
+// DefaultAPIAllowedNetworks defines the default networks allowed to access the API.
+// By default, only localhost is permitted.
+var DefaultAPIAllowedNetworks = []string{"127.0.0.1/32", "::1/128"}
 
 // Load reads and parses a configuration file from the given path.
 func Load(path string) (*Config, error) {
@@ -68,12 +73,29 @@ func applyDefaults(cfg *Config) {
 		cfg.Logging.Format = DefaultLogFormat
 	}
 
+	applyAPIDefaults(&cfg.API)
+
 	for i := range cfg.Regions {
 		applyRegionDefaults(&cfg.Regions[i])
 	}
 
 	for i := range cfg.Domains {
 		applyDomainDefaults(&cfg.Domains[i], cfg.DNS.DefaultTTL)
+	}
+}
+
+func applyAPIDefaults(api *APIConfig) {
+	// Only apply defaults if API is enabled
+	if !api.Enabled {
+		return
+	}
+
+	if api.Address == "" {
+		api.Address = DefaultAPIAddress
+	}
+
+	if len(api.AllowedNetworks) == 0 {
+		api.AllowedNetworks = DefaultAPIAllowedNetworks
 	}
 }
 
