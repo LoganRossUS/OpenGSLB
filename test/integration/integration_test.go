@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +66,8 @@ func setupTestEnvironment() error {
 		return nil
 	}
 
+	fmt.Println("OpenGSLB not running, starting it...")
+
 	// Create test config
 	var err error
 	configPath, err = createTestConfig()
@@ -72,11 +75,33 @@ func setupTestEnvironment() error {
 		return fmt.Errorf("failed to create test config: %w", err)
 	}
 
-	// Start OpenGSLB
+	// Find OpenGSLB binary
 	gslbBinary := os.Getenv("GSLB_BINARY")
 	if gslbBinary == "" {
-		gslbBinary = "./opengslb"
+		// Try common locations
+		candidates := []string{"./opengslb", "../opengslb", "../../opengslb"}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				gslbBinary = c
+				break
+			}
+		}
 	}
+
+	if gslbBinary == "" {
+		return fmt.Errorf("OpenGSLB binary not found. Set GSLB_BINARY env var or build with 'go build -o opengslb ./cmd/opengslb'")
+	}
+
+	// Make path absolute
+	if !filepath.IsAbs(gslbBinary) {
+		abs, err := filepath.Abs(gslbBinary)
+		if err == nil {
+			gslbBinary = abs
+		}
+	}
+
+	fmt.Printf("Starting OpenGSLB from: %s\n", gslbBinary)
+	fmt.Printf("Config: %s\n", configPath)
 
 	gslbProcess = exec.Command(gslbBinary, "--config", configPath)
 	gslbProcess.Stdout = os.Stdout
@@ -86,15 +111,36 @@ func setupTestEnvironment() error {
 		return fmt.Errorf("failed to start OpenGSLB: %w", err)
 	}
 
-	// Wait for startup
-	time.Sleep(3 * time.Second)
-
-	if !isGSLBRunning() {
-		return fmt.Errorf("OpenGSLB failed to start")
+	// Wait for startup with retries
+	fmt.Println("Waiting for OpenGSLB to start...")
+	for i := 0; i < 10; i++ {
+		time.Sleep(500 * time.Millisecond)
+		if isGSLBRunning() {
+			fmt.Println("OpenGSLB started successfully")
+			// Give health checks time to run
+			fmt.Println("Waiting for health checks to stabilize...")
+			time.Sleep(5 * time.Second)
+			return nil
+		}
 	}
 
-	fmt.Println("OpenGSLB started successfully")
-	return nil
+	// Check if process died
+	if gslbProcess.Process != nil {
+		// Try to get exit status
+		done := make(chan error, 1)
+		go func() {
+			done <- gslbProcess.Wait()
+		}()
+
+		select {
+		case err := <-done:
+			return fmt.Errorf("OpenGSLB process exited: %v", err)
+		case <-time.After(100 * time.Millisecond):
+			// Process still running but not responding
+		}
+	}
+
+	return fmt.Errorf("OpenGSLB failed to start (not responding on %s)", gslbDNSAddr)
 }
 
 func teardownTestEnvironment() {
@@ -108,12 +154,20 @@ func teardownTestEnvironment() {
 }
 
 func isGSLBRunning() bool {
-	conn, err := net.DialTimeout("udp", gslbDNSAddr, time.Second)
-	if err != nil {
-		return false
+	// Try a TCP connection first (more reliable than UDP)
+	conn, err := net.DialTimeout("tcp", gslbDNSAddr, time.Second)
+	if err == nil {
+		conn.Close()
+		return true
 	}
-	conn.Close()
-	return true
+
+	// Also try an actual DNS query to be sure
+	c := new(dns.Client)
+	c.Timeout = time.Second
+	m := new(dns.Msg)
+	m.SetQuestion("test.", dns.TypeA)
+	_, _, err = c.Exchange(m, gslbDNSAddr)
+	return err == nil
 }
 
 func createTestConfig() (string, error) {
@@ -123,23 +177,9 @@ dns:
   default_ttl: 30
 
 regions:
-  - name: roundrobin-region
-    servers:
-      - address: "172.28.0.2"
-        port: 80
-        weight: 100
-      - address: "172.28.0.3"
-        port: 80
-        weight: 100
-    health_check:
-      type: http
-      interval: 2s
-      timeout: 1s
-      path: /
-      failure_threshold: 2
-      success_threshold: 1
-
-  - name: weighted-region
+  # Single region with all servers - avoids duplicate registration
+  # Different domains use different routing algorithms on the same pool
+  - name: test-region
     servers:
       - address: "172.28.0.2"
         port: 80
@@ -147,17 +187,7 @@ regions:
       - address: "172.28.0.3"
         port: 80
         weight: 100
-    health_check:
-      type: http
-      interval: 2s
-      timeout: 1s
-      path: /
-      failure_threshold: 2
-      success_threshold: 1
-
-  - name: failover-primary
-    servers:
-      - address: "172.28.0.2"
+      - address: "172.28.0.4"
         port: 80
         weight: 100
     health_check:
@@ -168,16 +198,16 @@ regions:
       failure_threshold: 2
       success_threshold: 1
 
-  - name: failover-secondary
+  # TCP health check region (unique server)
+  - name: tcp-region
     servers:
-      - address: "172.28.0.3"
-        port: 80
+      - address: "172.28.0.5"
+        port: 9000
         weight: 100
     health_check:
-      type: http
+      type: tcp
       interval: 2s
       timeout: 1s
-      path: /
       failure_threshold: 2
       success_threshold: 1
 
@@ -185,20 +215,25 @@ domains:
   - name: roundrobin.test
     routing_algorithm: round-robin
     regions:
-      - roundrobin-region
+      - test-region
     ttl: 10
 
   - name: weighted.test
     routing_algorithm: weighted
     regions:
-      - weighted-region
+      - test-region
     ttl: 10
 
   - name: failover.test
     routing_algorithm: failover
     regions:
-      - failover-primary
-      - failover-secondary
+      - test-region
+    ttl: 10
+
+  - name: tcp.test
+    routing_algorithm: round-robin
+    regions:
+      - tcp-region
     ttl: 10
 
 logging:
@@ -310,7 +345,7 @@ func TestDNSBasicQuery(t *testing.T) {
 	}
 
 	// Verify IP is one of our backends
-	validIPs := map[string]bool{"172.28.0.2": true, "172.28.0.3": true}
+	validIPs := map[string]bool{"172.28.0.2": true, "172.28.0.3": true, "172.28.0.4": true}
 	if !validIPs[ips[0]] {
 		t.Errorf("unexpected IP %s, expected one of %v", ips[0], validIPs)
 	}
@@ -367,7 +402,7 @@ func TestDNSTTL(t *testing.T) {
 
 func TestRoundRobinDistribution(t *testing.T) {
 	counts := make(map[string]int)
-	numQueries := 20
+	numQueries := 30 // Divisible by 3 for clean distribution
 
 	for i := 0; i < numQueries; i++ {
 		ips, err := queryDNSGetIPs("roundrobin.test")
@@ -379,16 +414,16 @@ func TestRoundRobinDistribution(t *testing.T) {
 		}
 	}
 
-	// With round-robin, we should see both IPs
-	if len(counts) < 2 {
-		t.Errorf("expected 2 different IPs, got %d: %v", len(counts), counts)
+	// With round-robin, we should see all 3 IPs
+	if len(counts) < 3 {
+		t.Errorf("expected 3 different IPs, got %d: %v", len(counts), counts)
 	}
 
-	// Each should get roughly half (allow 30% tolerance)
+	// Each should get roughly a third (allow 20% tolerance)
 	for ip, count := range counts {
 		pct := float64(count) / float64(numQueries) * 100
-		if pct < 20 || pct > 80 {
-			t.Errorf("IP %s got %.1f%% of queries, expected ~50%%", ip, pct)
+		if pct < 13 || pct > 53 { // ~33% ± 20%
+			t.Errorf("IP %s got %.1f%% of queries, expected ~33%%", ip, pct)
 		}
 	}
 
@@ -413,19 +448,18 @@ func TestWeightedDistribution(t *testing.T) {
 		}
 	}
 
-	// Weight 300 server (172.28.0.2) should get ~75%
-	// Weight 100 server (172.28.0.3) should get ~25%
+	// Weight 300 server (172.28.0.2) should get ~60% (300/500)
+	// Weight 100 servers (172.28.0.3, 172.28.0.4) should get ~20% each (100/500)
 	weight300Count := counts["172.28.0.2"]
-	weight100Count := counts["172.28.0.3"]
 
 	pct300 := float64(weight300Count) / float64(numQueries) * 100
-	pct100 := float64(weight100Count) / float64(numQueries) * 100
 
-	t.Logf("Weighted distribution: 172.28.0.2=%.1f%%, 172.28.0.3=%.1f%%", pct300, pct100)
+	t.Logf("Weighted distribution: %v", counts)
+	t.Logf("Weight-300 server got %.1f%%", pct300)
 
-	// Allow 20% tolerance: weight-300 should get 55-95%
-	if pct300 < 50 || pct300 > 95 {
-		t.Errorf("weight-300 server got %.1f%%, expected 55-95%%", pct300)
+	// Allow 20% tolerance: weight-300 should get 40-80%
+	if pct300 < 40 || pct300 > 80 {
+		t.Errorf("weight-300 server got %.1f%%, expected 40-80%%", pct300)
 	}
 }
 
