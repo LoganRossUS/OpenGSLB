@@ -135,7 +135,7 @@ jobs:
 
       - name: Run integration tests
         env:
-          GSLB_BINARY: ./opengslb
+          GSLB_BINARY: ${{ github.workspace }}/opengslb
         run: go test -tags=integration -v -timeout=5m ./test/integration/...
 
       - name: Collect logs on failure
