@@ -1,5 +1,7 @@
 # Contributing to OpenGSLB
 
+Buy Me a Coffee ☕: https://www.buymeacoffee.com/OpenGSLB 
+
 ## Prerequisites
 
 - Go 1.21 or later
