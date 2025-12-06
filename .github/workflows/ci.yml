@@ -7,8 +7,7 @@ on:
       - develop
   push:
     branches:
-      - main
-      - develop
+      - main  # Only run on push to main (after PR merge)
 
 jobs:
   test:
