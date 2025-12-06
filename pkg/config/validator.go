@@ -26,6 +26,7 @@ func Validate(cfg *Config) error {
 	errs = append(errs, validateRegions(cfg.Regions)...)
 	errs = append(errs, validateDomains(cfg.Domains, cfg.Regions)...)
 	errs = append(errs, validateLogging(&cfg.Logging)...)
+	errs = append(errs, validateAPI(&cfg.API)...)
 
 	if len(errs) > 0 {
 		return errors.Join(errs...)
@@ -175,7 +176,7 @@ func validateHealthCheck(hc *HealthCheck, prefix string) []error {
 		})
 	}
 
-	if hc.Interval < 1_000_000_000 { // 1 second in nanoseconds
+	if hc.Interval < 1_000_000_000 {
 		errs = append(errs, &ValidationError{
 			Field:   hcPrefix + ".interval",
 			Value:   hc.Interval,
@@ -183,7 +184,7 @@ func validateHealthCheck(hc *HealthCheck, prefix string) []error {
 		})
 	}
 
-	if hc.Timeout < 100_000_000 { // 100ms in nanoseconds
+	if hc.Timeout < 100_000_000 {
 		errs = append(errs, &ValidationError{
 			Field:   hcPrefix + ".timeout",
 			Value:   hc.Timeout,
@@ -333,6 +334,62 @@ func validateLogging(logging *LoggingConfig) []error {
 			Value:   logging.Format,
 			Message: "must be one of: json, text",
 		})
+	}
+
+	return errs
+}
+
+func validateAPI(api *APIConfig) []error {
+	var errs []error
+
+	if !api.Enabled {
+		return errs
+	}
+
+	if api.Address == "" {
+		errs = append(errs, &ValidationError{
+			Field:   "api.address",
+			Value:   api.Address,
+			Message: "cannot be empty when API is enabled",
+		})
+	} else {
+		host, port, err := net.SplitHostPort(api.Address)
+		if err != nil {
+			errs = append(errs, &ValidationError{
+				Field:   "api.address",
+				Value:   api.Address,
+				Message: fmt.Sprintf("invalid address format: %v", err),
+			})
+		} else if host != "" {
+			if ip := net.ParseIP(host); ip == nil {
+				errs = append(errs, &ValidationError{
+					Field:   "api.address",
+					Value:   api.Address,
+					Message: "invalid IP address",
+				})
+			}
+		}
+		_ = port
+	}
+
+	for i, cidr := range api.AllowedNetworks {
+		testCIDR := cidr
+		if !strings.Contains(cidr, "/") {
+			if strings.Contains(cidr, ":") {
+				testCIDR = cidr + "/128"
+			} else {
+				testCIDR = cidr + "/32"
+			}
+		}
+
+		_, _, err := net.ParseCIDR(testCIDR)
+		if err != nil {
+			errs = append(errs, &ValidationError{
+				Field:   fmt.Sprintf("api.allowed_networks[%d]", i),
+				Value:   cidr,
+				Message: fmt.Sprintf("invalid CIDR notation: %v", err),
+			})
+		}
 	}
 
 	return errs

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/loganrossus/OpenGSLB/pkg/api"
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/dns"
 	"github.com/loganrossus/OpenGSLB/pkg/health"
@@ -23,6 +24,7 @@ type Application struct {
 	dnsRegistry   *dns.Registry
 	healthManager *health.Manager
 	metricsServer *metrics.Server
+	apiServer     *api.Server
 	logger        *slog.Logger
 }
 
@@ -59,6 +61,10 @@ func (a *Application) Initialize() error {
 
 	if err := a.initializeMetricsServer(); err != nil {
 		return fmt.Errorf("failed to initialize metrics server: %w", err)
+	}
+
+	if err := a.initializeAPIServer(); err != nil {
+		return fmt.Errorf("failed to initialize API server: %w", err)
 	}
 
 	return nil
@@ -132,14 +138,12 @@ func (a *Application) registerHealthCheckServers() error {
 
 // initializeDNSServer creates and configures the DNS server.
 func (a *Application) initializeDNSServer() error {
-	// Build DNS registry with per-domain routers
 	registry, err := dns.BuildRegistry(a.config, routing.NewRouter)
 	if err != nil {
 		return fmt.Errorf("failed to build DNS registry: %w", err)
 	}
 	a.dnsRegistry = registry
 
-	// Log the routing algorithms configured for each domain
 	for _, domainName := range registry.Domains() {
 		entry := registry.Lookup(domainName)
 		if entry != nil {
@@ -192,6 +196,38 @@ func (a *Application) initializeMetricsServer() error {
 	return nil
 }
 
+// initializeAPIServer creates and configures the API server.
+func (a *Application) initializeAPIServer() error {
+	if !a.config.API.Enabled {
+		a.logger.Info("API server disabled")
+		return nil
+	}
+
+	handlers := api.NewHandlers(
+		a.healthManager,
+		&readinessChecker{app: a},
+		&regionMapper{cfg: a.config},
+	)
+
+	server, err := api.NewServer(api.ServerConfig{
+		Address:           a.config.API.Address,
+		AllowedNetworks:   a.config.API.AllowedNetworks,
+		TrustProxyHeaders: a.config.API.TrustProxyHeaders,
+		Logger:            a.logger,
+	}, handlers)
+	if err != nil {
+		return fmt.Errorf("failed to create API server: %w", err)
+	}
+
+	a.apiServer = server
+
+	a.logger.Info("API server initialized",
+		"address", a.config.API.Address,
+		"allowed_networks", a.config.API.AllowedNetworks,
+	)
+	return nil
+}
+
 // Start begins all application components.
 func (a *Application) Start(ctx context.Context) error {
 	a.logger.Info("starting application")
@@ -205,6 +241,14 @@ func (a *Application) Start(ctx context.Context) error {
 		go func() {
 			if err := a.metricsServer.Start(ctx); err != nil {
 				a.logger.Error("metrics server error", "error", err)
+			}
+		}()
+	}
+
+	if a.apiServer != nil {
+		go func() {
+			if err := a.apiServer.Start(ctx); err != nil {
+				a.logger.Error("API server error", "error", err)
 			}
 		}()
 	}
@@ -243,8 +287,13 @@ func (a *Application) Reload(newCfg *config.Config) error {
 			"new", newCfg.Metrics.Address,
 		)
 	}
+	if oldCfg.API.Address != newCfg.API.Address {
+		a.logger.Warn("API address change requires restart",
+			"old", oldCfg.API.Address,
+			"new", newCfg.API.Address,
+		)
+	}
 
-	// Update DNS registry (includes per-domain routers)
 	if err := a.reloadDNSRegistry(newCfg); err != nil {
 		metrics.RecordReload(false)
 		return fmt.Errorf("failed to reload DNS registry: %w", err)
@@ -341,6 +390,16 @@ func (a *Application) Shutdown(ctx context.Context) error {
 
 	var shutdownErr error
 
+	if a.apiServer != nil {
+		a.logger.Debug("stopping API server")
+		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := a.apiServer.Shutdown(shutdownCtx); err != nil {
+			a.logger.Error("error stopping API server", "error", err)
+			shutdownErr = err
+		}
+		cancel()
+	}
+
 	if a.healthManager != nil {
 		a.logger.Debug("stopping health manager")
 		if err := a.healthManager.Stop(); err != nil {
@@ -358,4 +417,45 @@ func (a *Application) Shutdown(ctx context.Context) error {
 
 	a.logger.Info("application shutdown complete")
 	return shutdownErr
+}
+
+// readinessChecker implements api.ReadinessChecker for the Application.
+type readinessChecker struct {
+	app *Application
+}
+
+func (r *readinessChecker) IsDNSReady() bool {
+	return r.app.dnsServer != nil
+}
+
+func (r *readinessChecker) IsHealthCheckReady() bool {
+	if r.app.healthManager == nil {
+		return false
+	}
+	snapshots := r.app.healthManager.GetAllStatus()
+	if len(snapshots) == 0 {
+		return true
+	}
+	for _, snap := range snapshots {
+		if !snap.LastCheck.IsZero() {
+			return true
+		}
+	}
+	return false
+}
+
+// regionMapper implements api.RegionMapper for the Application.
+type regionMapper struct {
+	cfg *config.Config
+}
+
+func (r *regionMapper) GetServerRegion(address string, port int) string {
+	for _, region := range r.cfg.Regions {
+		for _, server := range region.Servers {
+			if server.Address == address && server.Port == port {
+				return region.Name
+			}
+		}
+	}
+	return ""
 }

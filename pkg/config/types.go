@@ -10,6 +10,7 @@ type Config struct {
 	Domains []Domain      `yaml:"domains"`
 	Logging LoggingConfig `yaml:"logging"`
 	Metrics MetricsConfig `yaml:"metrics"`
+	API     APIConfig     `yaml:"api"`
 }
 
 // DNSConfig defines the DNS server settings.
@@ -61,4 +62,12 @@ type LoggingConfig struct {
 type MetricsConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Address string `yaml:"address"`
+}
+
+// APIConfig defines the HTTP API server settings.
+type APIConfig struct {
+	Enabled           bool     `yaml:"enabled"`
+	Address           string   `yaml:"address"`
+	AllowedNetworks   []string `yaml:"allowed_networks"`
+	TrustProxyHeaders bool     `yaml:"trust_proxy_headers"`
 }
