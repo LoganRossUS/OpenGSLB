@@ -38,7 +38,7 @@ OpenGSLB fills this gap. It's a purpose-built GSLB system that:
 - **Doesn't require Kubernetes** - Works on any Linux box, VM, or container
 - **Is actually maintained** - Active development, not a 5-year-old repo
 - **Does real GSLB** - Health checks, multiple routing algorithms, automatic failover
-- **Costs nothing** - MIT licensed, no registration, no phone-home
+- **Costs nothing** - AGPLv3 for open-source use, commercial license available, no registration, no phone-home
 
 **Current Features:**
 - Authoritative DNS server (A/AAAA records)
@@ -210,6 +210,6 @@ If you've been duct-taping DNS failover together with scripts, or you've been wi
 ---
 
 **GitHub**: github.com/loganrossus/OpenGSLB  
-**License**: MIT  
+**License**: AGPLv3 / Commercial  
 **Language**: Go  
 **Status**: Active development, functional for core use cases

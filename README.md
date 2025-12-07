@@ -11,6 +11,15 @@ Buy Me a Coffee ☕: https://www.buymeacoffee.com/OpenGSLB
 
 OpenGSLB is an open-source, self-hosted Global Server Load Balancing (GSLB) system designed for intelligent traffic distribution across multiple data centers and cloud regions. Built for organizations that require complete control over their infrastructure, OpenGSLB provides enterprise-grade global load balancing without vendor lock-in or dependency on third-party services.
 
+## Licensing
+
+OpenGSLB is **dual-licensed**:
+
+- **AGPLv3** – Free forever for open-source projects, internal use, and anyone willing to share modifications  
+- **Commercial License** – For proprietary products, appliances, SaaS, or if you prefer not to comply with AGPL obligations → licensing@opengslb.org
+
+See [LICENSE](LICENSE) for full terms.
+
 ## Features
 
 ### DNS Server
@@ -189,10 +198,6 @@ domains:
 - **Regulated Industries**: Data sovereignty requirements (finance, healthcare, government)
 - **High-Security Environments**: No external dependencies or data sharing
 - **Cost-Conscious Enterprises**: Enterprise features without SaaS pricing
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
 
 ## Contributing
 
