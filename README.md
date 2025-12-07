@@ -18,7 +18,7 @@ OpenGSLB is **dual-licensed**:
 - **AGPLv3** – Free forever for open-source projects, internal use, and anyone willing to share modifications  
 - **Commercial License** – For proprietary products, appliances, SaaS, or if you prefer not to comply with AGPL obligations → licensing@opengslb.org
 
-All versions before the license change remain MIT-licensed.
+See [LICENSE](LICENSE) for full terms.
 
 ## Features
 

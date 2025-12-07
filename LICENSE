@@ -14,8 +14,7 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-Previous releases (prior to v1.x) were released under the MIT License and
-remain available under those terms.
+SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
 Commercial licensing
 --------------------
