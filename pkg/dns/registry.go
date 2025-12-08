@@ -21,6 +21,7 @@ package dns
 
 import (
 	"net"
+	"strings"
 	"sync"
 )
 
@@ -102,10 +103,14 @@ func (r *Registry) Count() int {
 }
 
 // normalizeDomain ensures domain names are in a consistent format.
+// DNS names are case-insensitive per RFC 1035, so we lowercase for consistent lookup.
+// This is essential for compatibility with resolvers using DNS 0x20 encoding (like Google).
 func normalizeDomain(name string) string {
 	if len(name) == 0 {
 		return name
 	}
+	// Lowercase for case-insensitive matching (RFC 1035)
+	name = strings.ToLower(name)
 	if name[len(name)-1] != '.' {
 		return name + "."
 	}
