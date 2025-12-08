@@ -1,498 +1,382 @@
-# OpenGSLB Future Ideas
+# OpenGSLB Future Features Roadmap
 
-This document captures feature ideas being considered for future development. Unlike `future-features.md` which tracks committed roadmap items, this is a brainstorming space for possibilities that may or may not be implemented.
+This document captures planned features that have been identified but deferred to future sprints. Each feature includes context on why it was deferred and any architectural considerations.
 
-**Status**: Ideas only - not committed to roadmap  
-**Last Updated**: 2025-12-02
+**Last Updated**: April 2025 (Post-Architecture Pivot)
 
 ---
 
-## DNS Enhancements
+## 🎯 Architecture Pivot Notice
+
+**As of Sprint 4, OpenGSLB has pivoted to a distributed agent architecture.**
+
+This pivot means:
+- Features are now designed for both standalone and cluster deployment modes
+- Some previously planned features have been superseded by the new architecture
+- Priorities have been reordered to build on the distributed foundation
+
+See **ADR-012**, **ADR-013**, and **ADR-014** for architectural details.
+
+---
+
+## Recently Completed
+
+### Sprint 3 (December 2025)
+
+| Feature | Notes |
+|---------|-------|
+| Hot Reload (SIGHUP) | Full implementation with validation |
+| TCP Health Checks | Connection-based verification |
+| Weighted Routing | Proportional traffic distribution |
+| Active/Standby (Failover) Routing | Priority-based with auto-recovery |
+| AAAA Record Support | Full IPv6 support |
+| Health Status API | REST API with security controls |
+
+### Sprint 4 (April 2025) - In Progress
+
+| Feature | Notes |
+|---------|-------|
+| `--mode=standalone/cluster` | Runtime mode selection (ADR-014) |
+| Raft Consensus | Leader election for HA (ADR-012) |
+| Leader-Only DNS | Non-leaders return REFUSED |
+| Gossip Protocol | Health event propagation |
+| Predictive Health | Agent-side failure prediction |
+| External Veto | Overwatch validation of agent claims |
+| Embedded KV Store | Raft-replicated runtime state (ADR-013) |
+
+---
+
+## Sprint 5: Advanced Routing (Target: May 2025)
+
+With the distributed foundation complete, Sprint 5 delivers advanced routing algorithms designed for multi-region, multi-cloud deployments.
+
+### Geolocation Routing
+
+**Priority**: High  
+**Estimate**: 8 story points
+
+**Description**:  
+Route clients to nearest region based on IP geolocation.
+
+**User Story**:  
+As an operator, I want clients to be routed to the nearest datacenter so that latency is minimized.
+
+**Implementation Notes**:
+- GeoIP database integration (MaxMind GeoLite2-Country)
+- Region-to-country/continent mapping configuration
+- Fall back to round-robin if geo lookup fails
+- Graceful handling of private/unroutable IPs
+- **Cluster mode**: Geo decisions made by leader, consistent across cluster
+
+**Configuration Example**:
+```yaml
+geolocation:
+  database_path: "/var/lib/opengslb/GeoLite2-Country.mmdb"
+  default_region: us-east-1
+
+regions:
+  - name: us-east-1
+    countries: ["US", "CA", "MX"]
+    continents: ["NA"]
+  - name: eu-west-1
+    continents: ["EU"]
+```
+
+---
+
+### Latency-Based Routing
+
+**Priority**: High  
+**Estimate**: 5 story points
+
+**Description**:  
+Route to server with lowest measured latency.
+
+**User Story**:  
+As an operator, I want traffic routed to the fastest responding server so that users get optimal performance.
+
+**Implementation Notes**:
+- Health checks already measure latency
+- **Cluster mode**: Latency data aggregated via gossip from all nodes
+- Selection: lowest latency with exponential moving average smoothing
+- Prevents flapping between servers with similar latency
+
+---
+
+### Grafana Dashboard Templates
+
+**Priority**: High  
+**Estimate**: 5 story points
+
+**Description**:  
+Pre-built Grafana dashboards for OpenGSLB monitoring.
+
+**Planned Dashboards**:
+- **Overview**: Query rate, error rate, latency, healthy servers
+- **Health**: Per-region, per-server health status, state transitions
+- **Routing**: Algorithm distribution, failover events
+- **Cluster** (new): Leader status, Raft health, gossip propagation
+
+---
+
+### Configuration File Includes
+
+**Priority**: Medium  
+**Estimate**: 5 story points
+
+**Description**:  
+Allow splitting configuration across multiple files for better organization.
+
+**Example**:
+```yaml
+includes:
+  - regions/*.yaml
+  - domains/*.yaml
+```
+
+**Notes**:
+- Merge semantics: append only (ADR-013)
+- Works with hot-reload
+- Validated before merge
+
+---
+
+## Sprint 6: Operational Excellence (Target: June 2025)
+
+### CLI Management Tool
+
+**Priority**: High  
+**Estimate**: 5 story points
+
+**Description**:  
+Command-line tool for cluster management and debugging.
+
+**Commands**:
+```bash
+opengslb-cli status              # Overall cluster status
+opengslb-cli servers             # List servers with health
+opengslb-cli domains             # List configured domains
+opengslb-cli cluster members     # Show cluster membership
+opengslb-cli cluster leader      # Show current leader
+opengslb-cli override set ...    # Set weight override (KV)
+opengslb-cli override list       # List active overrides
+opengslb-cli config validate     # Validate config file
+```
+
+---
+
+### Operational Runbooks
+
+**Priority**: High  
+**Estimate**: 3 story points
+
+**Description**:  
+Production deployment guides and incident response playbooks.
+
+**Documents**:
+- Standalone deployment guide
+- Cluster deployment guide (3-node, 5-node)
+- Upgrade procedures (standalone → cluster migration)
+- Incident response playbook
+- Capacity planning guidelines
+
+---
+
+### Dynamic Service Registration API
+
+**Priority**: Medium  
+**Estimate**: 5 story points
+
+**Description**:  
+Allow services to register themselves dynamically via API.
+
+**User Story**:  
+As a service owner, I want my application to register itself with OpenGSLB so that I don't need to update configuration files for every deployment.
+
+**API Example**:
+```bash
+# Register service
+curl -X PUT http://opengslb:9090/api/v1/services/web \
+  -d '{
+    "address": "10.0.1.50",
+    "port": 8080,
+    "region": "us-east-1",
+    "health_check": {"type": "http", "path": "/health"},
+    "ttl": "60s"
+  }'
+
+# Service sends heartbeats to maintain registration
+curl -X POST http://opengslb:9090/api/v1/services/web/10.0.1.50:8080/heartbeat
+```
+
+**Notes**:
+- Stored in KV store (ADR-013)
+- Replicated via Raft in cluster mode
+- TTL-based expiration if heartbeat stops
+
+---
 
 ### EDNS Client Subnet (ECS) Support
 
-**Problem**: When clients use public DNS resolvers (8.8.8.8, 1.1.1.1), geolocation routing sees the resolver's IP, not the client's actual location.
+**Priority**: Medium  
+**Estimate**: 5 story points
 
-**Solution**: Implement RFC 7871 EDNS Client Subnet. Resolvers that support ECS include the client's subnet in the query, allowing accurate geographic routing.
+**Description**:  
+Implement RFC 7871 for accurate geolocation when clients use public DNS resolvers.
 
-**Complexity**: Medium  
-**Value**: High for geolocation routing accuracy
-
-**Considerations**:
-- Privacy implications (some resolvers strip ECS intentionally)
-- Cache key must include client subnet
-- Not all resolvers support ECS
-
----
-
-### DNS-over-HTTPS (DoH) / DNS-over-TLS (DoT)
-
-**Problem**: Traditional DNS is unencrypted, visible to network observers.
-
-**Solution**: Implement RFC 8484 (DoH) and RFC 7858 (DoT) for encrypted DNS transport.
-
-**Complexity**: Medium  
-**Value**: Medium - increasingly expected in modern deployments
-
-**Considerations**:
-- Certificate management adds operational complexity
-- DoH requires HTTP/2 support
-- May conflict with "simple deployment" goal
-- Could be optional module
+**Implementation Notes**:
+- Parse ECS option from DNS queries
+- Use client subnet instead of resolver IP for geo decisions
+- Cache by client subnet prefix
+- Privacy mode: strip ECS from upstream queries
 
 ---
 
-### Zone Transfer (AXFR/IXFR) Support
+## Phase 4: Enterprise Features (Target: Q3 2025)
 
-**Problem**: Organizations may want OpenGSLB to integrate with existing DNS infrastructure.
+### Multi-Datacenter Federation
 
-**Solution**: Support AXFR (full) and IXFR (incremental) zone transfers, both as primary and secondary.
+**Priority**: Medium  
+**Estimate**: 13 story points
 
-**Complexity**: High  
-**Value**: Medium - enables hybrid deployments
+**Description**:  
+Connect multiple OpenGSLB clusters across datacenters with WAN gossip.
 
-**Use Cases**:
-- OpenGSLB as hidden primary, traditional DNS as public-facing
-- Existing DNS as primary, OpenGSLB as intelligent secondary
-- Migration path from legacy DNS
+**User Story**:  
+As an enterprise operator, I want separate OpenGSLB clusters per datacenter that share health information so that I can have both local autonomy and global awareness.
 
----
-
-### Split-Horizon DNS
-
-**Problem**: Internal and external clients need different answers for the same domain.
-
-**Solution**: Return different IP addresses based on source IP ranges (internal corporate network vs internet).
-
-**Complexity**: Low-Medium  
-**Value**: High for enterprise deployments
-
-**Example Config**:
-```yaml
-domains:
-  - name: app.example.com
-    views:
-      - name: internal
-        source_ranges: ["10.0.0.0/8", "192.168.0.0/16"]
-        regions: [internal-dc]
-      - name: external
-        source_ranges: ["0.0.0.0/0"]
-        regions: [public-cloud]
+**Architecture**:
+```
+┌─────────────────┐     WAN Gossip     ┌─────────────────┐
+│  DC1 Cluster    │◄──────────────────►│  DC2 Cluster    │
+│  (3 nodes)      │                    │  (3 nodes)      │
+│  Raft: local    │                    │  Raft: local    │
+└─────────────────┘                    └─────────────────┘
+         │                                      │
+         └──────────────┬───────────────────────┘
+                        │
+                        ▼
+              Global Health View
+              (Cross-DC routing decisions)
 ```
 
----
-
-### Negative Caching Controls
-
-**Problem**: NXDOMAIN responses may be cached too long or not long enough.
-
-**Solution**: Configurable SOA minimum TTL for negative responses, separate from positive response TTL.
-
-**Complexity**: Low  
-**Value**: Low-Medium
+**Notes**:
+- Each DC has independent Raft cluster
+- WAN gossip for cross-DC health sharing
+- Local decisions with global awareness
 
 ---
-
-## Advanced Routing Algorithms
 
 ### Capacity-Aware Routing
 
-**Problem**: Round-robin and weighted routing don't account for current server load.
+**Priority**: Medium  
+**Estimate**: 5 story points
 
-**Solution**: Servers report capacity/load via health check responses. Routing prefers servers with available capacity.
+**Description**:  
+Route based on current server capacity reported by agents.
 
-**Complexity**: Medium  
-**Value**: High for variable-load environments
-
-**Implementation Options**:
-- Custom header in health check response (`X-Capacity: 75`)
-- Separate capacity endpoint
-- Sidecar reporting to OpenGSLB API
-
----
-
-### Session Affinity (Consistent Hashing)
-
-**Problem**: Some applications benefit from clients consistently reaching the same backend.
-
-**Solution**: Use consistent hashing based on client IP to prefer the same server for a given client, while still supporting failover.
-
-**Complexity**: Medium  
-**Value**: Medium
-
-**Considerations**:
-- DNS caching already provides some stickiness
-- Not true session persistence (client can still hit different servers)
-- Hash ring implementation for minimal disruption during server changes
+**Implementation Notes**:
+- Agents report capacity via predictive health system
+- Custom health check header: `X-Capacity: 75`
+- Routing prefers servers with available capacity
+- Integrates with weighted routing
 
 ---
 
-### Canary / Traffic Splitting
+### Web UI Dashboard
 
-**Problem**: Gradual rollouts need fine-grained traffic control beyond simple weights.
+**Priority**: Medium  
+**Estimate**: 8 story points
 
-**Solution**: Explicit percentage-based traffic splitting between server groups.
+**Description**:  
+Read-only web dashboard for monitoring and debugging.
 
-**Complexity**: Medium  
-**Value**: High for CI/CD integration
+**Features**:
+- Cluster overview (leader, members, health)
+- Domain list with routing status
+- Server health visualization
+- Real-time query metrics
+- Configuration viewer
 
-**Example Config**:
-```yaml
-domains:
-  - name: app.example.com
-    traffic_split:
-      - group: stable
-        percentage: 95
-        regions: [us-east-stable]
-      - group: canary
-        percentage: 5
-        regions: [us-east-canary]
-```
+**Notes**:
+- Served by leader node only
+- Simple server-rendered HTML (no heavy JS framework)
+- Secured by API access controls
 
 ---
-
-### Time-Based Routing
-
-**Problem**: Traffic patterns vary by time of day; different regions are preferred at different times.
-
-**Solution**: Route differently based on time of day, day of week, or calendar schedules.
-
-**Complexity**: Low-Medium  
-**Value**: Medium
-
-**Use Cases**:
-- Follow-the-sun support routing
-- Business hours vs off-hours routing
-- Maintenance window avoidance
-
----
-
-### Cost-Based Routing
-
-**Problem**: Cloud regions have different costs; prefer cheaper options when performance is equal.
-
-**Solution**: Tag servers/regions with cost tiers. When health and latency are equivalent, prefer lower-cost options.
-
-**Complexity**: Low  
-**Value**: Medium for cost-conscious deployments
-
----
-
-### Explicit Failover Chains
-
-**Problem**: Weighted routing doesn't provide predictable failover order.
-
-**Solution**: Define explicit priority ordering: try region A first, then B, then C.
-
-**Complexity**: Low  
-**Value**: High for disaster recovery
-
-**Example Config**:
-```yaml
-domains:
-  - name: app.example.com
-    routing_algorithm: failover
-    failover_order:
-      - us-east-1   # Primary
-      - us-west-2   # Secondary
-      - eu-west-1   # Tertiary
-```
-
----
-
-## Health Checking Enhancements
 
 ### gRPC Health Checks
 
-**Problem**: Microservices using gRPC have a standard health checking protocol that HTTP checks don't cover.
+**Priority**: Low  
+**Estimate**: 3 story points
 
-**Solution**: Implement gRPC health checking protocol (grpc.health.v1.Health).
+**Description**:  
+Support gRPC health checking protocol for microservices.
 
-**Complexity**: Medium  
-**Value**: High for gRPC-based architectures
-
----
-
-### Custom Script Health Checks
-
-**Problem**: Some health determinations require complex logic beyond HTTP/TCP.
-
-**Solution**: Execute arbitrary scripts that return exit codes indicating health status.
-
-**Complexity**: Low  
-**Value**: Medium
-
-**Considerations**:
-- Security implications (script execution)
-- Timeout enforcement critical
-- Script management/deployment
-- Could be disabled by default
+**Implementation Notes**:
+- `grpc.health.v1.Health` service check
+- Config: `type: grpc` in health_check section
 
 ---
 
-### Passive Health Checking
+## Phase 5: Production Hardening (Target: Q4 2025)
 
-**Problem**: Active health checks add load to backends and have inherent delays.
+### Rate Limiting & DDoS Protection
 
-**Solution**: Infer health from other signals: DNS query success rates, external monitoring webhooks, or response patterns.
+**Priority**: High  
+**Estimate**: 5 story points
 
-**Complexity**: High  
-**Value**: Medium
+**Description**:  
+Protect against DNS amplification attacks and query floods.
 
----
-
-### Health Check Result Sharing
-
-**Problem**: Multiple OpenGSLB instances each probe all backends, multiplying health check traffic.
-
-**Solution**: Share health check results between instances via gossip or shared state.
-
-**Complexity**: Medium (part of clustering work)  
-**Value**: High for scaled deployments
-
----
-
-### Dependency Health Checks
-
-**Problem**: A server may be "up" but its dependencies (database, cache) may be down.
-
-**Solution**: Support chained health checks where a server's health depends on its dependencies.
-
-**Complexity**: Medium  
-**Value**: Medium
-
----
-
-## Operations & Observability
-
-### Control Plane REST API
-
-**Problem**: Operational tasks require signal-based reload or configuration file changes.
-
-**Solution**: REST API for runtime inspection and control.
-
-**Potential Endpoints**:
-```
-GET  /api/v1/health          # OpenGSLB health
-GET  /api/v1/domains         # List domains and their status
-GET  /api/v1/servers         # List servers with health status
-GET  /api/v1/servers/{id}    # Server detail with health history
-POST /api/v1/reload          # Trigger config reload
-POST /api/v1/servers/{id}/drain    # Remove from rotation
-POST /api/v1/servers/{id}/enable   # Add back to rotation
-```
-
-**Complexity**: Medium  
-**Value**: High for operational tooling
-
----
-
-### Audit Logging
-
-**Problem**: Compliance requirements need detailed records of configuration changes and manual interventions.
-
-**Solution**: Structured audit log separate from operational logs, capturing who/what/when for all changes.
-
-**Complexity**: Low-Medium  
-**Value**: High for regulated industries
-
----
-
-### Traffic Analytics
-
-**Problem**: Operators need visibility into query patterns for capacity planning.
-
-**Solution**: Aggregate statistics on query volume by domain, source IP range, response type, and routing decision.
-
-**Complexity**: Medium  
-**Value**: Medium
-
-**Considerations**:
-- Memory usage for aggregation
-- Export format (Prometheus metrics vs separate analytics)
-- Privacy considerations for source IP tracking
-
----
-
-### Built-in Alerting
-
-**Problem**: Health state changes require external monitoring to detect.
-
-**Solution**: Webhook notifications or built-in alerting rules for health transitions.
-
-**Complexity**: Low-Medium  
-**Value**: Medium
-
-**Considerations**:
-- May duplicate Prometheus alerting capabilities
-- Useful for deployments without full monitoring stack
-
----
-
-### Dry-Run Mode
-
-**Problem**: Configuration changes may have unintended effects; no way to preview.
-
-**Solution**: Load configuration, validate, and report what would change without applying.
-
-**Complexity**: Low  
-**Value**: Medium
-
-**Use Cases**:
-- CI/CD pipeline validation
-- Pre-deployment review
-- Training/learning
-
----
-
-### Configuration Diff on Reload
-
-**Problem**: After hot reload, unclear what actually changed.
-
-**Solution**: Log detailed diff between old and new configuration on reload.
-
-**Complexity**: Low  
-**Value**: Low-Medium (operational nicety)
-
----
-
-## High Availability & Clustering
-
-### Native Clustering with Raft
-
-**Problem**: High availability requires external systems (etcd, Consul) or manual coordination.
-
-**Solution**: Built-in Raft consensus for leader election and state replication.
-
-**Complexity**: High  
-**Value**: High - aligns with "no external dependencies" philosophy
-
-**Considerations**:
-- Significant complexity increase
-- hashicorp/raft library available
-- Bootstrap and membership management
-- Split-brain prevention
-
----
-
-### Gossip-Based Health Sharing
-
-**Problem**: Single-point-of-view health checking can have false positives from network issues.
-
-**Solution**: Multiple OpenGSLB instances share health observations via gossip protocol, make consensus decisions.
-
-**Complexity**: Medium  
-**Value**: High for distributed deployments
-
-**Note**: Already identified in roadmap with hashicorp/memberlist
-
----
-
-### Anycast Deployment Guide
-
-**Problem**: True geographic distribution requires anycast, which is complex to set up.
-
-**Solution**: Documentation and reference architecture for deploying OpenGSLB with BGP anycast.
-
-**Complexity**: Low (documentation only)  
-**Value**: Medium
-
----
-
-### Quorum-Based Failover
-
-**Problem**: Single checker deciding health can cause flapping or false failovers.
-
-**Solution**: Require N of M checkers to agree before changing health state.
-
-**Complexity**: Medium (depends on clustering)  
-**Value**: High for reliability
-
----
-
-## Security
-
-### DNSSEC Signing
-
-**Problem**: DNS responses can be spoofed; DNSSEC provides authentication.
-
-**Solution**: Sign responses with DNSSEC keys.
-
-**Complexity**: High  
-**Value**: Medium-High for security-conscious deployments
-
-**Considerations**:
-- Key management complexity
-- Key rotation procedures
-- Performance impact of signing
-- NSEC/NSEC3 for authenticated denial
-
----
-
-### Rate Limiting
-
-**Problem**: DNS amplification attacks and query floods can overwhelm the server.
-
-**Solution**: Per-source-IP and global rate limits with configurable thresholds.
-
-**Complexity**: Low-Medium  
-**Value**: High for public-facing deployments
-
-**Example Config**:
+**Configuration Example**:
 ```yaml
 security:
   rate_limiting:
     enabled: true
     per_ip_qps: 100
-    global_qps: 10000
+    global_qps: 50000
     burst: 50
 ```
 
 ---
 
-### Access Control Lists
+### DNS-over-HTTPS (DoH) / DNS-over-TLS (DoT)
 
-**Problem**: Some domains should only be queryable by specific networks.
+**Priority**: Medium  
+**Estimate**: 8 story points
 
-**Solution**: Per-domain ACLs restricting which source IPs can query.
+**Description**:  
+Encrypted DNS transport per RFC 8484 (DoH) and RFC 7858 (DoT).
 
-**Complexity**: Low  
-**Value**: Medium for internal deployments
-
----
-
-### mTLS for Health Checks
-
-**Problem**: Health check endpoints may need authentication.
-
-**Solution**: Support client certificates for health check requests.
-
-**Complexity**: Low-Medium  
-**Value**: Medium for high-security environments
+**Notes**:
+- Optional feature (certificate management complexity)
+- Served by leader only in cluster mode
 
 ---
 
-### Query Logging with PII Controls
+### DNSSEC Signing
 
-**Problem**: Query logs are useful for debugging but may contain sensitive client IPs.
+**Priority**: Low  
+**Estimate**: 13 story points
 
-**Solution**: Configurable anonymization (truncate IPs, hash, or omit) for query logging.
+**Description**:  
+Sign DNS responses with DNSSEC keys.
 
-**Complexity**: Low  
-**Value**: Medium for privacy-conscious deployments
+**Notes**:
+- Significant complexity (key management, rotation)
+- Performance impact of signing
+- Deferred until core features stable
 
 ---
-
-## Integration & Ecosystem
 
 ### Kubernetes Operator
 
-**Problem**: Kubernetes-native deployments expect Custom Resource Definitions.
+**Priority**: Medium  
+**Estimate**: 13 story points
 
-**Solution**: Operator that manages OpenGSLB configuration via CRDs.
-
-**Complexity**: High  
-**Value**: High for Kubernetes shops
+**Description**:  
+Manage OpenGSLB via Kubernetes Custom Resource Definitions.
 
 **Example CRD**:
 ```yaml
@@ -502,7 +386,7 @@ metadata:
   name: my-app
 spec:
   domain: app.example.com
-  routingAlgorithm: round-robin
+  routingAlgorithm: geolocation
   regions:
     - name: us-east
       endpoints:
@@ -514,132 +398,39 @@ spec:
 
 ### Terraform Provider
 
-**Problem**: Infrastructure-as-code teams use Terraform for DNS management.
+**Priority**: Low  
+**Estimate**: 8 story points
 
-**Solution**: Terraform provider for OpenGSLB configuration.
-
-**Complexity**: Medium  
-**Value**: Medium
-
----
-
-### Consul/etcd Backend
-
-**Problem**: Large deployments may want external state storage.
-
-**Solution**: Optional backends for configuration and state storage.
-
-**Complexity**: Medium  
-**Value**: Medium
-
-**Considerations**:
-- Conflicts with "no external dependencies" for simple deployments
-- Could be optional/pluggable
+**Description**:  
+Terraform provider for infrastructure-as-code management.
 
 ---
 
-### Service Mesh Integration
+## ⚠️ Superseded / Removed Features
 
-**Problem**: Service meshes handle internal traffic; external traffic needs different routing.
+The following features from the original roadmap have been superseded by the distributed architecture:
 
-**Solution**: Integration points with Istio/Linkerd for external-to-mesh traffic routing.
-
-**Complexity**: High  
-**Value**: Medium
-
----
-
-### Cloud Provider Health Sources
-
-**Problem**: Cloud load balancers already perform health checks; duplicating is wasteful.
-
-**Solution**: Import health status from AWS ALB, GCP Load Balancer, Azure Traffic Manager.
-
-**Complexity**: Medium per provider  
-**Value**: Medium for cloud deployments
+| Original Feature | Status | Replacement |
+|-----------------|--------|-------------|
+| Health Check Consensus | **Superseded** | Built into ADR-012 (gossip + overwatch veto) |
+| Keepalived Integration (VIP) | **Superseded** | Native anycast with Raft leader election |
+| Native Clustering with Raft | **Completed** | Sprint 4 (ADR-012) |
 
 ---
 
-## Developer Experience
+## Feature Priority Matrix
 
-### Configuration Schema Publishing
-
-**Problem**: YAML configuration has no IDE support for validation or autocomplete.
-
-**Solution**: Publish JSON Schema for configuration file; integrate with editors.
-
-**Complexity**: Low  
-**Value**: Medium
-
----
-
-### Web UI Dashboard
-
-**Problem**: Command-line only visibility into system state.
-
-**Solution**: Read-only web dashboard showing domains, servers, health status, recent routing decisions.
-
-**Complexity**: Medium  
-**Value**: Medium-High
-
-**Considerations**:
-- Adds frontend complexity (or use simple server-rendered HTML)
-- Security of dashboard endpoint
-- Could be separate optional component
-
----
-
-### CLI Tool
-
-**Problem**: Operational tasks require signals, API calls, or config changes.
-
-**Solution**: Dedicated CLI tool for common operations.
-
-**Commands**:
-```bash
-opengslb-cli status              # Overall status
-opengslb-cli servers             # List servers with health
-opengslb-cli domains             # List domains
-opengslb-cli reload              # Trigger config reload
-opengslb-cli drain <server>      # Remove from rotation
-opengslb-cli enable <server>     # Add to rotation
-opengslb-cli config validate     # Validate config file
-```
-
-**Complexity**: Low-Medium  
-**Value**: Medium
-
----
-
-### Simulation Mode
-
-**Problem**: Hard to predict how configuration changes will affect routing.
-
-**Solution**: Feed historical query logs and see how different configurations would have routed traffic.
-
-**Complexity**: Medium  
-**Value**: Low-Medium
-
-**Use Cases**:
-- Capacity planning
-- Configuration tuning
-- What-if analysis
-
----
-
-## Ideas Parking Lot
-
-Lower-priority or speculative ideas that may warrant future discussion:
-
-- **Multi-tenancy**: Isolated configuration per tenant with resource quotas
-- **GraphQL API**: Alternative to REST for flexible querying
-- **Plugin System**: Dynamic loading of custom routers/checkers
-- **DNS Query Rewriting**: Transform queries before routing (CNAME flattening, etc.)
-- **Response Policy Zones (RPZ)**: DNS-based filtering/blocking
-- **Synthetic Monitoring Integration**: Use external probes (Pingdom, etc.) as health signals
-- **Machine Learning Routing**: Predictive routing based on historical patterns
-- **WebAssembly Plugins**: Safe custom logic execution
-- **DNS Load Testing Tool**: Built-in tool for performance testing
+| Feature | User Value | Complexity | Dependency | Target |
+|---------|-----------|------------|------------|--------|
+| Geolocation Routing | High | Medium | Distributed foundation | Sprint 5 |
+| Latency-Based Routing | High | Low | Distributed foundation | Sprint 5 |
+| Grafana Dashboards | High | Low | Cluster metrics | Sprint 5 |
+| CLI Tool | High | Medium | API complete | Sprint 6 |
+| Dynamic Registration | Medium | Medium | KV store | Sprint 6 |
+| Multi-DC Federation | High | High | Cluster stable | Phase 4 |
+| Web UI | Medium | Medium | API complete | Phase 4 |
+| Rate Limiting | High | Low | None | Phase 5 |
+| Kubernetes Operator | Medium | High | API stable | Phase 5 |
 
 ---
 
@@ -649,11 +440,11 @@ Have an idea for OpenGSLB? Consider:
 
 1. **Problem**: What problem does this solve?
 2. **Users**: Who benefits from this feature?
-3. **Complexity**: How difficult is implementation?
-4. **Dependencies**: Does it require external systems?
-5. **Alignment**: Does it fit the "self-hosted, no vendor lock-in" philosophy?
+3. **Mode Compatibility**: Does it work in both standalone and cluster mode?
+4. **Distributed Design**: How does it leverage gossip/Raft?
+5. **Alignment**: Does it fit the "predictive + reactive" philosophy?
 
-Ideas that align with OpenGSLB's core values (self-hosted, simple deployment, enterprise-grade, no external dependencies for basic functionality) are most likely to be prioritized.
+Ideas that leverage the distributed architecture and align with OpenGSLB's dual-perspective health model are most likely to be prioritized.
 
 ---
 
@@ -661,4 +452,6 @@ Ideas that align with OpenGSLB's core values (self-hosted, simple deployment, en
 
 | Date | Author | Changes |
 |------|--------|---------|
-| 2025-12-02 | Logan Ross | Initial creation from brainstorming session |
+| 2025-12-02 | Logan Ross | Initial creation |
+| 2025-12-05 | Logan Ross | Sprint 3 completion updates |
+| 2025-04-08 | Logan Ross | **Major revision**: Architecture pivot to distributed model, reordered priorities, marked superseded features |
