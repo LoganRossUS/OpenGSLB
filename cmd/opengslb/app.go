@@ -134,6 +134,7 @@ func (a *Application) registerHealthCheckServers() error {
 				Port:     server.Port,
 				Path:     hc.Path,
 				Scheme:   scheme,
+				Host:     server.Host,
 				Interval: hc.Interval,
 				Timeout:  hc.Timeout,
 			}
@@ -384,6 +385,7 @@ func (a *Application) reloadHealthManager(newCfg *config.Config) error {
 				Port:     server.Port,
 				Path:     hc.Path,
 				Scheme:   scheme,
+				Host:     server.Host,
 				Interval: hc.Interval,
 				Timeout:  hc.Timeout,
 			})

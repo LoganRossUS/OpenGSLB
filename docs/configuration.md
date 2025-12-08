@@ -111,9 +111,10 @@ regions:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `address` | string | Required | IP address or hostname of the backend server |
+| `address` | string | Required | IP address of the backend server |
 | `port` | integer | `80` | Port number for health checks |
 | `weight` | integer | `100` | Server weight for weighted routing (1-1000) |
+| `host` | string | (empty) | Hostname for HTTPS health checks (for TLS SNI and certificate validation) |
 
 #### Health Check Fields
 
@@ -123,6 +124,7 @@ regions:
 | `interval` | duration | `30s` | Time between health checks |
 | `timeout` | duration | `5s` | Timeout for each check (must be < interval) |
 | `path` | string | `/health` | HTTP/HTTPS path to check |
+| `host` | string | (empty) | Host header for HTTPS checks (for TLS SNI and certificate validation) |
 | `failure_threshold` | integer | `3` | Consecutive failures before marking unhealthy (1-10) |
 | `success_threshold` | integer | `2` | Consecutive successes before marking healthy (1-10) |
 
@@ -131,6 +133,7 @@ regions:
 - TCP checks only verify successful TCP connection (no data exchange)
 - A server starts as healthy and requires `failure_threshold` consecutive failures to become unhealthy
 - An unhealthy server requires `success_threshold` consecutive successes to become healthy again
+- For HTTPS checks with IP addresses, use `host` to set the Host header for TLS certificate validation
 
 **When to use TCP checks:**
 - Services without HTTP endpoints (databases, caches, custom protocols)

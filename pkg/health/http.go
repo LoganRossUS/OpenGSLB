@@ -140,8 +140,45 @@ func (c *HTTPChecker) Check(ctx context.Context, target Target) Result {
 	req.Header.Set("User-Agent", "OpenGSLB-HealthCheck/1.0")
 	req.Header.Set("Connection", "close")
 
+	// Determine which client to use
+	client := c.client
+
+	// For HTTPS with a custom Host, we need to set TLS ServerName for proper
+	// certificate validation (equivalent to curl's --resolve flag).
+	// This requires a per-request transport since ServerName is per-connection.
+	if target.Host != "" {
+		req.Host = target.Host
+
+		if scheme == "https" {
+			// Create a per-request transport with the correct TLS ServerName
+			transport := &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   5 * time.Second,
+					KeepAlive: -1, // Disable keep-alive for health checks
+				}).DialContext,
+				TLSHandshakeTimeout:   5 * time.Second,
+				ResponseHeaderTimeout: 5 * time.Second,
+				DisableKeepAlives:     true,
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: c.InsecureSkipVerify,
+					ServerName:         target.Host, // This is the key - tells TLS to validate cert against this hostname
+				},
+			}
+
+			client = &http.Client{
+				Transport: transport,
+				Timeout:   10 * time.Second,
+			}
+			if !c.FollowRedirects {
+				client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+					return http.ErrUseLastResponse
+				}
+			}
+		}
+	}
+
 	// Perform request
-	resp, err := c.client.Do(req)
+	resp, err := client.Do(req)
 	result.Latency = time.Since(start)
 
 	if err != nil {

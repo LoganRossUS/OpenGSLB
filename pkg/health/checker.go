@@ -31,6 +31,7 @@ type Target struct {
 	// HTTP-specific fields
 	Path   string
 	Scheme string // "http" or "https"
+	Host   string // Host header for HTTPS (for TLS SNI and certificate validation)
 
 	// Check configuration
 	Timeout time.Duration
