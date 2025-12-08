@@ -45,6 +45,8 @@ type Handler struct {
 	healthProvider HealthStatusProvider
 	defaultTTL     uint32
 	logger         *slog.Logger
+	ednsEnabled    bool
+	ednsUDPSize    uint16
 }
 
 // HandlerConfig contains configuration for the DNS handler.
@@ -53,7 +55,14 @@ type HandlerConfig struct {
 	HealthProvider HealthStatusProvider
 	DefaultTTL     uint32
 	Logger         *slog.Logger
+	EDNSEnabled    *bool  // Pointer to distinguish unset from false; defaults to true
+	EDNSUDPSize    uint16 // Advertised UDP buffer size; defaults to 4096
 }
+
+// Default EDNS configuration values.
+const (
+	DefaultEDNSUDPSize = 4096 // RFC 6891 recommends 4096 for EDNS
+)
 
 // NewHandler creates a new DNS handler.
 func NewHandler(cfg HandlerConfig) *Handler {
@@ -62,11 +71,25 @@ func NewHandler(cfg HandlerConfig) *Handler {
 		logger = slog.Default()
 	}
 
+	// Default EDNS to enabled
+	ednsEnabled := true
+	if cfg.EDNSEnabled != nil {
+		ednsEnabled = *cfg.EDNSEnabled
+	}
+
+	// Default UDP size
+	ednsUDPSize := cfg.EDNSUDPSize
+	if ednsUDPSize == 0 {
+		ednsUDPSize = DefaultEDNSUDPSize
+	}
+
 	return &Handler{
 		registry:       cfg.Registry,
 		healthProvider: cfg.HealthProvider,
 		defaultTTL:     cfg.DefaultTTL,
 		logger:         logger,
+		ednsEnabled:    ednsEnabled,
+		ednsUDPSize:    ednsUDPSize,
 	}
 }
 
@@ -78,9 +101,13 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	msg.SetReply(r)
 	msg.Authoritative = true
 
+	// Extract EDNS OPT record from request if present
+	clientOPT := h.getEDNS(r)
+
 	if len(r.Question) == 0 {
 		h.logger.Warn("received DNS query with no questions")
 		msg.Rcode = dns.RcodeFormatError
+		h.addEDNS(msg, clientOPT)
 		if err := w.WriteMsg(msg); err != nil {
 			h.logger.Error("failed to write DNS response", "error", err)
 		}
@@ -91,11 +118,22 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	domain := q.Name
 	queryType := dns.TypeToString[q.Qtype]
 
-	h.logger.Debug("received DNS query",
-		"name", domain,
-		"type", queryType,
-		"class", dns.ClassToString[q.Qclass],
-	)
+	// Log EDNS info if present
+	if clientOPT != nil && h.ednsEnabled {
+		h.logger.Debug("received DNS query",
+			"name", domain,
+			"type", queryType,
+			"class", dns.ClassToString[q.Qclass],
+			"edns_version", clientOPT.Version(),
+			"edns_udp_size", clientOPT.UDPSize(),
+		)
+	} else {
+		h.logger.Debug("received DNS query",
+			"name", domain,
+			"type", queryType,
+			"class", dns.ClassToString[q.Qclass],
+		)
+	}
 
 	switch q.Qtype {
 	case dns.TypeA:
@@ -108,6 +146,9 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 			"type", queryType,
 		)
 	}
+
+	// Add EDNS OPT record to response if client sent one
+	h.addEDNS(msg, clientOPT)
 
 	status := dns.RcodeToString[msg.Rcode]
 	duration := time.Since(start).Seconds()
@@ -275,4 +316,36 @@ func filterByAddressFamily(servers []ServerInfo, ipv4 bool) []ServerInfo {
 		}
 	}
 	return filtered
+}
+
+// getEDNS extracts the OPT pseudo-record from the request's additional section.
+// Returns nil if no OPT record is present.
+func (h *Handler) getEDNS(r *dns.Msg) *dns.OPT {
+	if !h.ednsEnabled {
+		return nil
+	}
+	for _, rr := range r.Extra {
+		if opt, ok := rr.(*dns.OPT); ok {
+			return opt
+		}
+	}
+	return nil
+}
+
+// addEDNS adds an OPT pseudo-record to the response if the client sent one.
+// Per RFC 6891, servers should include an OPT record in the response
+// when the client included one in the request.
+func (h *Handler) addEDNS(msg *dns.Msg, clientOPT *dns.OPT) {
+	if clientOPT == nil || !h.ednsEnabled {
+		return
+	}
+
+	opt := new(dns.OPT)
+	opt.Hdr.Name = "."
+	opt.Hdr.Rrtype = dns.TypeOPT
+	opt.SetUDPSize(h.ednsUDPSize)
+	// Keep EDNS version 0 (the only version defined)
+	opt.SetVersion(0)
+
+	msg.Extra = append(msg.Extra, opt)
 }

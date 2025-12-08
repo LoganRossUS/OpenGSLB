@@ -793,3 +793,8 @@ domains:
 ```
 
 **Tradeoff:** More health check traffic and DNS queries.
+
+### Helpful Sites
+
+- [DNS Health Check](https://dns-health-check.com/)
+- [Flush Google DNS Cache](https://developers.google.com/speed/public-dns/flush-dns)

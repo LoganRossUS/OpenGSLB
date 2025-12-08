@@ -666,3 +666,197 @@ func (r *trackingRouter) Route(_ context.Context, _ string, servers []ServerInfo
 func (r *trackingRouter) Algorithm() string {
 	return r.algorithm
 }
+
+// EDNS Tests
+
+func TestHandler_EDNS_BasicResponse(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name:   "example.com",
+		TTL:    60,
+		Router: &mockRouter{},
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("10.0.0.1"), Port: 80, Region: "us-east"},
+		},
+	})
+
+	handler := NewHandler(HandlerConfig{
+		Registry:   registry,
+		DefaultTTL: 30,
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	req.SetEdns0(4096, false) // Add EDNS OPT record
+
+	w := &mockResponseWriter{}
+	handler.ServeDNS(w, req)
+
+	if w.msg == nil {
+		t.Fatal("no response received")
+	}
+
+	// Verify OPT record is in response
+	var responseOPT *dns.OPT
+	for _, rr := range w.msg.Extra {
+		if opt, ok := rr.(*dns.OPT); ok {
+			responseOPT = opt
+			break
+		}
+	}
+
+	if responseOPT == nil {
+		t.Fatal("expected OPT record in response when client sent one")
+	}
+
+	if responseOPT.UDPSize() != DefaultEDNSUDPSize {
+		t.Errorf("expected UDP size %d, got %d", DefaultEDNSUDPSize, responseOPT.UDPSize())
+	}
+}
+
+func TestHandler_EDNS_CustomUDPSize(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name:   "example.com",
+		TTL:    60,
+		Router: &mockRouter{},
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("10.0.0.1"), Port: 80, Region: "us-east"},
+		},
+	})
+
+	customSize := uint16(1232) // Common size for avoiding fragmentation
+	handler := NewHandler(HandlerConfig{
+		Registry:    registry,
+		DefaultTTL:  30,
+		EDNSUDPSize: customSize,
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	req.SetEdns0(4096, false)
+
+	w := &mockResponseWriter{}
+	handler.ServeDNS(w, req)
+
+	var responseOPT *dns.OPT
+	for _, rr := range w.msg.Extra {
+		if opt, ok := rr.(*dns.OPT); ok {
+			responseOPT = opt
+			break
+		}
+	}
+
+	if responseOPT == nil {
+		t.Fatal("expected OPT record in response")
+	}
+
+	if responseOPT.UDPSize() != customSize {
+		t.Errorf("expected custom UDP size %d, got %d", customSize, responseOPT.UDPSize())
+	}
+}
+
+func TestHandler_EDNS_NoOPTInRequest(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name:   "example.com",
+		TTL:    60,
+		Router: &mockRouter{},
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("10.0.0.1"), Port: 80, Region: "us-east"},
+		},
+	})
+
+	handler := NewHandler(HandlerConfig{
+		Registry:   registry,
+		DefaultTTL: 30,
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	// No EDNS OPT record added
+
+	w := &mockResponseWriter{}
+	handler.ServeDNS(w, req)
+
+	// Verify no OPT record in response
+	for _, rr := range w.msg.Extra {
+		if _, ok := rr.(*dns.OPT); ok {
+			t.Error("did not expect OPT record in response when client didn't send one")
+		}
+	}
+}
+
+func TestHandler_EDNS_Disabled(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name:   "example.com",
+		TTL:    60,
+		Router: &mockRouter{},
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("10.0.0.1"), Port: 80, Region: "us-east"},
+		},
+	})
+
+	ednsDisabled := false
+	handler := NewHandler(HandlerConfig{
+		Registry:    registry,
+		DefaultTTL:  30,
+		EDNSEnabled: &ednsDisabled,
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	req.SetEdns0(4096, false) // Add EDNS OPT record
+
+	w := &mockResponseWriter{}
+	handler.ServeDNS(w, req)
+
+	// Verify no OPT record in response when EDNS is disabled
+	for _, rr := range w.msg.Extra {
+		if _, ok := rr.(*dns.OPT); ok {
+			t.Error("did not expect OPT record in response when EDNS is disabled")
+		}
+	}
+}
+
+func TestHandler_EDNS_VersionZero(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&DomainEntry{
+		Name:   "example.com",
+		TTL:    60,
+		Router: &mockRouter{},
+		Servers: []ServerInfo{
+			{Address: net.ParseIP("10.0.0.1"), Port: 80, Region: "us-east"},
+		},
+	})
+
+	handler := NewHandler(HandlerConfig{
+		Registry:   registry,
+		DefaultTTL: 30,
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	req.SetEdns0(4096, false)
+
+	w := &mockResponseWriter{}
+	handler.ServeDNS(w, req)
+
+	var responseOPT *dns.OPT
+	for _, rr := range w.msg.Extra {
+		if opt, ok := rr.(*dns.OPT); ok {
+			responseOPT = opt
+			break
+		}
+	}
+
+	if responseOPT == nil {
+		t.Fatal("expected OPT record in response")
+	}
+
+	// EDNS version should be 0 (the only defined version)
+	if responseOPT.Version() != 0 {
+		t.Errorf("expected EDNS version 0, got %d", responseOPT.Version())
+	}
+}

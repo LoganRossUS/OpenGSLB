@@ -12,8 +12,7 @@
 *.dll
 *.so
 *.dylib
-opengslb
-
+/opengslb
 # Test binaries
 *.test
 

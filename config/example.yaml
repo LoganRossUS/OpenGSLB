@@ -43,6 +43,7 @@ regions:
       - address: 10.0.1.10
         port: 80        # Default: 80
         weight: 100     # Default: 100, range: 1-1000
+        # host: app.example.com  # For HTTPS: hostname for TLS SNI/cert validation
       - address: 10.0.1.11
         port: 80
         weight: 100
@@ -97,6 +98,18 @@ regions:
       interval: 15s
       timeout: 3s
 
+  # Example HTTPS region with host for TLS SNI
+  - name: eu-central-1
+    servers:
+      - address: 10.0.4.10
+        port: 443
+        weight: 100
+        host: secure.example.com  # Required for TLS certificate validation
+    health_check:
+      type: https
+      interval: 30s
+      timeout: 5s
+      path: /health
 # Domain routing configuration
 # Each domain can use different routing algorithms and regions
 domains:
