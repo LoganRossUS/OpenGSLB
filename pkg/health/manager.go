@@ -33,6 +33,7 @@ type ServerConfig struct {
 	Port     int
 	Path     string        // For HTTP checks
 	Scheme   string        // http or https
+	Host     string        // Host header for HTTPS (for TLS SNI)
 	Interval time.Duration // Check interval
 	Timeout  time.Duration // Per-check timeout
 }
@@ -220,16 +221,28 @@ func (m *Manager) performCheck(entry *serverEntry) {
 		Port:    entry.config.Port,
 		Path:    entry.config.Path,
 		Scheme:  entry.config.Scheme,
+		Host:    entry.config.Host,
 		Timeout: entry.config.Timeout,
 	}
 
 	result := m.checker.Check(ctx, target)
 
+	// Log detailed error information for failed health checks
+	if !result.Healthy && result.Error != nil {
+		log.Printf("health check failed: %s reason=%v latency=%v",
+			entry.health.Address(), result.Error, result.Latency)
+	}
+
 	statusChanged := entry.health.RecordResult(result)
 
 	if statusChanged {
 		newStatus := entry.health.Status()
-		log.Printf("health status changed: %s -> %s", entry.health.Address(), newStatus)
+		if newStatus == StatusUnhealthy && result.Error != nil {
+			log.Printf("health status changed: %s -> %s reason=%v",
+				entry.health.Address(), newStatus, result.Error)
+		} else {
+			log.Printf("health status changed: %s -> %s", entry.health.Address(), newStatus)
+		}
 
 		m.mu.RLock()
 		onChange := m.onChange
@@ -396,6 +409,7 @@ func (m *Manager) Reconfigure(newServers []ServerConfig) (added, removed, update
 func configChanged(old, new ServerConfig) bool {
 	return old.Path != new.Path ||
 		old.Scheme != new.Scheme ||
+		old.Host != new.Host ||
 		old.Interval != new.Interval ||
 		old.Timeout != new.Timeout
 }

@@ -50,6 +50,7 @@ type Server struct {
 	Address string `yaml:"address"`
 	Port    int    `yaml:"port"`
 	Weight  int    `yaml:"weight"`
+	Host    string `yaml:"host"` // Hostname for HTTPS health checks (for TLS SNI)
 }
 
 // HealthCheck defines health check configuration for a region.
@@ -58,6 +59,7 @@ type HealthCheck struct {
 	Interval         time.Duration `yaml:"interval"`
 	Timeout          time.Duration `yaml:"timeout"`
 	Path             string        `yaml:"path"`
+	Host             string        `yaml:"host"` // Host header for HTTPS (for TLS SNI)
 	FailureThreshold int           `yaml:"failure_threshold"`
 	SuccessThreshold int           `yaml:"success_threshold"`
 }
