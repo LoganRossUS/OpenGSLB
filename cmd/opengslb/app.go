@@ -10,10 +10,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/loganrossus/OpenGSLB/pkg/api"
+	"github.com/loganrossus/OpenGSLB/pkg/cluster"
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/dns"
 	"github.com/loganrossus/OpenGSLB/pkg/health"
@@ -33,11 +35,8 @@ type Application struct {
 	apiServer     *api.Server
 	logger        *slog.Logger
 
-	// Cluster mode components (initialized only in cluster mode)
-	// These will be populated in Story 2 (Raft) and Story 4 (Gossip)
-	// raftNode    *cluster.RaftNode
-	// gossipNode  *cluster.GossipNode
-	// kvStore     *cluster.KVStore
+	// Cluster mode components
+	raftNode *cluster.RaftNode
 }
 
 // NewApplication creates a new Application instance with pre-loaded configuration.
@@ -68,8 +67,12 @@ func (a *Application) Initialize() error {
 		if err := a.initializeClusterMode(); err != nil {
 			return fmt.Errorf("failed to initialize cluster mode: %w", err)
 		}
+		// Set cluster mode metric
+		metrics.SetClusterMode(true)
 	} else {
 		a.logger.Info("running in standalone mode")
+		// Set standalone mode metric
+		metrics.SetClusterMode(false)
 	}
 
 	if err := a.initializeHealthManager(); err != nil {
@@ -92,7 +95,6 @@ func (a *Application) Initialize() error {
 }
 
 // initializeClusterMode sets up cluster-specific components.
-// This is a placeholder - actual implementation comes in Stories 2-4.
 func (a *Application) initializeClusterMode() error {
 	a.logger.Info("initializing cluster mode components",
 		"node_name", a.config.Cluster.NodeName,
@@ -100,30 +102,57 @@ func (a *Application) initializeClusterMode() error {
 		"bootstrap", a.config.Cluster.Bootstrap,
 	)
 
-	// Story 2: Raft integration
-	// - Initialize Raft node
-	// - If bootstrap: create new cluster
-	// - If join: connect to existing cluster
-	// - Wait for leader election
+	// Determine data directory for Raft
+	dataDir := a.config.Cluster.Raft.DataDir
+	if dataDir == "" {
+		dataDir = filepath.Join(".", "data", a.config.Cluster.NodeName)
+	}
 
-	// Story 3: Leader guard
-	// - DNS server only responds if this node is leader
+	// Create Raft node configuration
+	raftCfg := cluster.DefaultConfig()
+	raftCfg.NodeID = a.config.Cluster.NodeName
+	raftCfg.NodeName = a.config.Cluster.NodeName
+	raftCfg.BindAddress = a.config.Cluster.BindAddress
+	raftCfg.AdvertiseAddress = a.config.Cluster.AdvertiseAddress
+	raftCfg.DataDir = dataDir
+	raftCfg.Bootstrap = a.config.Cluster.Bootstrap
+	raftCfg.Join = a.config.Cluster.Join
 
-	// Story 4: Gossip protocol
-	// - Initialize memberlist
-	// - Join gossip network
-	// - Start health event propagation
+	// Apply timeouts from config if set
+	if a.config.Cluster.Raft.HeartbeatTimeout > 0 {
+		raftCfg.HeartbeatTimeout = a.config.Cluster.Raft.HeartbeatTimeout
+	}
+	if a.config.Cluster.Raft.ElectionTimeout > 0 {
+		raftCfg.ElectionTimeout = a.config.Cluster.Raft.ElectionTimeout
+	}
 
-	// Story 7: KV Store
-	// - Initialize bbolt
-	// - If cluster mode: wrap with Raft FSM
+	// Create Raft node
+	raftNode, err := cluster.NewRaftNode(raftCfg, a.logger.With("component", "raft"))
+	if err != nil {
+		return fmt.Errorf("failed to create raft node: %w", err)
+	}
+	a.raftNode = raftNode
 
-	// For now, just log that we're in cluster mode
-	// Actual implementation will replace this placeholder
-	a.logger.Warn("cluster mode is not yet fully implemented - running with limited functionality",
-		"missing", []string{"raft", "gossip", "kv_store"},
-	)
+	// Set node info metric
+	metrics.SetClusterNodeInfo(a.config.Cluster.NodeName, a.config.Cluster.BindAddress)
 
+	// Register leader observer for metrics and DNS server activation
+	a.raftNode.RegisterLeaderObserver(func(isLeader bool) {
+		a.logger.Info("leadership changed", "is_leader", isLeader)
+
+		// Update metrics
+		metrics.SetClusterLeader(isLeader)
+		if isLeader {
+			metrics.SetClusterState("leader")
+		} else {
+			metrics.SetClusterState("follower")
+		}
+		metrics.RecordLeaderChange()
+
+		// Story 3 will add DNS server activation/deactivation here
+	})
+
+	a.logger.Info("cluster mode components initialized")
 	return nil
 }
 
@@ -277,6 +306,17 @@ func (a *Application) initializeAPIServer() error {
 		return fmt.Errorf("failed to create API server: %w", err)
 	}
 
+	// Set up cluster handlers if in cluster mode
+	if a.config.Cluster.IsClusterMode() && a.raftNode != nil {
+		clusterHandlers := api.NewClusterHandlers(
+			a.raftNode,
+			string(a.config.Cluster.Mode),
+			a.logger.With("component", "cluster-api"),
+		)
+		server.SetClusterHandlers(clusterHandlers)
+		a.logger.Debug("cluster API handlers configured")
+	}
+
 	a.apiServer = server
 
 	a.logger.Info("API server initialized",
@@ -290,10 +330,21 @@ func (a *Application) initializeAPIServer() error {
 func (a *Application) Start(ctx context.Context) error {
 	a.logger.Info("starting application", "mode", a.config.Cluster.Mode)
 
-	// In cluster mode, start cluster components first
-	if a.config.Cluster.IsClusterMode() {
-		if err := a.startClusterComponents(ctx); err != nil {
-			return fmt.Errorf("failed to start cluster components: %w", err)
+	// In cluster mode, start Raft first
+	if a.config.Cluster.IsClusterMode() && a.raftNode != nil {
+		if err := a.raftNode.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start Raft node: %w", err)
+		}
+		a.logger.Info("Raft node started")
+
+		// Wait for leader election
+		leaderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := a.raftNode.WaitForLeader(leaderCtx); err != nil {
+			a.logger.Warn("timeout waiting for leader election", "error", err)
+		} else {
+			leader, _ := a.raftNode.Leader()
+			a.logger.Info("leader elected", "leader_id", leader.NodeID)
 		}
 	}
 
@@ -318,169 +369,12 @@ func (a *Application) Start(ctx context.Context) error {
 		}()
 	}
 
-	// In cluster mode, DNS server activation depends on leader status
-	// For now (Story 1), we start it unconditionally
-	// Story 3 will add the leader guard
+	// Start DNS server
+	// In cluster mode (Story 3), this will only activate if leader
 	a.logger.Info("starting DNS server", "address", a.config.DNS.ListenAddress)
 	if err := a.dnsServer.Start(ctx); err != nil {
 		return fmt.Errorf("DNS server error: %w", err)
 	}
-
-	return nil
-}
-
-// startClusterComponents starts Raft and gossip in cluster mode.
-// This is a placeholder - actual implementation comes in Stories 2-4.
-func (a *Application) startClusterComponents(ctx context.Context) error {
-	a.logger.Info("starting cluster components")
-
-	// Story 2: Start Raft
-	// - Open Raft transport
-	// - Bootstrap or join cluster
-	// - Wait for leader election
-
-	// Story 4: Start Gossip
-	// - Join memberlist cluster
-	// - Begin health event propagation
-
-	a.logger.Warn("cluster components not yet implemented")
-	return nil
-}
-
-// Reload applies a new configuration without restarting.
-func (a *Application) Reload(newCfg *config.Config) error {
-	a.configMu.Lock()
-	defer a.configMu.Unlock()
-
-	oldCfg := a.config
-
-	a.logger.Info("reloading configuration",
-		"old_domains", len(oldCfg.Domains),
-		"new_domains", len(newCfg.Domains),
-		"old_regions", len(oldCfg.Regions),
-		"new_regions", len(newCfg.Regions),
-	)
-
-	if oldCfg.DNS.ListenAddress != newCfg.DNS.ListenAddress {
-		a.logger.Warn("DNS listen address change requires restart",
-			"old", oldCfg.DNS.ListenAddress,
-			"new", newCfg.DNS.ListenAddress,
-		)
-	}
-	if oldCfg.Metrics.Address != newCfg.Metrics.Address {
-		a.logger.Warn("metrics address change requires restart",
-			"old", oldCfg.Metrics.Address,
-			"new", newCfg.Metrics.Address,
-		)
-	}
-	if oldCfg.API.Address != newCfg.API.Address {
-		a.logger.Warn("API address change requires restart",
-			"old", oldCfg.API.Address,
-			"new", newCfg.API.Address,
-		)
-	}
-
-	// Cluster config changes require restart
-	if oldCfg.Cluster.Mode != newCfg.Cluster.Mode {
-		a.logger.Warn("cluster mode change requires restart",
-			"old", oldCfg.Cluster.Mode,
-			"new", newCfg.Cluster.Mode,
-		)
-	}
-	if oldCfg.Cluster.BindAddress != newCfg.Cluster.BindAddress {
-		a.logger.Warn("cluster bind_address change requires restart",
-			"old", oldCfg.Cluster.BindAddress,
-			"new", newCfg.Cluster.BindAddress,
-		)
-	}
-
-	if err := a.reloadDNSRegistry(newCfg); err != nil {
-		metrics.RecordReload(false)
-		return fmt.Errorf("failed to reload DNS registry: %w", err)
-	}
-
-	if err := a.reloadHealthManager(newCfg); err != nil {
-		metrics.RecordReload(false)
-		return fmt.Errorf("failed to reload health manager: %w", err)
-	}
-
-	serverCount := 0
-	for _, region := range newCfg.Regions {
-		serverCount += len(region.Servers)
-	}
-	metrics.SetConfigMetrics(len(newCfg.Domains), serverCount, float64(time.Now().Unix()))
-
-	a.config = newCfg
-
-	metrics.RecordReload(true)
-
-	a.logger.Info("configuration reload complete",
-		"domains", len(newCfg.Domains),
-		"servers", serverCount,
-	)
-
-	return nil
-}
-
-// reloadDNSRegistry updates the DNS registry with new domain configuration.
-func (a *Application) reloadDNSRegistry(newCfg *config.Config) error {
-	newRegistry, err := dns.BuildRegistry(newCfg, routing.NewRouter)
-	if err != nil {
-		return fmt.Errorf("failed to build new registry: %w", err)
-	}
-
-	var entries []*dns.DomainEntry
-	for _, name := range newRegistry.Domains() {
-		if entry := newRegistry.Lookup(name); entry != nil {
-			entries = append(entries, entry)
-			a.logger.Debug("domain reload",
-				"domain", entry.Name,
-				"algorithm", entry.Router.Algorithm(),
-			)
-		}
-	}
-
-	a.dnsRegistry.ReplaceAll(entries)
-
-	a.logger.Debug("DNS registry updated",
-		"domains", a.dnsRegistry.Count(),
-	)
-
-	return nil
-}
-
-// reloadHealthManager updates health checks for the new server configuration.
-func (a *Application) reloadHealthManager(newCfg *config.Config) error {
-	var newServers []health.ServerConfig
-
-	for _, region := range newCfg.Regions {
-		hc := region.HealthCheck
-		for _, server := range region.Servers {
-			scheme := hc.Type
-			if scheme == "" {
-				scheme = "http"
-			}
-
-			newServers = append(newServers, health.ServerConfig{
-				Address:  server.Address,
-				Port:     server.Port,
-				Path:     hc.Path,
-				Scheme:   scheme,
-				Host:     server.Host,
-				Interval: hc.Interval,
-				Timeout:  hc.Timeout,
-			})
-		}
-	}
-
-	added, removed, updated := a.healthManager.Reconfigure(newServers)
-
-	a.logger.Info("health manager reconfigured",
-		"added", added,
-		"removed", removed,
-		"updated", updated,
-		"total", a.healthManager.ServerCount(),
-	)
 
 	return nil
 }
@@ -491,10 +385,11 @@ func (a *Application) Shutdown(ctx context.Context) error {
 
 	var shutdownErr error
 
-	// In cluster mode, stop cluster components first
-	if a.config.Cluster.IsClusterMode() {
-		if err := a.shutdownClusterComponents(ctx); err != nil {
-			a.logger.Error("error stopping cluster components", "error", err)
+	// Stop Raft node if in cluster mode
+	if a.raftNode != nil {
+		a.logger.Debug("stopping Raft node")
+		if err := a.raftNode.Stop(ctx); err != nil {
+			a.logger.Error("error stopping Raft node", "error", err)
 			shutdownErr = err
 		}
 	}
@@ -528,30 +423,118 @@ func (a *Application) Shutdown(ctx context.Context) error {
 	return shutdownErr
 }
 
-// shutdownClusterComponents stops Raft and gossip in cluster mode.
-// This is a placeholder - actual implementation comes in Stories 2-4.
-func (a *Application) shutdownClusterComponents(ctx context.Context) error {
-	a.logger.Info("stopping cluster components")
-
-	// Story 4: Leave gossip cluster gracefully
-	// Story 2: Step down as leader if applicable, close Raft
-
-	return nil
-}
-
 // IsLeader returns true if this node is the Raft leader.
 // In standalone mode, always returns true.
-// This will be used by Story 3 (Leader Guard).
 func (a *Application) IsLeader() bool {
 	if a.config.Cluster.IsStandaloneMode() {
 		return true
 	}
+	if a.raftNode == nil {
+		return true
+	}
+	return a.raftNode.IsLeader()
+}
 
-	// Story 2: Check Raft leadership status
-	// return a.raftNode.IsLeader()
+// GetRaftNode returns the Raft node for cluster operations.
+// Returns nil in standalone mode.
+func (a *Application) GetRaftNode() *cluster.RaftNode {
+	return a.raftNode
+}
 
-	// Placeholder: return true until Raft is implemented
-	return true
+// Reload applies a new configuration without restarting.
+func (a *Application) Reload(newCfg *config.Config) error {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
+	oldCfg := a.config
+
+	a.logger.Info("reloading configuration",
+		"old_domains", len(oldCfg.Domains),
+		"new_domains", len(newCfg.Domains),
+	)
+
+	// Check for changes that require restart
+	if oldCfg.DNS.ListenAddress != newCfg.DNS.ListenAddress {
+		a.logger.Warn("DNS listen address change requires restart")
+	}
+	if oldCfg.Cluster.Mode != newCfg.Cluster.Mode {
+		a.logger.Warn("cluster mode change requires restart")
+	}
+
+	if err := a.reloadDNSRegistry(newCfg); err != nil {
+		metrics.RecordReload(false)
+		return fmt.Errorf("failed to reload DNS registry: %w", err)
+	}
+
+	if err := a.reloadHealthManager(newCfg); err != nil {
+		metrics.RecordReload(false)
+		return fmt.Errorf("failed to reload health manager: %w", err)
+	}
+
+	serverCount := 0
+	for _, region := range newCfg.Regions {
+		serverCount += len(region.Servers)
+	}
+	metrics.SetConfigMetrics(len(newCfg.Domains), serverCount, float64(time.Now().Unix()))
+
+	a.config = newCfg
+	metrics.RecordReload(true)
+
+	a.logger.Info("configuration reload complete")
+	return nil
+}
+
+// reloadDNSRegistry updates the DNS registry with new domain configuration.
+func (a *Application) reloadDNSRegistry(newCfg *config.Config) error {
+	newRegistry, err := dns.BuildRegistry(newCfg, routing.NewRouter)
+	if err != nil {
+		return fmt.Errorf("failed to build new registry: %w", err)
+	}
+
+	var entries []*dns.DomainEntry
+	for _, name := range newRegistry.Domains() {
+		if entry := newRegistry.Lookup(name); entry != nil {
+			entries = append(entries, entry)
+		}
+	}
+
+	a.dnsRegistry.ReplaceAll(entries)
+	return nil
+}
+
+// reloadHealthManager updates health checks for the new server configuration.
+func (a *Application) reloadHealthManager(newCfg *config.Config) error {
+	var newServers []health.ServerConfig
+
+	for _, region := range newCfg.Regions {
+		hc := region.HealthCheck
+		for _, server := range region.Servers {
+			scheme := hc.Type
+			if scheme == "" {
+				scheme = "http"
+			}
+
+			newServers = append(newServers, health.ServerConfig{
+				Address:  server.Address,
+				Port:     server.Port,
+				Path:     hc.Path,
+				Scheme:   scheme,
+				Host:     server.Host,
+				Interval: hc.Interval,
+				Timeout:  hc.Timeout,
+			})
+		}
+	}
+
+	added, removed, updated := a.healthManager.Reconfigure(newServers)
+
+	a.logger.Info("health manager reconfigured",
+		"added", added,
+		"removed", removed,
+		"updated", updated,
+	)
+
+	return nil
 }
 
 // readinessChecker implements api.ReadinessChecker for the Application.

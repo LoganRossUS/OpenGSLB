@@ -527,10 +527,15 @@ func TestApplication_IsLeader_ClusterMode(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// In cluster mode without Raft implemented, IsLeader returns true (placeholder)
-	// This test documents the expected behavior once Raft is implemented
-	if !app.IsLeader() {
-		t.Error("cluster mode should return true until Raft is implemented")
+	// After Initialize but before Start, the Raft node exists but hasn't
+	// been started, so IsLeader should return false
+	if app.IsLeader() {
+		t.Error("cluster mode should return false when Raft is not started")
+	}
+
+	// Verify the raft node was initialized
+	if app.GetRaftNode() == nil {
+		t.Error("raft node should be initialized in cluster mode")
 	}
 }
 
