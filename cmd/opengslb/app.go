@@ -40,10 +40,12 @@ type Application struct {
 	logger        *slog.Logger
 
 	// Cluster mode components
+	// Cluster mode components
 	raftNode      *cluster.RaftNode
 	gossipManager *cluster.GossipManager
 	monitor       *agent.Monitor
 	predictor     *agent.Predictor
+	overwatch     *cluster.Overwatch
 
 	// shutdownCh is closed when the application is shutting down.
 	shutdownCh chan struct{}
@@ -161,6 +163,19 @@ func (a *Application) initializeClusterMode() error {
 	if err := a.initializePredictiveHealth(); err != nil {
 		return fmt.Errorf("failed to initialize predictive health: %w", err)
 	}
+
+	// Initialize Overwatch (Story 6)
+	overwatch := cluster.NewOverwatch(
+		a.config.Cluster.Overwatch,
+		a.config.Regions,
+		a.gossipManager,
+		a.raftNode,
+		a.logger.With("component", "overwatch"),
+	)
+	if err := overwatch.Start(context.Background()); err != nil {
+		return fmt.Errorf("failed to start overwatch: %w", err)
+	}
+	a.overwatch = overwatch
 
 	a.logger.Info("cluster mode components initialized")
 	return nil
@@ -494,9 +509,18 @@ func (a *Application) initializeDNSServer() error {
 		leaderChecker = a.raftNode
 	}
 
+	// Use VetoHealthProvider if Overwatch is enabled (cluster mode)
+	var healthProvider dns.HealthStatusProvider = a.healthManager
+	if a.overwatch != nil {
+		healthProvider = &vetoHealthProvider{
+			base:      a.healthManager,
+			overwatch: a.overwatch,
+		}
+	}
+
 	handler := dns.NewHandler(dns.HandlerConfig{
 		Registry:       registry,
-		HealthProvider: a.healthManager,
+		HealthProvider: healthProvider,
 		LeaderChecker:  leaderChecker,
 		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
 		Logger:         a.logger,
@@ -636,6 +660,11 @@ func (a *Application) Start(ctx context.Context) error {
 		} else {
 			leader, _ := a.raftNode.Leader()
 			a.logger.Info("leader elected", "leader_id", leader.NodeID)
+
+			// Explicitly sync leadership metric in case event was missed or handled before metrics were ready
+			if leader.NodeID == a.config.Cluster.NodeName {
+				a.onLeadershipChange(true)
+			}
 		}
 	}
 
@@ -670,9 +699,23 @@ func (a *Application) Start(ctx context.Context) error {
 
 	if a.metricsServer != nil {
 		go func() {
-			if err := a.metricsServer.Start(ctx); err != nil {
-				a.logger.Error("metrics server error", "error", err)
+			// Retry loop for metrics server
+			for i := 0; i < 30; i++ {
+				if err := a.metricsServer.Start(ctx); err != nil {
+					// Log as warning during retries
+					a.logger.Warn("metrics server failed to start, retrying", "error", err, "attempt", i+1)
+					// If error is "addr in use", wait and retry
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(1 * time.Second):
+						continue
+					}
+				}
+				// If Start returns nil (clean shutdown) or context canceled, we exit
+				return
 			}
+			a.logger.Error("metrics server failed to start after 30 attempts")
 		}()
 	}
 
@@ -805,17 +848,27 @@ func (a *Application) Reload(newCfg *config.Config) error {
 		return fmt.Errorf("failed to reload health manager: %w", err)
 	}
 
-	serverCount := 0
-	for _, region := range newCfg.Regions {
-		serverCount += len(region.Servers)
-	}
-	metrics.SetConfigMetrics(len(newCfg.Domains), serverCount, float64(time.Now().Unix()))
-
 	a.config = newCfg
 	metrics.RecordReload(true)
-
-	a.logger.Info("configuration reload complete")
 	return nil
+}
+
+// vetoHealthProvider wraps a base provider and checks Overwatch for vetoes.
+type vetoHealthProvider struct {
+	base      dns.HealthStatusProvider
+	overwatch *cluster.Overwatch
+}
+
+func (v *vetoHealthProvider) IsHealthy(address string, port int) bool {
+	// 1. Check Overwatch Veto (External Veto Logic)
+	// address in Overwatch is "ip:port"
+	fullAddr := fmt.Sprintf("%s:%d", address, port)
+	if !v.overwatch.IsServeable(fullAddr) {
+		return false // Vetoed!
+	}
+
+	// 2. Delegate to base provider (Local Agent Health)
+	return v.base.IsHealthy(address, port)
 }
 
 // reloadDNSRegistry updates the DNS registry with new domain configuration.

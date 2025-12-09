@@ -103,7 +103,7 @@ logging:
 
 metrics:
   enabled: true
-  address: ":${metrics_port}"
+  address: "127.0.0.1:${metrics_port}"
 
 api:
   enabled: true
@@ -256,8 +256,36 @@ log_info "Cluster status:"
 curl -s "http://127.0.0.1:${API_BASE_PORT}/api/v1/cluster/status" | python3 -m json.tool 2>/dev/null || true
 echo ""
 
+
+wait_for_metrics() {
+    local port=$1
+    local timeout=${2:-30}
+    local start_time=$(date +%s)
+    
+    while true; do
+        if curl -s "http://127.0.0.1:${port}/metrics" > /dev/null 2>&1; then
+            return 0
+        fi
+        
+        local elapsed=$(($(date +%s) - start_time))
+        if [ $elapsed -ge $timeout ]; then
+            return 1
+        fi
+        sleep 0.5
+    done
+}
+
 # Check metrics for leader
 log_info "Checking cluster leadership via metrics..."
+
+# Wait for metrics to be available on all nodes
+log_info "Waiting for metrics servers to be ready..."
+for i in 1 2 3; do
+    port=$((METRICS_BASE_PORT + i - 1))
+    if ! wait_for_metrics "$port" 30; then
+        log_warn "Metrics server on node $i (port $port) not ready, proceeding anyway..."
+    fi
+done
 
 leader_count=0
 leader_node=0

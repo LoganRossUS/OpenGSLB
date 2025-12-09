@@ -7,7 +7,11 @@
 // Package config provides configuration loading and validation for OpenGSLB.
 package config
 
-import "time"
+import (
+	"net"
+	"strconv"
+	"time"
+)
 
 // RuntimeMode defines the operational mode of OpenGSLB.
 type RuntimeMode string
@@ -129,6 +133,26 @@ type ClusterConfig struct {
 	// AnycastVIP is the virtual IP advertised by all cluster nodes.
 	// Only the Raft leader responds to DNS queries on this VIP.
 	AnycastVIP string `yaml:"anycast_vip"`
+
+	// Overwatch contains configuration for the leader's health validation.
+	Overwatch OverwatchConfig `yaml:"overwatch"`
+}
+
+// OverwatchConfig defines settings for the leader's validation of agent health claims.
+type OverwatchConfig struct {
+	// ExternalCheckInterval is the frequency of leader-initiated external checks.
+	// Default: 10s
+	ExternalCheckInterval time.Duration `yaml:"external_check_interval"`
+
+	// VetoMode controls how disagreements between agent and external checks are resolved.
+	// Options: "strict", "balanced", "permissive"
+	// Default: "balanced"
+	VetoMode string `yaml:"veto_mode"`
+
+	// VetoThreshold is the number of consecutive external check failures
+	// before the overwatch will veto an agent's healthy claim.
+	// Default: 3
+	VetoThreshold int `yaml:"veto_threshold"`
 }
 
 // PredictiveHealthConfig defines predictive health monitoring settings.
@@ -267,6 +291,17 @@ func (c *ClusterConfig) GetGossipBindPort() int {
 	if c.Gossip.BindPort > 0 {
 		return c.Gossip.BindPort
 	}
+
+	// Try to derive from BindAddress
+	if c.BindAddress != "" {
+		_, portStr, err := net.SplitHostPort(c.BindAddress)
+		if err == nil {
+			if port, err := strconv.Atoi(portStr); err == nil {
+				return port + 100
+			}
+		}
+	}
+
 	return 7946 // Default memberlist port
 }
 
