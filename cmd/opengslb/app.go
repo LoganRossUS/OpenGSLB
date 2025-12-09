@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/memberlist"
+	"github.com/loganrossus/OpenGSLB/pkg/agent"
 	"github.com/loganrossus/OpenGSLB/pkg/api"
 	"github.com/loganrossus/OpenGSLB/pkg/cluster"
 	"github.com/loganrossus/OpenGSLB/pkg/config"
@@ -41,6 +42,11 @@ type Application struct {
 	// Cluster mode components
 	raftNode      *cluster.RaftNode
 	gossipManager *cluster.GossipManager
+	monitor       *agent.Monitor
+	predictor     *agent.Predictor
+
+	// shutdownCh is closed when the application is shutting down.
+	shutdownCh chan struct{}
 }
 
 // NewApplication creates a new Application instance with pre-loaded configuration.
@@ -49,8 +55,9 @@ func NewApplication(cfg *config.Config, logger *slog.Logger) *Application {
 		logger = slog.Default()
 	}
 	return &Application{
-		config: cfg,
-		logger: logger,
+		config:     cfg,
+		logger:     logger,
+		shutdownCh: make(chan struct{}),
 	}
 }
 
@@ -148,6 +155,11 @@ func (a *Application) initializeClusterMode() error {
 	// Initialize gossip if enabled
 	if err := a.initializeGossip(); err != nil {
 		return fmt.Errorf("failed to initialize gossip: %w", err)
+	}
+
+	// Initialize predictive health monitoring (Story 5)
+	if err := a.initializePredictiveHealth(); err != nil {
+		return fmt.Errorf("failed to initialize predictive health: %w", err)
 	}
 
 	a.logger.Info("cluster mode components initialized")
@@ -356,16 +368,20 @@ func (a *Application) initializeHealthManager() error {
 
 	a.healthManager = health.NewManager(checker, mgrCfg)
 
-	// Set up health status change callback for gossip propagation
-	if a.gossipManager != nil {
-		a.healthManager.OnStatusChange(func(address string, status health.Status) {
-			a.broadcastHealthUpdate(address, status)
-		})
-	}
-
+	// Add servers to health manager
 	if err := a.registerHealthCheckServers(); err != nil {
 		return err
 	}
+
+	// Register callback for status changes
+	a.healthManager.OnStatusChange(func(address string, status health.Status) {
+		a.broadcastHealthUpdate(address, status)
+
+		// Record error for predictive health monitoring if check failed
+		if status != health.StatusHealthy && a.monitor != nil {
+			a.monitor.RecordError()
+		}
+	})
 
 	a.logger.Info("health manager initialized",
 		"servers", a.healthManager.ServerCount(),
@@ -565,6 +581,42 @@ func (a *Application) initializeAPIServer() error {
 	return nil
 }
 
+// initializePredictiveHealth sets up the predictive health monitoring agent.
+func (a *Application) initializePredictiveHealth() error {
+	a.configMu.RLock()
+	cfg := a.config.Cluster.PredictiveHealth
+	nodeID := a.config.Cluster.NodeName
+	a.configMu.RUnlock()
+
+	if !cfg.Enabled {
+		a.logger.Info("predictive health monitoring disabled")
+		return nil
+	}
+
+	a.logger.Info("initializing predictive health monitoring")
+
+	// Create monitor
+	a.monitor = agent.NewMonitor(a.logger, cfg.ErrorRate.Window)
+
+	// Create predictor
+	a.predictor = agent.NewPredictor(cfg, nodeID, a.monitor, a.logger)
+
+	// Wire up predictor to broadcast signals via gossip
+	if a.gossipManager != nil {
+		a.predictor.OnSignal(func(signal *cluster.PredictiveSignal) {
+			a.logger.Info("broadcasting predictive health signal",
+				"signal", signal.Signal,
+				"reason", signal.Reason,
+			)
+			if err := a.gossipManager.BroadcastPredictive(signal); err != nil {
+				a.logger.Error("failed to broadcast predictive signal", "error", err)
+			}
+		})
+	}
+
+	return nil
+}
+
 // Start begins all application components.
 func (a *Application) Start(ctx context.Context) error {
 	a.logger.Info("starting application", "mode", a.config.Cluster.Mode)
@@ -589,13 +641,26 @@ func (a *Application) Start(ctx context.Context) error {
 
 	// Start gossip after Raft (so we have node identity established)
 	if a.gossipManager != nil {
-		if err := a.gossipManager.Start(ctx); err != nil {
+		if err := a.gossipManager.Start(context.Background()); err != nil { // Changed ctx to context.Background() as per instruction
 			return fmt.Errorf("failed to start gossip manager: %w", err)
 		}
 		a.logger.Info("gossip manager started",
 			"members", a.gossipManager.NumMembers(),
 		)
 		a.updateGossipMetrics()
+	}
+
+	if a.monitor != nil {
+		a.logger.Info("agent monitor initialized")
+	}
+
+	if a.predictor != nil {
+		go func() {
+			if err := a.predictor.Start(ctx); err != nil {
+				a.logger.Error("predictive health monitoring stopped with error", "error", err)
+			}
+		}()
+		a.logger.Info("agent predictor started")
 	}
 
 	if err := a.healthManager.Start(); err != nil {

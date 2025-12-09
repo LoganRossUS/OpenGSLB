@@ -39,6 +39,14 @@ const (
 	DefaultRaftElectionTimeout   = 1 * time.Second
 	DefaultRaftSnapshotInterval  = 120 * time.Second
 	DefaultRaftSnapshotThreshold = 8192
+
+	// Predictive health defaults
+	DefaultPredictiveCPUThreshold       = 90.0
+	DefaultPredictiveMemoryThreshold    = 85.0
+	DefaultPredictiveErrorRateThreshold = 10.0
+	DefaultPredictiveBleedDuration      = 30 * time.Second
+	DefaultPredictiveErrorWindow        = 60 * time.Second
+	DefaultPredictiveErrorBleedDuration = 60 * time.Second
 )
 
 // DefaultAPIAllowedNetworks defines the default networks allowed to access the API.
@@ -143,6 +151,40 @@ func applyClusterDefaults(cluster *ClusterConfig) {
 	}
 	if cluster.Raft.SnapshotThreshold == 0 {
 		cluster.Raft.SnapshotThreshold = DefaultRaftSnapshotThreshold
+	}
+
+	// Predictive health defaults (only apply if enabled)
+	if cluster.PredictiveHealth.Enabled {
+		applyPredictiveHealthDefaults(&cluster.PredictiveHealth)
+	}
+}
+
+func applyPredictiveHealthDefaults(ph *PredictiveHealthConfig) {
+	// CPU defaults
+	if ph.CPU.Threshold == 0 {
+		ph.CPU.Threshold = DefaultPredictiveCPUThreshold
+	}
+	if ph.CPU.BleedDuration == 0 {
+		ph.CPU.BleedDuration = DefaultPredictiveBleedDuration
+	}
+
+	// Memory defaults
+	if ph.Memory.Threshold == 0 {
+		ph.Memory.Threshold = DefaultPredictiveMemoryThreshold
+	}
+	if ph.Memory.BleedDuration == 0 {
+		ph.Memory.BleedDuration = DefaultPredictiveBleedDuration
+	}
+
+	// Error rate defaults
+	if ph.ErrorRate.Threshold == 0 {
+		ph.ErrorRate.Threshold = DefaultPredictiveErrorRateThreshold
+	}
+	if ph.ErrorRate.Window == 0 {
+		ph.ErrorRate.Window = DefaultPredictiveErrorWindow
+	}
+	if ph.ErrorRate.BleedDuration == 0 {
+		ph.ErrorRate.BleedDuration = DefaultPredictiveErrorBleedDuration
 	}
 }
 

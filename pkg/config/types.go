@@ -123,9 +123,56 @@ type ClusterConfig struct {
 	// Gossip contains memberlist gossip settings.
 	Gossip GossipConfig `yaml:"gossip"`
 
+	// PredictiveHealth contains predictive health monitoring settings.
+	PredictiveHealth PredictiveHealthConfig `yaml:"predictive_health"`
+
 	// AnycastVIP is the virtual IP advertised by all cluster nodes.
 	// Only the Raft leader responds to DNS queries on this VIP.
 	AnycastVIP string `yaml:"anycast_vip"`
+}
+
+// PredictiveHealthConfig defines predictive health monitoring settings.
+// When enabled, the agent monitors local system metrics and signals
+// when thresholds are exceeded to enable proactive traffic bleeding.
+type PredictiveHealthConfig struct {
+	// Enabled controls whether predictive health monitoring is active.
+	// Default: false
+	Enabled bool `yaml:"enabled"`
+
+	// CPU contains CPU utilization monitoring settings.
+	CPU PredictiveMetricConfig `yaml:"cpu"`
+
+	// Memory contains memory utilization monitoring settings.
+	Memory PredictiveMetricConfig `yaml:"memory"`
+
+	// ErrorRate contains health check error rate monitoring settings.
+	ErrorRate PredictiveErrorRateConfig `yaml:"error_rate"`
+}
+
+// PredictiveMetricConfig defines threshold settings for CPU or memory metrics.
+type PredictiveMetricConfig struct {
+	// Threshold is the percentage (0-100) at which to trigger bleeding.
+	// Default: 90 for CPU, 85 for memory
+	Threshold float64 `yaml:"threshold"`
+
+	// BleedDuration is the time over which to gradually reduce traffic.
+	// Default: 30s
+	BleedDuration time.Duration `yaml:"bleed_duration"`
+}
+
+// PredictiveErrorRateConfig defines threshold settings for error rate monitoring.
+type PredictiveErrorRateConfig struct {
+	// Threshold is the error count per minute at which to trigger bleeding.
+	// Default: 10
+	Threshold float64 `yaml:"threshold"`
+
+	// Window is the time window over which to measure error rate.
+	// Default: 60s
+	Window time.Duration `yaml:"window"`
+
+	// BleedDuration is the time over which to gradually reduce traffic.
+	// Default: 60s
+	BleedDuration time.Duration `yaml:"bleed_duration"`
 }
 
 // RaftConfig defines Raft consensus settings.
