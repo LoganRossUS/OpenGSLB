@@ -2,18 +2,6 @@
 //
 // This file is part of OpenGSLB – https://opengslb.org
 //
-// OpenGSLB is dual-licensed:
-//
-// 1. GNU Affero General Public License v3.0 (AGPLv3)
-//    Free forever for open-source and internal use. You may copy, modify,
-//    and distribute this software under the terms of the AGPLv3.
-//    → https://www.gnu.org/licenses/agpl-3.0.html
-//
-// 2. Commercial License
-//    Commercial licenses are available for proprietary integration,
-//    closed-source appliances, SaaS offerings, and dedicated support.
-//    Contact: licensing@opengslb.org
-//
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
 package config
@@ -43,6 +31,14 @@ const (
 	DefaultLogLevel         = "info"
 	DefaultLogFormat        = "json"
 	DefaultAPIAddress       = "127.0.0.1:8080"
+
+	// Cluster defaults
+	DefaultClusterMode           = ModeStandalone
+	DefaultRaftDataDir           = "/var/lib/opengslb/raft"
+	DefaultRaftHeartbeatTimeout  = 1 * time.Second
+	DefaultRaftElectionTimeout   = 1 * time.Second
+	DefaultRaftSnapshotInterval  = 120 * time.Second
+	DefaultRaftSnapshotThreshold = 8192
 )
 
 // DefaultAPIAllowedNetworks defines the default networks allowed to access the API.
@@ -92,6 +88,7 @@ func applyDefaults(cfg *Config) {
 	}
 
 	applyAPIDefaults(&cfg.API)
+	applyClusterDefaults(&cfg.Cluster)
 
 	for i := range cfg.Regions {
 		applyRegionDefaults(&cfg.Regions[i])
@@ -114,6 +111,38 @@ func applyAPIDefaults(api *APIConfig) {
 
 	if len(api.AllowedNetworks) == 0 {
 		api.AllowedNetworks = DefaultAPIAllowedNetworks
+	}
+}
+
+func applyClusterDefaults(cluster *ClusterConfig) {
+	// Mode defaults to standalone
+	if cluster.Mode == "" {
+		cluster.Mode = DefaultClusterMode
+	}
+
+	// NodeName defaults to hostname (applied at runtime if still empty)
+	// We don't set it here to allow validation to detect missing node_name in cluster mode
+
+	// AdvertiseAddress defaults to BindAddress
+	if cluster.AdvertiseAddress == "" && cluster.BindAddress != "" {
+		cluster.AdvertiseAddress = cluster.BindAddress
+	}
+
+	// Raft defaults (only matter in cluster mode, but set anyway)
+	if cluster.Raft.DataDir == "" {
+		cluster.Raft.DataDir = DefaultRaftDataDir
+	}
+	if cluster.Raft.HeartbeatTimeout == 0 {
+		cluster.Raft.HeartbeatTimeout = DefaultRaftHeartbeatTimeout
+	}
+	if cluster.Raft.ElectionTimeout == 0 {
+		cluster.Raft.ElectionTimeout = DefaultRaftElectionTimeout
+	}
+	if cluster.Raft.SnapshotInterval == 0 {
+		cluster.Raft.SnapshotInterval = DefaultRaftSnapshotInterval
+	}
+	if cluster.Raft.SnapshotThreshold == 0 {
+		cluster.Raft.SnapshotThreshold = DefaultRaftSnapshotThreshold
 	}
 }
 

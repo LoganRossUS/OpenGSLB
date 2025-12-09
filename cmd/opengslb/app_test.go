@@ -22,6 +22,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -363,4 +364,315 @@ func TestApplicationLifecycle(t *testing.T) {
 			t.Errorf("Shutdown error: %v", err)
 		}
 	})
+}
+
+// =============================================================================
+// Cluster Mode Tests
+// =============================================================================
+
+// standaloneConfigContent provides a config explicitly in standalone mode.
+const standaloneConfigContent = `
+dns:
+  listen_address: "127.0.0.1:15354"
+  default_ttl: 60
+
+logging:
+  level: info
+  format: text
+
+cluster:
+  mode: standalone
+
+regions:
+  - name: us-east-1
+    servers:
+      - address: "10.0.1.10"
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+      failure_threshold: 3
+      success_threshold: 2
+
+domains:
+  - name: app.example.com
+    routing_algorithm: round-robin
+    regions:
+      - us-east-1
+    ttl: 30
+`
+
+// clusterConfigContent provides a config in cluster mode.
+const clusterConfigContent = `
+dns:
+  listen_address: "127.0.0.1:15355"
+  default_ttl: 60
+
+logging:
+  level: info
+  format: text
+
+cluster:
+  mode: cluster
+  node_name: test-node-1
+  bind_address: "127.0.0.1:7946"
+  bootstrap: true
+  raft:
+    data_dir: "/tmp/opengslb-test-raft"
+    heartbeat_timeout: 1s
+    election_timeout: 1s
+
+regions:
+  - name: us-east-1
+    servers:
+      - address: "10.0.1.10"
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+      failure_threshold: 3
+      success_threshold: 2
+
+domains:
+  - name: app.example.com
+    routing_algorithm: round-robin
+    regions:
+      - us-east-1
+    ttl: 30
+`
+
+func TestApplicationInitialize_StandaloneMode(t *testing.T) {
+	cfg := loadTestConfig(t, standaloneConfigContent)
+	app := NewApplication(cfg, nil)
+
+	if err := app.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Verify standalone mode
+	if !cfg.Cluster.IsStandaloneMode() {
+		t.Error("expected standalone mode")
+	}
+	if cfg.Cluster.IsClusterMode() {
+		t.Error("should not be cluster mode")
+	}
+
+	// Verify components are initialized
+	if app.healthManager == nil {
+		t.Error("health manager should be initialized")
+	}
+	if app.dnsServer == nil {
+		t.Error("DNS server should be initialized")
+	}
+}
+
+func TestApplicationInitialize_ClusterMode(t *testing.T) {
+	cfg := loadTestConfig(t, clusterConfigContent)
+	app := NewApplication(cfg, nil)
+
+	if err := app.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Verify cluster mode
+	if cfg.Cluster.IsStandaloneMode() {
+		t.Error("should not be standalone mode")
+	}
+	if !cfg.Cluster.IsClusterMode() {
+		t.Error("expected cluster mode")
+	}
+
+	// Verify cluster config values
+	if cfg.Cluster.NodeName != "test-node-1" {
+		t.Errorf("expected node_name test-node-1, got %s", cfg.Cluster.NodeName)
+	}
+	if cfg.Cluster.BindAddress != "127.0.0.1:7946" {
+		t.Errorf("expected bind_address 127.0.0.1:7946, got %s", cfg.Cluster.BindAddress)
+	}
+
+	// Verify standard components are still initialized
+	if app.healthManager == nil {
+		t.Error("health manager should be initialized")
+	}
+	if app.dnsServer == nil {
+		t.Error("DNS server should be initialized")
+	}
+}
+
+func TestApplication_IsLeader_StandaloneMode(t *testing.T) {
+	cfg := loadTestConfig(t, standaloneConfigContent)
+	app := NewApplication(cfg, nil)
+
+	if err := app.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// In standalone mode, IsLeader should always return true
+	if !app.IsLeader() {
+		t.Error("standalone mode should always report as leader")
+	}
+}
+
+func TestApplication_IsLeader_ClusterMode(t *testing.T) {
+	cfg := loadTestConfig(t, clusterConfigContent)
+	app := NewApplication(cfg, nil)
+
+	if err := app.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// In cluster mode without Raft implemented, IsLeader returns true (placeholder)
+	// This test documents the expected behavior once Raft is implemented
+	if !app.IsLeader() {
+		t.Error("cluster mode should return true until Raft is implemented")
+	}
+}
+
+func TestValidateClusterFlags_StandaloneWithBootstrap(t *testing.T) {
+	cfg := &config.Config{
+		Cluster: config.ClusterConfig{Mode: config.ModeStandalone},
+	}
+
+	// Save and restore global flags
+	oldBootstrap := bootstrapFlag
+	defer func() { bootstrapFlag = oldBootstrap }()
+
+	bootstrapFlag = true
+
+	err := validateClusterFlags(cfg)
+	if err == nil {
+		t.Error("expected error for --bootstrap with standalone mode")
+	}
+	if err != nil && !strings.Contains(err.Error(), "--bootstrap flag requires --mode=cluster") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateClusterFlags_StandaloneWithJoin(t *testing.T) {
+	cfg := &config.Config{
+		Cluster: config.ClusterConfig{Mode: config.ModeStandalone},
+	}
+
+	// Save and restore global flags
+	oldJoin := joinAddresses
+	defer func() { joinAddresses = oldJoin }()
+
+	joinAddresses = "10.0.1.10:7946"
+
+	err := validateClusterFlags(cfg)
+	if err == nil {
+		t.Error("expected error for --join with standalone mode")
+	}
+	if err != nil && !strings.Contains(err.Error(), "--join flag requires --mode=cluster") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateClusterFlags_ClusterWithBothBootstrapAndJoin(t *testing.T) {
+	cfg := &config.Config{
+		Cluster: config.ClusterConfig{
+			Mode:      config.ModeCluster,
+			Bootstrap: true,
+			Join:      []string{"10.0.1.10:7946"},
+		},
+	}
+
+	// Reset global flags
+	oldBootstrap := bootstrapFlag
+	oldJoin := joinAddresses
+	defer func() {
+		bootstrapFlag = oldBootstrap
+		joinAddresses = oldJoin
+	}()
+	bootstrapFlag = false
+	joinAddresses = ""
+
+	err := validateClusterFlags(cfg)
+	if err == nil {
+		t.Error("expected error for both --bootstrap and --join")
+	}
+	if err != nil && !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateClusterFlags_ClusterWithNeitherBootstrapNorJoin(t *testing.T) {
+	cfg := &config.Config{
+		Cluster: config.ClusterConfig{
+			Mode: config.ModeCluster,
+			// Neither Bootstrap nor Join
+		},
+	}
+
+	// Reset global flags
+	oldBootstrap := bootstrapFlag
+	oldJoin := joinAddresses
+	defer func() {
+		bootstrapFlag = oldBootstrap
+		joinAddresses = oldJoin
+	}()
+	bootstrapFlag = false
+	joinAddresses = ""
+
+	err := validateClusterFlags(cfg)
+	if err == nil {
+		t.Error("expected error for cluster mode without --bootstrap or --join")
+	}
+	if err != nil && !strings.Contains(err.Error(), "requires either --bootstrap or --join") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateClusterFlags_ClusterWithBootstrap(t *testing.T) {
+	cfg := &config.Config{
+		Cluster: config.ClusterConfig{
+			Mode:      config.ModeCluster,
+			Bootstrap: true,
+		},
+	}
+
+	// Reset global flags
+	oldBootstrap := bootstrapFlag
+	oldJoin := joinAddresses
+	defer func() {
+		bootstrapFlag = oldBootstrap
+		joinAddresses = oldJoin
+	}()
+	bootstrapFlag = false
+	joinAddresses = ""
+
+	err := validateClusterFlags(cfg)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateClusterFlags_ClusterWithJoin(t *testing.T) {
+	cfg := &config.Config{
+		Cluster: config.ClusterConfig{
+			Mode: config.ModeCluster,
+			Join: []string{"10.0.1.10:7946"},
+		},
+	}
+
+	// Reset global flags
+	oldBootstrap := bootstrapFlag
+	oldJoin := joinAddresses
+	defer func() {
+		bootstrapFlag = oldBootstrap
+		joinAddresses = oldJoin
+	}()
+	bootstrapFlag = false
+	joinAddresses = ""
+
+	err := validateClusterFlags(cfg)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 }
