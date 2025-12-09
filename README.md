@@ -1,5 +1,5 @@
 # OpenGSLB
-![OpenGSLB_Logo](docs/images/OpenGSLB.svg)
+![OpenGSLB_Logo](docs/images/OpenGSLB.png)
 
 
 [![CI](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml/badge.svg)](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml)
