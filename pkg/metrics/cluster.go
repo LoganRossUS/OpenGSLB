@@ -249,6 +249,16 @@ var (
 			Help:      "Current depth of the gossip message queue",
 		},
 	)
+
+	// OverwatchVetoesTotal counts veto decisions by reason.
+	OverwatchVetoesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "overwatch_vetoes_total",
+			Help:      "Total number of overwatch vetoes applied by reason",
+		},
+		[]string{"reason"},
+	)
 )
 
 // SetClusterLeader updates the leadership metric.
@@ -421,4 +431,9 @@ func ObserveGossipPropagationLatency(seconds float64) {
 // SetGossipQueueDepth sets the current gossip queue depth.
 func SetGossipQueueDepth(depth int) {
 	GossipQueueDepth.Set(float64(depth))
+}
+
+// RecordOverwatchVeto increments the veto counter.
+func RecordOverwatchVeto(reason string) {
+	OverwatchVetoesTotal.WithLabelValues(reason).Inc()
 }
