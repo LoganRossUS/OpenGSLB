@@ -1,18 +1,6 @@
 // Copyright (C) 2025 Logan Ross
 //
-// This file is part of OpenGSLB – https://opengslb.org
-//
-// OpenGSLB is dual-licensed:
-//
-// 1. GNU Affero General Public License v3.0 (AGPLv3)
-//    Free forever for open-source and internal use. You may copy, modify,
-//    and distribute this software under the terms of the AGPLv3.
-//    → https://www.gnu.org/licenses/agpl-3.0.html
-//
-// 2. Commercial License
-//    Commercial licenses are available for proprietary integration,
-//    closed-source appliances, SaaS offerings, and dedicated support.
-//    Contact: licensing@opengslb.org
+// This file is part of OpenGSLB \u2013 https://opengslb.org
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
@@ -37,10 +25,11 @@ type ServerConfig struct {
 
 // Server is the HTTP API server.
 type Server struct {
-	config     ServerConfig
-	httpServer *http.Server
-	handlers   *Handlers
-	logger     *slog.Logger
+	config          ServerConfig
+	httpServer      *http.Server
+	handlers        *Handlers
+	clusterHandlers *ClusterHandlers
+	logger          *slog.Logger
 }
 
 // NewServer creates a new API server.
@@ -61,15 +50,28 @@ func NewServer(cfg ServerConfig, handlers *Handlers) (*Server, error) {
 	}, nil
 }
 
+// SetClusterHandlers sets the cluster handlers for cluster API endpoints.
+func (s *Server) SetClusterHandlers(ch *ClusterHandlers) {
+	s.clusterHandlers = ch
+}
+
 // Start begins serving the API.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 
-	// Register routes
+	// Register health routes
 	mux.HandleFunc("/api/v1/health/servers", s.handlers.HealthServers)
 	mux.HandleFunc("/api/v1/health/regions", s.handlers.HealthRegions)
 	mux.HandleFunc("/api/v1/ready", s.handlers.Ready)
 	mux.HandleFunc("/api/v1/live", s.handlers.Live)
+
+	// Register cluster routes if cluster handlers are set
+	if s.clusterHandlers != nil {
+		mux.HandleFunc("/api/v1/cluster/join", s.clusterHandlers.HandleJoin)
+		mux.HandleFunc("/api/v1/cluster/status", s.clusterHandlers.HandleStatus)
+		mux.HandleFunc("/api/v1/cluster/remove", s.clusterHandlers.HandleRemove)
+		s.logger.Debug("cluster API endpoints registered")
+	}
 
 	// Build middleware chain
 	var handler http.Handler = mux
@@ -97,6 +99,7 @@ func (s *Server) Start(ctx context.Context) error {
 		"address", s.config.Address,
 		"allowed_networks", s.config.AllowedNetworks,
 		"trust_proxy_headers", s.config.TrustProxyHeaders,
+		"cluster_endpoints", s.clusterHandlers != nil,
 	)
 
 	errCh := make(chan error, 1)
