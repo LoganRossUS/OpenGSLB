@@ -1,6 +1,6 @@
 // Copyright (C) 2025 Logan Ross
 //
-// This file is part of OpenGSLB – https://opengslb.org
+// This file is part of OpenGSLB \u2013 https://opengslb.org
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
@@ -29,6 +29,7 @@ type Application struct {
 	config        *config.Config
 	configMu      sync.RWMutex
 	dnsServer     *dns.Server
+	dnsHandler    *dns.Handler
 	dnsRegistry   *dns.Registry
 	healthManager *health.Manager
 	metricsServer *metrics.Server
@@ -138,22 +139,28 @@ func (a *Application) initializeClusterMode() error {
 
 	// Register leader observer for metrics and DNS server activation
 	a.raftNode.RegisterLeaderObserver(func(isLeader bool) {
-		a.logger.Info("leadership changed", "is_leader", isLeader)
-
-		// Update metrics
-		metrics.SetClusterLeader(isLeader)
-		if isLeader {
-			metrics.SetClusterState("leader")
-		} else {
-			metrics.SetClusterState("follower")
-		}
-		metrics.RecordLeaderChange()
-
-		// Story 3 will add DNS server activation/deactivation here
+		a.onLeadershipChange(isLeader)
 	})
 
 	a.logger.Info("cluster mode components initialized")
 	return nil
+}
+
+// onLeadershipChange is called when this node's leadership status changes.
+// It updates metrics and logs the transition.
+func (a *Application) onLeadershipChange(isLeader bool) {
+	a.logger.Info("leadership changed", "is_leader", isLeader)
+
+	// Update metrics
+	metrics.SetClusterLeader(isLeader)
+	if isLeader {
+		metrics.SetClusterState("leader")
+		a.logger.Info("this node is now the cluster leader - DNS queries will be served")
+	} else {
+		metrics.SetClusterState("follower")
+		a.logger.Info("this node is now a follower - DNS queries will be refused")
+	}
+	metrics.RecordLeaderChange()
 }
 
 // initializeHealthManager creates and configures the health manager.
@@ -242,12 +249,20 @@ func (a *Application) initializeDNSServer() error {
 		}
 	}
 
+	// Create leader checker - in cluster mode, use raftNode; in standalone, use nil (defaults to always leader)
+	var leaderChecker dns.LeaderChecker
+	if a.config.Cluster.IsClusterMode() && a.raftNode != nil {
+		leaderChecker = a.raftNode
+	}
+
 	handler := dns.NewHandler(dns.HandlerConfig{
 		Registry:       registry,
 		HealthProvider: a.healthManager,
+		LeaderChecker:  leaderChecker,
 		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
 		Logger:         a.logger,
 	})
+	a.dnsHandler = handler
 
 	a.dnsServer = dns.NewServer(dns.ServerConfig{
 		Address: a.config.DNS.ListenAddress,
@@ -258,6 +273,7 @@ func (a *Application) initializeDNSServer() error {
 	a.logger.Info("DNS server initialized",
 		"address", a.config.DNS.ListenAddress,
 		"domains", registry.Count(),
+		"cluster_mode", a.config.Cluster.IsClusterMode(),
 	)
 	return nil
 }
@@ -370,8 +386,12 @@ func (a *Application) Start(ctx context.Context) error {
 	}
 
 	// Start DNS server
-	// In cluster mode (Story 3), this will only activate if leader
-	a.logger.Info("starting DNS server", "address", a.config.DNS.ListenAddress)
+	// In cluster mode, the server always runs but the handler checks leadership
+	// before processing queries. Non-leaders return REFUSED.
+	a.logger.Info("starting DNS server",
+		"address", a.config.DNS.ListenAddress,
+		"leader_check", a.config.Cluster.IsClusterMode(),
+	)
 	if err := a.dnsServer.Start(ctx); err != nil {
 		return fmt.Errorf("DNS server error: %w", err)
 	}

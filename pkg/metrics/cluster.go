@@ -115,6 +115,15 @@ var (
 		},
 		[]string{"node_id", "address"},
 	)
+
+	// DNSRefusedTotal counts DNS queries refused because this node is not the leader.
+	DNSRefusedTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "dns_refused_total",
+			Help:      "Total DNS queries refused (non-leader in cluster mode)",
+		},
+	)
 )
 
 // SetClusterLeader updates the leadership metric.
@@ -184,6 +193,12 @@ func SetClusterMode(isCluster bool) {
 // SetClusterNodeInfo sets the node identification metric.
 func SetClusterNodeInfo(nodeID, address string) {
 	ClusterNodeInfo.WithLabelValues(nodeID, address).Set(1)
+}
+
+// RecordDNSRefused increments the DNS refused counter.
+// This is called when a non-leader node refuses to serve DNS queries.
+func RecordDNSRefused() {
+	DNSRefusedTotal.Inc()
 }
 
 // UpdateRaftStats updates metrics from Raft stats map.
