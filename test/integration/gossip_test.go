@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/memberlist"
 	"github.com/loganrossus/OpenGSLB/pkg/cluster"
 )
 
@@ -255,26 +256,24 @@ func TestGossipNodeJoinLeave(t *testing.T) {
 	cfg1.BindPort = basePort
 
 	var mu sync.Mutex
-	var joinedNode string
-	var leftNode string
+	var joinCount int
+	var leaveCount int
 
 	gm1, err := cluster.NewGossipManager(cfg1, nil)
 	if err != nil {
 		t.Fatalf("failed to create gossip manager 1: %v", err)
 	}
 
-	gm1.OnNodeJoin(func(node interface{}) {
-		// Note: In actual use this is *memberlist.Node, but for the test
-		// we're checking the callback is registered
+	gm1.OnNodeJoin(func(_ *memberlist.Node) {
 		mu.Lock()
 		defer mu.Unlock()
-		joinedNode = "node-joined"
+		joinCount++
 	})
 
-	gm1.OnNodeLeave(func(node interface{}) {
+	gm1.OnNodeLeave(func(_ *memberlist.Node) {
 		mu.Lock()
 		defer mu.Unlock()
-		leftNode = "node-left"
+		leaveCount++
 	})
 
 	if err := gm1.Start(ctx); err != nil {
