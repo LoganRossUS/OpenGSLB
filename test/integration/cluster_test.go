@@ -974,9 +974,9 @@ func startRaftNode(ctx context.Context, node *testNode, join []string) error {
 
 	// Faster timeouts for testing
 	hb := 200 * time.Millisecond
-	cfg.HeartbeatTimeout   = hb
-	cfg.LeaderLeaseTimeout = hb / 2
-	cfg.ElectionTimeout    = hb * 5
+	cfg.HeartbeatTimeout = hb
+	// cfg.LeaderLeaseTimeout = hb / 2
+	cfg.ElectionTimeout = hb * 5
 
 	raftNode, err := cluster.NewRaftNode(cfg, nil)
 	if err != nil {
