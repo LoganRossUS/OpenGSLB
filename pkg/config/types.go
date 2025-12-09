@@ -7,7 +7,11 @@
 // Package config provides configuration loading and validation for OpenGSLB.
 package config
 
-import "time"
+import (
+	"net"
+	"strconv"
+	"time"
+)
 
 // RuntimeMode defines the operational mode of OpenGSLB.
 type RuntimeMode string
@@ -267,6 +271,17 @@ func (c *ClusterConfig) GetGossipBindPort() int {
 	if c.Gossip.BindPort > 0 {
 		return c.Gossip.BindPort
 	}
+
+	// Try to derive from BindAddress
+	if c.BindAddress != "" {
+		_, portStr, err := net.SplitHostPort(c.BindAddress)
+		if err == nil {
+			if port, err := strconv.Atoi(portStr); err == nil {
+				return port + 100
+			}
+		}
+	}
+
 	return 7946 // Default memberlist port
 }
 

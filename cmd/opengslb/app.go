@@ -636,6 +636,11 @@ func (a *Application) Start(ctx context.Context) error {
 		} else {
 			leader, _ := a.raftNode.Leader()
 			a.logger.Info("leader elected", "leader_id", leader.NodeID)
+
+			// Explicitly sync leadership metric in case event was missed or handled before metrics were ready
+			if leader.NodeID == a.config.Cluster.NodeName {
+				a.onLeadershipChange(true)
+			}
 		}
 	}
 
@@ -670,9 +675,23 @@ func (a *Application) Start(ctx context.Context) error {
 
 	if a.metricsServer != nil {
 		go func() {
-			if err := a.metricsServer.Start(ctx); err != nil {
-				a.logger.Error("metrics server error", "error", err)
+			// Retry loop for metrics server
+			for i := 0; i < 30; i++ {
+				if err := a.metricsServer.Start(ctx); err != nil {
+					// Log as warning during retries
+					a.logger.Warn("metrics server failed to start, retrying", "error", err, "attempt", i+1)
+					// If error is "addr in use", wait and retry
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(1 * time.Second):
+						continue
+					}
+				}
+				// If Start returns nil (clean shutdown) or context cancelled, we exit
+				return
 			}
+			a.logger.Error("metrics server failed to start after 30 attempts")
 		}()
 	}
 
