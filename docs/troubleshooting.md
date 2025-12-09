@@ -1,800 +1,552 @@
-# Troubleshooting Guide
+# OpenGSLB Troubleshooting Guide
 
-This guide covers common issues when deploying and operating OpenGSLB.
+This guide covers common issues and their solutions for both standalone and cluster deployments.
 
-## Startup Issues
+## Table of Contents
 
-### "config file has insecure permissions"
+- [DNS Issues](#dns-issues)
+- [Health Check Issues](#health-check-issues)
+- [Configuration Issues](#configuration-issues)
+- [Cluster Mode Issues](#cluster-mode-issues)
+- [Performance Issues](#performance-issues)
+- [Logging and Debugging](#logging-and-debugging)
 
-**Error:**
-```
-configuration file security check failed: config file /etc/opengslb/config.yaml has insecure permissions 0644 (world-readable)
-```
+---
 
-**Cause:** OpenGSLB requires configuration files to not be world-readable for security.
+## DNS Issues
 
-**Solution:**
-```bash
-# Set secure permissions (owner + group read)
-sudo chmod 640 /etc/opengslb/config.yaml
+### DNS Queries Return SERVFAIL
 
-# Or owner-only
-sudo chmod 600 /etc/opengslb/config.yaml
-```
+**Symptoms:**
+- `dig` returns `status: SERVFAIL`
+- No IP addresses in DNS response
 
-### "failed to load configuration"
+**Possible Causes:**
 
-**Error:**
-```
-failed to load configuration: yaml: unmarshal errors
-```
-
-**Cause:** Invalid YAML syntax in configuration file.
-
-**Solution:**
-1. Validate YAML syntax:
+1. **All backend servers unhealthy**
    ```bash
-   python3 -c "import yaml; yaml.safe_load(open('/etc/opengslb/config.yaml'))"
+   # Check server health status
+   curl http://localhost:8080/api/v1/health/servers | jq '.servers[] | select(.healthy == false)'
    ```
-2. Check for common issues:
-   - Incorrect indentation (YAML requires consistent spaces, not tabs)
-   - Missing colons after keys
-   - Unquoted special characters
-
-### "failed to stat config file"
-
-**Error:**
-```
-configuration file security check failed: failed to stat config file: no such file or directory
-```
-
-**Cause:** Configuration file doesn't exist at the specified path.
-
-**Solution:**
-```bash
-# Create config directory
-sudo mkdir -p /etc/opengslb
-
-# Copy example configuration
-sudo cp config/example.yaml /etc/opengslb/config.yaml
-sudo chmod 640 /etc/opengslb/config.yaml
-```
-
-### "listen udp :53: bind: permission denied"
-
-**Error:**
-```
-DNS server error: listen udp :53: bind: permission denied
-```
-
-**Cause:** Port 53 requires root privileges.
-
-**Solutions:**
-
-1. **Run as root:**
-   ```bash
-   sudo ./opengslb --config /etc/opengslb/config.yaml
-   ```
-
-2. **Use a high port (development):**
-   ```yaml
-   dns:
-     listen_address: ":5353"
-   ```
-
-3. **Use setcap (production):**
-   ```bash
-   sudo setcap 'cap_net_bind_service=+ep' ./opengslb
-   ./opengslb --config /etc/opengslb/config.yaml
-   ```
-
-### "listen udp :53: bind: address already in use"
-
-**Error:**
-```
-DNS server error: listen udp :53: bind: address already in use
-```
-
-**Cause:** Another process (often systemd-resolved) is using port 53.
-
-**Solution:**
-
-1. **Find the conflicting process:**
-   ```bash
-   sudo lsof -i :53
-   sudo ss -tulpn | grep :53
-   ```
-
-2. **For systemd-resolved on Ubuntu/Debian:**
-   ```bash
-   # Option A: Disable stub listener
-   sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf
-   sudo systemctl restart systemd-resolved
-
-   # Option B: Use a different port for OpenGSLB
-   dns:
-     listen_address: ":5353"
-   ```
-
-3. **For other DNS servers (dnsmasq, bind, etc.):**
-   ```bash
-   sudo systemctl stop dnsmasq  # or bind9, named, etc.
-   sudo systemctl disable dnsmasq
-   ```
-
-## DNS Query Issues
-
-### NXDOMAIN for Configured Domain
-
-**Symptom:** `dig @localhost myapp.example.com` returns `NXDOMAIN`
-
-**Possible causes:**
-
-1. **Domain not configured:**
-   ```bash
-   # Check your configuration
-   grep -A5 "domains:" /etc/opengslb/config.yaml
-   ```
-
-2. **Domain name mismatch:**
-   - Domain names are case-insensitive but must match exactly
-   - Check for typos or trailing dots
-
-3. **OpenGSLB not running:**
-   ```bash
-   # Check if process is running
-   pgrep -a opengslb
    
-   # Check if listening
-   sudo ss -tulpn | grep opengslb
+   **Solution:** Verify backend servers are running and health check endpoints are accessible.
+
+2. **Health checks not yet completed**
+   ```bash
+   # Check readiness
+   curl http://localhost:8080/api/v1/ready
+   ```
+   
+   **Solution:** Wait for initial health checks to complete (typically 5-10 seconds after startup).
+
+3. **Configuration validation error**
+   ```bash
+   # Check logs for validation errors
+   journalctl -u opengslb | grep -i "validation\|error"
    ```
 
-### SERVFAIL Response
+### DNS Queries Return REFUSED (Cluster Mode)
 
-**Symptom:** `dig @localhost myapp.example.com` returns `SERVFAIL`
+**Symptoms:**
+- `dig` returns `status: REFUSED`
+- Queries work on some nodes but not others
 
-**Cause:** All backend servers for the domain are unhealthy.
+**Cause:** In cluster mode, only the Raft leader serves DNS queries. Non-leaders return REFUSED.
 
-**Diagnosis:**
-```bash
-# Check metrics for healthy server count
-curl -s http://localhost:9090/metrics | grep opengslb_healthy_servers
+**Solution:**
+1. Check which node is leader:
+   ```bash
+   curl http://localhost:8080/api/v1/cluster/status | jq '.is_leader'
+   ```
 
-# Check health check results
-curl -s http://localhost:9090/metrics | grep opengslb_health_check_results_total
-```
+2. Query the leader node directly, or configure clients to retry with multiple servers.
+
+3. For anycast deployments, ensure only the leader is advertising the VIP.
+
+### DNS Queries Return NXDOMAIN
+
+**Symptoms:**
+- `dig` returns `status: NXDOMAIN`
+- Domain exists in configuration but not resolved
+
+**Possible Causes:**
+
+1. **Domain not configured**
+   ```bash
+   # List configured domains
+   curl http://localhost:8080/api/v1/health/servers | jq '.servers[].domain' | sort -u
+   ```
+
+2. **Domain name mismatch** (trailing dot, case sensitivity)
+   - DNS queries include trailing dot: `app.example.com.`
+   - Configuration should not include trailing dot: `app.example.com`
+
+3. **No servers in domain's regions**
+   - Check that the domain references valid regions with servers
+
+### High DNS Query Latency
+
+**Symptoms:**
+- DNS responses take >100ms
+- Timeouts on client side
+
+**Possible Causes:**
+
+1. **Health check blocking** - DNS handler waiting for health status
+2. **Router algorithm inefficiency** - Complex routing taking too long
+3. **Resource exhaustion** - CPU/memory issues
 
 **Solutions:**
-
-1. **Verify backends are reachable:**
-   ```bash
-   curl -v http://10.0.1.10:80/health
-   ```
-
-2. **Check health check configuration:**
-   - Verify the path exists and returns 2xx
-   - Ensure timeout < interval
-   - Check firewall rules between OpenGSLB and backends
-
-3. **Enable last-healthy fallback (if acceptable):**
-   ```yaml
-   dns:
-     return_last_healthy: true
-   ```
-
-### Slow DNS Responses
-
-**Symptom:** DNS queries take several seconds to respond.
-
-**Possible causes:**
-
-1. **Health checks timing out:**
-   - Check if backends are slow to respond
-   - Reduce health check timeout
-   - Verify network connectivity
-
-2. **Too many concurrent queries:**
-   - Check query rate in metrics
-   - Consider horizontal scaling
-
-**Diagnosis:**
 ```bash
-# Check query latency histogram
-curl -s http://localhost:9090/metrics | grep opengslb_dns_query_duration_seconds
+# Check DNS query duration metrics
+curl http://localhost:9090/metrics | grep opengslb_dns_query_duration
 
-# Check health check duration
-curl -s http://localhost:9090/metrics | grep opengslb_health_check_duration_seconds
+# Check system resources
+top -p $(pgrep opengslb)
 ```
 
-### Wrong Server Returned
-
-**Symptom:** DNS returns a server you didn't expect.
-
-**Explanation:** With round-robin routing, different queries return different servers. This is expected behavior.
-
-**Verification:**
-```bash
-# Query multiple times to see rotation
-for i in {1..10}; do dig @localhost myapp.example.com +short; done
-```
+---
 
 ## Health Check Issues
 
-### All Servers Show Unhealthy
+### All Servers Marked Unhealthy
 
-**Symptom:** Metrics show all servers as unhealthy.
+**Symptoms:**
+- All servers show `healthy: false`
+- DNS returns SERVFAIL
 
-**Diagnosis checklist:**
+**Diagnostic Steps:**
 
-1. **Verify backend is running:**
-   ```bash
-   curl -v http://<backend-ip>:<port>/health
-   ```
-
-2. **Check health check path:**
-   ```yaml
-   # Ensure this path exists and returns 2xx
-   health_check:
-     path: /health
-   ```
-
-3. **Check network connectivity:**
+1. **Verify backend connectivity:**
    ```bash
    # From OpenGSLB host
-   telnet <backend-ip> <port>
+   curl -v http://backend-ip:port/health
    ```
 
-4. **Check firewall rules:**
+2. **Check health check configuration:**
+   ```yaml
+   health_check:
+     type: http
+     path: /health  # Correct path?
+     timeout: 5s    # Sufficient timeout?
+   ```
+
+3. **Review health check logs:**
+   ```bash
+   journalctl -u opengslb | grep -i "health check failed"
+   ```
+
+### Health Check Flapping
+
+**Symptoms:**
+- Server rapidly alternates between healthy/unhealthy
+- Frequent log entries about state changes
+
+**Possible Causes:**
+
+1. **Timeout too aggressive**
+   ```yaml
+   health_check:
+     timeout: 10s  # Increase from default
+   ```
+
+2. **Thresholds too low**
+   ```yaml
+   health_check:
+     failure_threshold: 3  # Require 3 failures before marking unhealthy
+     success_threshold: 2  # Require 2 successes before marking healthy
+   ```
+
+3. **Backend intermittently failing** - Check backend logs
+
+### TCP Health Checks Failing
+
+**Symptoms:**
+- TCP health checks report connection refused
+- Backend service is running
+
+**Possible Causes:**
+
+1. **Firewall blocking connections**
+   ```bash
+   # Test connectivity
+   nc -zv backend-ip port
+   ```
+
+2. **Service not listening on expected interface**
    ```bash
    # On backend server
-   sudo iptables -L -n | grep <opengslb-ip>
+   ss -tlnp | grep :port
    ```
 
-5. **Verify timeout settings:**
-   ```yaml
-   health_check:
-     timeout: 5s   # Must be less than interval
-     interval: 30s
-   ```
+3. **Connection limit reached on backend**
 
-### Health Checks Flapping
+---
 
-**Symptom:** Servers frequently toggle between healthy/unhealthy.
+## Configuration Issues
 
-**Causes:**
-- Network instability
-- Backend under heavy load
-- Timeout too aggressive
+### Configuration Reload Failed
+
+**Symptoms:**
+- SIGHUP sent but configuration unchanged
+- Log shows "configuration reload failed"
 
 **Solutions:**
 
-1. **Increase failure threshold:**
-   ```yaml
-   health_check:
-     failure_threshold: 5  # Require 5 failures before unhealthy
-   ```
-
-2. **Increase timeout:**
-   ```yaml
-   health_check:
-     timeout: 10s
-   ```
-
-3. **Check backend health endpoint performance:**
+1. **Validate configuration before reload:**
    ```bash
-   time curl http://<backend-ip>:<port>/health
+   opengslb --config /etc/opengslb/config.yaml --validate
    ```
 
-### Health Checks Not Running
-
-**Symptom:** Health check metrics not incrementing.
-
-**Diagnosis:**
-```bash
-# Check if health manager started
-grep "health manager" /var/log/opengslb.log
-
-# Verify servers are registered
-grep "registered server" /var/log/opengslb.log
-```
-
-**Solution:** Ensure regions have servers configured:
-```yaml
-regions:
-  - name: my-region
-    servers:        # Must have at least one server
-      - address: 10.0.1.10
-        port: 80
-```
-
-## Metrics Issues
-
-### Metrics Endpoint Not Responding
-
-**Symptom:** `curl http://localhost:9090/metrics` fails.
-
-**Checklist:**
-
-1. **Metrics enabled?**
-   ```yaml
-   metrics:
-     enabled: true  # Must be true
-     address: ":9090"
-   ```
-
-2. **Correct port?**
+2. **Check for syntax errors:**
    ```bash
-   sudo ss -tulpn | grep 9090
+   # YAML syntax validation
+   python3 -c "import yaml; yaml.safe_load(open('/etc/opengslb/config.yaml'))"
    ```
 
-3. **Firewall blocking?**
+3. **Review reload logs:**
    ```bash
-   curl -v http://localhost:9090/metrics
+   journalctl -u opengslb | grep -i reload
    ```
 
-### Missing Metrics
+### Configuration Changes Not Taking Effect
 
-**Symptom:** Expected metrics not present.
+**Symptoms:**
+- Configuration file updated but behavior unchanged
 
-**Cause:** Metrics appear after relevant operations occur. For example:
-- `opengslb_dns_queries_total` appears after first DNS query
-- `opengslb_routing_decisions_total` appears after first successful routing
+**Solutions:**
 
-**Solution:** Send test queries to populate metrics:
-```bash
-dig @localhost configured-domain.example.com
-```
+1. **Send SIGHUP to reload:**
+   ```bash
+   sudo systemctl reload opengslb
+   # or
+   sudo kill -SIGHUP $(pgrep opengslb)
+   ```
 
-## Logging Issues
+2. **Some changes require restart:**
+   - `dns.listen_address`
+   - `cluster.mode`
+   - `cluster.bind_address`
 
-### No Log Output
+3. **Verify reload was successful:**
+   ```bash
+   curl http://localhost:9090/metrics | grep opengslb_config_reload
+   ```
 
-**Symptom:** No logs appearing in stdout.
+---
 
-**Check log level:**
-```yaml
-logging:
-  level: info  # Try "debug" for more output
-```
+## Cluster Mode Issues
 
-### JSON Logs Hard to Read
+### Leader Election Fails
 
-**Solution:** Use text format for development:
-```yaml
-logging:
-  format: text  # Human-readable
-```
+**Symptoms:**
+- No leader elected
+- All nodes report `state: candidate` or `state: follower`
+- DNS queries return REFUSED on all nodes
 
-Or pipe JSON to jq:
-```bash
-./opengslb 2>&1 | jq .
-```
+**Possible Causes:**
 
-## Docker Issues
+1. **Insufficient nodes for quorum**
+   - 3-node cluster requires 2 nodes for quorum
+   - 5-node cluster requires 3 nodes for quorum
+   
+   ```bash
+   # Check cluster members
+   curl http://localhost:8080/api/v1/cluster/members | jq
+   ```
 
-### Container Exits Immediately
+2. **Network partition** - Nodes cannot communicate
+   ```bash
+   # From node-1, test connectivity to node-2
+   nc -zv node-2-ip 7000  # Raft port
+   ```
 
-**Diagnosis:**
-```bash
-docker logs opengslb
-```
+3. **Clock skew** - Raft is sensitive to time differences
+   ```bash
+   # Check time sync status
+   timedatectl status
+   chronyc tracking
+   ```
 
-**Common causes:**
-- Configuration file not mounted
-- Invalid configuration
-- Port already in use on host
+**Solutions:**
+- Ensure majority of nodes are running and reachable
+- Verify firewall allows Raft port traffic (default: 7000)
+- Sync clocks with NTP
+
+### Node Fails to Join Cluster
+
+**Symptoms:**
+- New node starts but doesn't appear in cluster members
+- Logs show "failed to join cluster" errors
+
+**Possible Causes:**
+
+1. **Join address incorrect**
+   ```bash
+   # Verify join address is reachable
+   curl http://join-address:8080/api/v1/cluster/status
+   ```
+
+2. **Node name conflict**
+   - Each node must have unique `node_name`
+   
+3. **Data directory contains stale state**
+   ```bash
+   # Remove stale Raft data (WARNING: loses cluster state)
+   rm -rf /var/lib/opengslb/raft/*
+   ```
+
+4. **Cluster not accepting new voters**
+   - Leader must explicitly add voter (handled automatically by join)
+   
+   ```bash
+   # Manual voter addition (from leader)
+   curl -X POST http://localhost:8080/api/v1/cluster/join \
+     -d '{"node_id": "new-node", "address": "new-node-ip:7000"}'
+   ```
+
+### Split-Brain Scenario
+
+**Symptoms:**
+- Multiple nodes claim to be leader
+- Inconsistent DNS responses
+
+**Cause:** Network partition caused cluster to split into isolated groups.
 
 **Solution:**
-```bash
-# Ensure config is mounted correctly
-docker run -d \
-  -v $(pwd)/config:/etc/opengslb:ro \
-  ghcr.io/loganrossus/opengslb:latest
-```
+1. **Identify the partition:**
+   ```bash
+   # On each node
+   curl http://localhost:8080/api/v1/cluster/members
+   ```
 
-### Cannot Reach Backends from Container
+2. **Minority partition will lose quorum:**
+   - Nodes in minority will demote to follower
+   - DNS will return REFUSED on minority nodes
 
-**Cause:** Docker network isolation.
+3. **Restore network connectivity:**
+   - Once network heals, cluster will reconcile automatically
+
+4. **Monitor for resolution:**
+   ```bash
+   watch -n 1 'curl -s http://localhost:8080/api/v1/cluster/status | jq'
+   ```
+
+### Gossip Communication Issues
+
+**Symptoms:**
+- Health updates not propagating between nodes
+- `opengslb_gossip_members` metric lower than expected
+
+**Possible Causes:**
+
+1. **Gossip port blocked**
+   ```bash
+   # Test gossip connectivity (default port: 7946)
+   nc -zvu other-node-ip 7946
+   ```
+
+2. **Encryption key mismatch**
+   - All nodes must use identical `gossip.encryption_key`
+
+3. **Bind address issues**
+   - Ensure gossip binds to correct interface for multi-homed hosts
 
 **Solutions:**
-
-1. **Use host network mode:**
-   ```bash
-   docker run --network=host ...
-   ```
-
-2. **Use backend container names (Docker Compose):**
-   ```yaml
-   # In OpenGSLB config
-   servers:
-     - address: backend-container-name
-       port: 80
-   ```
-
-3. **Use host.docker.internal (Docker Desktop):**
-   ```yaml
-   servers:
-     - address: host.docker.internal
-       port: 8080
-   ```
-
-### DNS Port Conflict in Docker
-
-**Solution:** Map to different host port:
 ```bash
-docker run -d \
-  -p 5353:53/udp \
-  -p 5353:53/tcp \
-  ...
+# Check gossip members
+curl http://localhost:9090/metrics | grep opengslb_gossip
+
+# Review gossip logs
+journalctl -u opengslb | grep -i gossip
 ```
 
-Then query on the mapped port:
+### Overwatch Veto Not Working
+
+**Symptoms:**
+- Agent claims server healthy
+- External checks failing
+- Server still receiving traffic
+
+**Possible Causes:**
+
+1. **Veto mode set to permissive**
+   ```yaml
+   cluster:
+     overwatch:
+       veto_mode: balanced  # or "strict"
+   ```
+
+2. **Veto threshold too high**
+   ```yaml
+   cluster:
+     overwatch:
+       veto_threshold: 3  # External failures before veto
+   ```
+
+3. **Not running as leader**
+   - Overwatch only runs on Raft leader
+
+**Solutions:**
 ```bash
-dig @localhost -p 5353 myapp.example.com
+# Check veto metrics
+curl http://localhost:9090/metrics | grep opengslb_overwatch_veto
+
+# Review overwatch logs
+journalctl -u opengslb | grep -i overwatch
 ```
+
+### Predictive Health Not Triggering
+
+**Symptoms:**
+- High CPU/memory but no bleed signal
+- No predictive health metrics
+
+**Possible Causes:**
+
+1. **Predictive health disabled**
+   ```yaml
+   cluster:
+     predictive_health:
+       enabled: true
+   ```
+
+2. **Thresholds not reached**
+   ```yaml
+   cluster:
+     predictive_health:
+       cpu:
+         threshold: 80  # Current CPU below this?
+   ```
+
+3. **Running in standalone mode**
+   - Predictive health only works in cluster mode
+
+**Solutions:**
+```bash
+# Check predictive metrics
+curl http://localhost:9090/metrics | grep opengslb_predictive
+
+# Review agent logs
+journalctl -u opengslb | grep -i predictive
+```
+
+---
 
 ## Performance Issues
 
 ### High Memory Usage
 
-**Possible causes:**
-- Many domains/servers configured
-- High query volume with debug logging
+**Symptoms:**
+- Memory usage >500MB for small configurations
+- OOM kills
 
 **Solutions:**
-- Reduce log level to `info` or `warn`
-- Monitor with `docker stats` or `top`
+
+1. **Check for goroutine leaks:**
+   ```bash
+   curl http://localhost:9090/debug/pprof/goroutine?debug=2
+   ```
+
+2. **Reduce health check frequency:**
+   ```yaml
+   health_check:
+     interval: 30s  # Increase from default
+   ```
+
+3. **Limit concurrent checks:**
+   - Consider reducing number of monitored servers
 
 ### High CPU Usage
 
-**Diagnosis:**
-```bash
-# Check query rate
-curl -s http://localhost:9090/metrics | grep opengslb_dns_queries_total
+**Symptoms:**
+- CPU >50% under normal load
+- Slow DNS responses
+
+**Solutions:**
+
+1. **Profile the application:**
+   ```bash
+   curl http://localhost:9090/debug/pprof/profile?seconds=30 > cpu.prof
+   go tool pprof cpu.prof
+   ```
+
+2. **Check for excessive logging:**
+   ```yaml
+   logging:
+     level: info  # Avoid "debug" in production
+   ```
+
+3. **Review routing algorithm:**
+   - Weighted routing is slightly more CPU-intensive than round-robin
+
+---
+
+## Logging and Debugging
+
+### Enable Debug Logging
+
+Temporarily increase log verbosity:
+
+```yaml
+logging:
+  level: debug
+  format: json
 ```
 
-**If query rate is very high:**
-- Consider rate limiting at network level
-- Check for DNS amplification attack
+Or via environment variable:
+```bash
+OPENGSLB_LOG_LEVEL=debug opengslb --config config.yaml
+```
+
+### View Real-Time Logs
+
+```bash
+# systemd
+journalctl -u opengslb -f
+
+# Docker
+docker logs -f opengslb
+
+# Direct
+./opengslb --config config.yaml 2>&1 | tee opengslb.log
+```
+
+### Export Diagnostic Information
+
+For support requests, gather:
+
+```bash
+# System info
+uname -a
+cat /etc/os-release
+
+# OpenGSLB version
+opengslb --version
+
+# Configuration (sanitize secrets)
+cat /etc/opengslb/config.yaml | grep -v key
+
+# Metrics snapshot
+curl http://localhost:9090/metrics > metrics.txt
+
+# Recent logs
+journalctl -u opengslb --since "1 hour ago" > logs.txt
+
+# Cluster status (if applicable)
+curl http://localhost:8080/api/v1/cluster/status > cluster-status.json
+curl http://localhost:8080/api/v1/cluster/members > cluster-members.json
+curl http://localhost:8080/api/v1/health/servers > health-status.json
+```
+
+---
 
 ## Getting Help
 
-If you've exhausted this guide:
+If you cannot resolve an issue:
 
-1. **Enable debug logging:**
-   ```yaml
-   logging:
-     level: debug
-     format: text
-   ```
+1. **Search existing issues:** https://github.com/LoganRossUS/OpenGSLB/issues
+2. **Create a new issue** with diagnostic information above
+3. **Community support:** [Discussions](https://github.com/LoganRossUS/OpenGSLB/discussions)
 
-2. **Collect diagnostics:**
-   ```bash
-   # Configuration (redact sensitive data)
-   cat /etc/opengslb/config.yaml
-   
-   # Metrics snapshot
-   curl http://localhost:9090/metrics > metrics.txt
-   
-   # Recent logs
-   journalctl -u opengslb -n 100  # if using systemd
-   # or
-   docker logs opengslb --tail 100
-   ```
-
-3. **Open an issue:** https://github.com/loganrossus/OpenGSLB/issues
-   - Include Go version, OS, and OpenGSLB version
-   - Describe expected vs. actual behavior
-   - Include relevant logs and configuration
-
----
-
-## Configuration Hot-Reload Issues
-
-### SIGHUP Not Reloading Configuration
-
-**Symptom:** Sending SIGHUP doesn't update the running configuration.
-
-**Diagnosis:**
-```bash
-# Check if reload was attempted
-grep -i "reload" /var/log/opengslb.log
-
-# Check metrics for reload attempts
-curl -s http://localhost:9090/metrics | grep opengslb_config_reloads
-```
-
-**Common causes:**
-
-1. **Configuration validation failed:**
-   ```bash
-   # Check for validation errors in logs
-   grep -i "validation\|error" /var/log/opengslb.log | tail -20
-   ```
-
-2. **Wrong PID:**
-   ```bash
-   # Verify you're sending to the right process
-   pgrep -a opengslb
-   kill -HUP $(pgrep opengslb)
-   ```
-
-3. **Permission issues on config file:**
-   ```bash
-   ls -la /etc/opengslb/config.yaml
-   # Ensure OpenGSLB process can read the file
-   ```
-
-### Configuration Reload Causes Crash
-
-**Symptom:** OpenGSLB crashes after SIGHUP.
-
-**Diagnosis:**
-```bash
-# Check for panic in logs
-grep -i "panic\|fatal" /var/log/opengslb.log
-
-# Check if process is still running
-pgrep opengslb
-```
-
-**Solution:**
-1. Validate configuration before reload:
-   ```bash
-   # Test config syntax
-   python3 -c "import yaml; yaml.safe_load(open('/etc/opengslb/config.yaml'))"
-   ```
-2. Ensure new domains reference existing regions
-3. Check for duplicate server registrations across regions
-
----
-
-## Weighted Routing Issues
-
-### Traffic Not Distributed According to Weights
-
-**Symptom:** Server with weight 200 doesn't get 2x traffic of server with weight 100.
-
-**Explanation:** Weighted routing is probabilistic. With small sample sizes, distribution may vary.
-
-**Verification:**
-```bash
-# Query 100 times and count distribution
-for i in {1..100}; do 
-  dig @localhost app.example.com +short
-done | sort | uniq -c
-```
-
-**Expected:** Over many queries, distribution should approximate weight ratios (within ~15%).
-
-**If distribution is completely wrong:**
-1. Check that you're querying the weighted domain:
-   ```yaml
-   domains:
-     - name: app.example.com
-       routing_algorithm: weighted  # Not round-robin
-   ```
-2. Verify server weights are set correctly
-3. Check that servers are healthy (unhealthy servers excluded)
-
-### Weight 0 Server Still Receiving Traffic
-
-**Symptom:** Server with weight 0 is being returned.
-
-**Diagnosis:**
-```bash
-# Check configuration
-grep -A5 "weight: 0" /etc/opengslb/config.yaml
-```
-
-**Possible causes:**
-1. Configuration not reloaded after change
-2. Multiple server entries (one with weight > 0)
-
----
-
-## Failover Routing Issues
-
-### Primary Server Not Used When Healthy
-
-**Symptom:** Traffic goes to secondary even when primary is healthy.
-
-**Diagnosis:**
-```bash
-# Check server health
-curl http://localhost:8080/api/v1/health/servers | jq .
-
-# Check routing algorithm
-grep -A5 "name: your-domain" /etc/opengslb/config.yaml
-```
-
-**Common causes:**
-1. Primary server actually unhealthy (check health API)
-2. Wrong routing algorithm configured
-3. Server order in configuration (first server = primary)
-
-### Failover Takes Too Long
-
-**Symptom:** Takes many seconds after primary failure before failover.
-
-**Solution:** Adjust health check settings:
-```yaml
-health_check:
-  interval: 5s         # More frequent checks
-  timeout: 2s
-  failure_threshold: 2  # Fewer failures before marking unhealthy
-
-domains:
-  - name: critical.example.com
-    ttl: 10  # Lower TTL for faster client updates
-```
-
-### Traffic Not Returning to Primary After Recovery
-
-**Symptom:** After primary recovers, traffic stays on secondary.
-
-**This is expected behavior for current implementation.** Traffic returns to primary as soon as primary passes health checks.
-
-**Verification:**
-```bash
-# Wait for success_threshold health checks to pass
-# Then query
-dig @localhost failover.example.com +short
-```
-
----
-
-## TCP Health Check Issues
-
-### TCP Health Check Always Unhealthy
-
-**Symptom:** TCP health check fails even though service is running.
-
-**Diagnosis:**
-```bash
-# Test connectivity manually
-nc -zv 10.0.1.10 5432
-
-# Check firewall
-sudo iptables -L -n | grep 5432
-```
-
-**Common causes:**
-1. Firewall blocking connection
-2. Service not listening on expected port
-3. Timeout too short for TCP handshake
-
-### When to Use TCP vs HTTP
-
-| Scenario | Recommended |
-|----------|-------------|
-| Web applications | HTTP |
-| Databases (PostgreSQL, MySQL) | TCP |
-| Message queues (RabbitMQ, Redis) | TCP |
-| Custom protocols | TCP |
-| Services with health endpoints | HTTP |
-
----
-
-## IPv6 / AAAA Record Issues
-
-### AAAA Query Returns Empty
-
-**Symptom:** `dig @localhost domain AAAA` returns no answer.
-
-**Possible causes:**
-
-1. **No IPv6 servers configured:**
-   ```yaml
-   servers:
-     - address: "2001:db8::1"  # Need IPv6 addresses for AAAA
-       port: 80
-   ```
-
-2. **IPv6 servers unhealthy:**
-   ```bash
-   # Check if IPv6 connectivity works
-   curl -6 http://[2001:db8::1]:80/health
-   ```
-
-3. **IPv6 not enabled on host:**
-   ```bash
-   # Check IPv6 support
-   cat /proc/sys/net/ipv6/conf/all/disable_ipv6
-   # 0 = enabled, 1 = disabled
-   ```
-
-### A Query Returns IPv6 Address (Wrong Record Type)
-
-**This shouldn't happen.** A queries only return IPv4, AAAA only returns IPv6.
-
-**If this occurs:**
-1. Check server address format in configuration
-2. IPv4-mapped IPv6 addresses (`::ffff:10.0.1.10`) are treated as IPv4
-
----
-
-## Health Status API Issues
-
-### API Returns 403 Forbidden
-
-**Symptom:** `curl http://localhost:8080/api/v1/health/servers` returns 403.
-
-**Cause:** Your IP is not in `allowed_networks`.
-
-**Solution:**
-```yaml
-api:
-  enabled: true
-  address: "127.0.0.1:8080"
-  allowed_networks:
-    - "127.0.0.0/8"      # localhost
-    - "10.0.0.0/8"       # Add your network
-    - "192.168.0.0/16"   # Add your network
-```
-
-### API Not Responding
-
-**Symptom:** Connection refused on API port.
-
-**Checklist:**
-1. API enabled in config:
-   ```yaml
-   api:
-     enabled: true
-   ```
-
-2. Correct port:
-   ```bash
-   sudo ss -tulpn | grep 8080
-   ```
-
-3. Process running:
-   ```bash
-   pgrep opengslb
-   ```
-
-### API Shows Incorrect Health Status
-
-**Symptom:** API says server is healthy but DNS returns SERVFAIL.
-
-**Possible causes:**
-1. Health status not yet updated (wait for health check interval)
-2. Viewing wrong region/server
-3. All servers of required address family (IPv4/IPv6) are unhealthy
-
----
-
-## Performance Issues with Sprint 3 Features
-
-### High Memory Usage with Weighted Routing
-
-Weighted routing has minimal memory overhead. If memory is high:
-1. Check number of configured servers
-2. Reduce health check frequency if too aggressive
-3. Monitor with `go_memstats_*` Prometheus metrics
-
-### Slow Failover Detection
-
-Failover speed depends on:
-- `health_check.interval` (how often we check)
-- `health_check.failure_threshold` (how many failures before unhealthy)
-- DNS TTL (how long clients cache)
-
-**Fastest failover configuration:**
-```yaml
-health_check:
-  interval: 5s
-  failure_threshold: 2
-
-domains:
-  - name: critical.example.com
-    ttl: 10
-```
-
-**Tradeoff:** More health check traffic and DNS queries.
-
-### Helpful Sites
-
-- [DNS Health Check](https://dns-health-check.com/)
-- [Flush Google DNS Cache](https://developers.google.com/speed/public-dns/flush-dns)
+For commercial support: licensing@opengslb.org
