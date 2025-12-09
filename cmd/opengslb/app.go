@@ -1,6 +1,6 @@
 // Copyright (C) 2025 Logan Ross
 //
-// This file is part of OpenGSLB \u2013 https://opengslb.org
+// This file is part of OpenGSLB – https://opengslb.org
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
@@ -10,10 +10,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/hashicorp/memberlist"
 	"github.com/loganrossus/OpenGSLB/pkg/api"
 	"github.com/loganrossus/OpenGSLB/pkg/cluster"
 	"github.com/loganrossus/OpenGSLB/pkg/config"
@@ -37,7 +39,8 @@ type Application struct {
 	logger        *slog.Logger
 
 	// Cluster mode components
-	raftNode *cluster.RaftNode
+	raftNode      *cluster.RaftNode
+	gossipManager *cluster.GossipManager
 }
 
 // NewApplication creates a new Application instance with pre-loaded configuration.
@@ -142,8 +145,177 @@ func (a *Application) initializeClusterMode() error {
 		a.onLeadershipChange(isLeader)
 	})
 
+	// Initialize gossip if enabled
+	if err := a.initializeGossip(); err != nil {
+		return fmt.Errorf("failed to initialize gossip: %w", err)
+	}
+
 	a.logger.Info("cluster mode components initialized")
 	return nil
+}
+
+// initializeGossip sets up the gossip protocol for health event propagation.
+func (a *Application) initializeGossip() error {
+	// Parse bind address to get IP
+	bindIP, _, err := net.SplitHostPort(a.config.Cluster.BindAddress)
+	if err != nil {
+		// If no port, assume it's just an IP
+		bindIP = a.config.Cluster.BindAddress
+	}
+
+	// Parse advertise address
+	advertiseIP := bindIP
+	if a.config.Cluster.AdvertiseAddress != "" {
+		advertiseIP, _, err = net.SplitHostPort(a.config.Cluster.AdvertiseAddress)
+		if err != nil {
+			advertiseIP = a.config.Cluster.AdvertiseAddress
+		}
+	}
+
+	// Create gossip configuration
+	gossipCfg := cluster.DefaultGossipConfig()
+	gossipCfg.NodeID = a.config.Cluster.NodeName
+	gossipCfg.NodeName = a.config.Cluster.NodeName
+	gossipCfg.BindAddr = bindIP
+	gossipCfg.BindPort = a.config.Cluster.GetGossipBindPort()
+	gossipCfg.AdvertiseAddr = advertiseIP
+	gossipCfg.AdvertisePort = a.config.Cluster.GetGossipAdvertisePort()
+	gossipCfg.EncryptionKey = a.config.Cluster.Gossip.EncryptionKey
+
+	// Apply timing configuration
+	if a.config.Cluster.Gossip.ProbeInterval > 0 {
+		gossipCfg.ProbeInterval = a.config.Cluster.Gossip.ProbeInterval
+	}
+	if a.config.Cluster.Gossip.ProbeTimeout > 0 {
+		gossipCfg.ProbeTimeout = a.config.Cluster.Gossip.ProbeTimeout
+	}
+	if a.config.Cluster.Gossip.GossipInterval > 0 {
+		gossipCfg.GossipInterval = a.config.Cluster.Gossip.GossipInterval
+	}
+	if a.config.Cluster.Gossip.PushPullInterval > 0 {
+		gossipCfg.PushPullInterval = a.config.Cluster.Gossip.PushPullInterval
+	}
+
+	// Build seed list from join addresses
+	// Convert API addresses to gossip addresses (same IP, gossip port)
+	for _, joinAddr := range a.config.Cluster.Join {
+		host, _, err := net.SplitHostPort(joinAddr)
+		if err != nil {
+			host = joinAddr
+		}
+		gossipCfg.Seeds = append(gossipCfg.Seeds,
+			fmt.Sprintf("%s:%d", host, gossipCfg.BindPort))
+	}
+
+	// Create gossip manager
+	gossipManager, err := cluster.NewGossipManager(gossipCfg, a.logger.With("component", "gossip"))
+	if err != nil {
+		return fmt.Errorf("failed to create gossip manager: %w", err)
+	}
+	a.gossipManager = gossipManager
+
+	// Set up gossip event handlers
+	a.setupGossipHandlers()
+
+	a.logger.Info("gossip manager initialized",
+		"bind_addr", gossipCfg.BindAddr,
+		"bind_port", gossipCfg.BindPort,
+		"seeds", gossipCfg.Seeds,
+	)
+
+	return nil
+}
+
+// setupGossipHandlers configures callbacks for gossip events.
+func (a *Application) setupGossipHandlers() {
+	if a.gossipManager == nil {
+		return
+	}
+
+	// Handle health updates from other nodes
+	a.gossipManager.OnHealthUpdate(func(update *cluster.HealthUpdate, fromNode string) {
+		a.logger.Debug("received health update via gossip",
+			"server", update.ServerAddr,
+			"region", update.Region,
+			"healthy", update.Healthy,
+			"from", fromNode,
+		)
+		metrics.RecordGossipHealthUpdateReceived()
+		metrics.RecordGossipMessageReceived("health_update")
+
+		// Calculate propagation latency if we have a reasonable reference
+		// (In production, this would use synchronized time or vector clocks)
+	})
+
+	// Handle predictive signals
+	a.gossipManager.OnPredictive(func(signal *cluster.PredictiveSignal, fromNode string) {
+		a.logger.Info("received predictive signal via gossip",
+			"node", signal.NodeID,
+			"signal", signal.Signal,
+			"reason", signal.Reason,
+			"value", signal.Value,
+			"threshold", signal.Threshold,
+			"from", fromNode,
+		)
+		metrics.RecordGossipPredictiveSignal(signal.Signal)
+		metrics.RecordGossipMessageReceived("predictive")
+
+		// TODO: Implement predictive signal handling
+		// - Adjust routing weights
+		// - Trigger preemptive failover if critical
+	})
+
+	// Handle override commands
+	a.gossipManager.OnOverride(func(override *cluster.OverrideCommand, fromNode string) {
+		a.logger.Info("received override command via gossip",
+			"target_node", override.TargetNode,
+			"server", override.ServerAddr,
+			"action", override.Action,
+			"reason", override.Reason,
+			"from", fromNode,
+		)
+		metrics.RecordGossipOverride(override.Action)
+		metrics.RecordGossipMessageReceived("override")
+
+		// TODO: Implement override command handling
+		// - Force health status if target_node is us
+		// - Store in KV for persistence
+	})
+
+	// Handle node membership changes
+	a.gossipManager.OnNodeJoin(func(node *memberlist.Node) {
+		a.logger.Info("gossip: node joined",
+			"name", node.Name,
+			"address", node.Address(),
+		)
+		metrics.RecordGossipNodeJoin()
+		a.updateGossipMetrics()
+	})
+
+	a.gossipManager.OnNodeLeave(func(node *memberlist.Node) {
+		a.logger.Info("gossip: node left",
+			"name", node.Name,
+			"address", node.Address(),
+		)
+		metrics.RecordGossipNodeLeave()
+		a.updateGossipMetrics()
+	})
+}
+
+// updateGossipMetrics updates Prometheus metrics for gossip state.
+func (a *Application) updateGossipMetrics() {
+	if a.gossipManager == nil {
+		return
+	}
+
+	members := a.gossipManager.Members()
+	healthyCount := 0
+	for _, m := range members {
+		if m.State == "alive" {
+			healthyCount++
+		}
+	}
+	metrics.SetGossipMembers(len(members), healthyCount)
 }
 
 // onLeadershipChange is called when this node's leadership status changes.
@@ -184,6 +356,13 @@ func (a *Application) initializeHealthManager() error {
 
 	a.healthManager = health.NewManager(checker, mgrCfg)
 
+	// Set up health status change callback for gossip propagation
+	if a.gossipManager != nil {
+		a.healthManager.OnStatusChange(func(address string, status health.Status) {
+			a.broadcastHealthUpdate(address, status)
+		})
+	}
+
 	if err := a.registerHealthCheckServers(); err != nil {
 		return err
 	}
@@ -192,6 +371,50 @@ func (a *Application) initializeHealthManager() error {
 		"servers", a.healthManager.ServerCount(),
 	)
 	return nil
+}
+
+// broadcastHealthUpdate sends a health status change to the gossip cluster.
+func (a *Application) broadcastHealthUpdate(address string, status health.Status) {
+	if a.gossipManager == nil || !a.gossipManager.IsRunning() {
+		return
+	}
+
+	// Find the region for this server
+	region := a.getServerRegion(address)
+
+	update := &cluster.HealthUpdate{
+		ServerAddr: address,
+		Region:     region,
+		Healthy:    status == health.StatusHealthy,
+		CheckType:  "local", // Indicates this is from local health checks
+	}
+
+	if err := a.gossipManager.BroadcastHealthUpdate(update); err != nil {
+		a.logger.Warn("failed to broadcast health update",
+			"address", address,
+			"error", err,
+		)
+		metrics.RecordGossipSendFailure()
+	} else {
+		metrics.RecordGossipHealthUpdateBroadcast()
+		metrics.RecordGossipMessageSent("health_update")
+	}
+}
+
+// getServerRegion finds the region name for a server address.
+func (a *Application) getServerRegion(address string) string {
+	a.configMu.RLock()
+	defer a.configMu.RUnlock()
+
+	for _, region := range a.config.Regions {
+		for _, server := range region.Servers {
+			serverAddr := fmt.Sprintf("%s:%d", server.Address, server.Port)
+			if serverAddr == address {
+				return region.Name
+			}
+		}
+	}
+	return ""
 }
 
 // registerHealthCheckServers registers all configured servers with the health manager.
@@ -364,6 +587,17 @@ func (a *Application) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start gossip after Raft (so we have node identity established)
+	if a.gossipManager != nil {
+		if err := a.gossipManager.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start gossip manager: %w", err)
+		}
+		a.logger.Info("gossip manager started",
+			"members", a.gossipManager.NumMembers(),
+		)
+		a.updateGossipMetrics()
+	}
+
 	if err := a.healthManager.Start(); err != nil {
 		return fmt.Errorf("failed to start health manager: %w", err)
 	}
@@ -404,6 +638,15 @@ func (a *Application) Shutdown(ctx context.Context) error {
 	a.logger.Info("shutting down application")
 
 	var shutdownErr error
+
+	// Stop gossip first (quick, allows graceful leave)
+	if a.gossipManager != nil {
+		a.logger.Debug("stopping gossip manager")
+		if err := a.gossipManager.Stop(ctx); err != nil {
+			a.logger.Error("error stopping gossip manager", "error", err)
+			shutdownErr = err
+		}
+	}
 
 	// Stop Raft node if in cluster mode
 	if a.raftNode != nil {
@@ -459,6 +702,12 @@ func (a *Application) IsLeader() bool {
 // Returns nil in standalone mode.
 func (a *Application) GetRaftNode() *cluster.RaftNode {
 	return a.raftNode
+}
+
+// GetGossipManager returns the gossip manager for cluster communication.
+// Returns nil in standalone mode.
+func (a *Application) GetGossipManager() *cluster.GossipManager {
+	return a.gossipManager
 }
 
 // Reload applies a new configuration without restarting.
