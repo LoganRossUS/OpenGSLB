@@ -47,6 +47,10 @@ const (
 	DefaultPredictiveBleedDuration      = 30 * time.Second
 	DefaultPredictiveErrorWindow        = 60 * time.Second
 	DefaultPredictiveErrorBleedDuration = 60 * time.Second
+
+	// Overwatch defaults
+	DefaultOverwatchCheckInterval = 10 * time.Second
+	DefaultOverwatchVetoMode      = "balanced"
 )
 
 // DefaultAPIAllowedNetworks defines the default networks allowed to access the API.
@@ -156,6 +160,17 @@ func applyClusterDefaults(cluster *ClusterConfig) {
 	// Predictive health defaults (only apply if enabled)
 	if cluster.PredictiveHealth.Enabled {
 		applyPredictiveHealthDefaults(&cluster.PredictiveHealth)
+	}
+
+	applyOverwatchDefaults(&cluster.Overwatch)
+}
+
+func applyOverwatchDefaults(o *OverwatchConfig) {
+	if o.ExternalCheckInterval == 0 {
+		o.ExternalCheckInterval = DefaultOverwatchCheckInterval
+	}
+	if o.VetoMode == "" {
+		o.VetoMode = DefaultOverwatchVetoMode
 	}
 }
 

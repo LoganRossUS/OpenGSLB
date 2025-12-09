@@ -117,6 +117,19 @@ cluster:
       window: 60s          # Measurement window
       bleed_duration: 60s
 
+  # Overwatch configuration (Story 6)
+  # Leader validation of agent health claims
+  overwatch:
+    # Frequency of leader-initiated external checks
+    # Default: 10s
+    external_check_interval: "10s"
+
+    # Veto mode: strict, balanced, permissive
+    # strict: external check always wins
+    # balanced: veto only clear disagreements
+    # permissive: trust agents unless external clearly fails
+    veto_mode: "balanced"
+
   # Virtual IP advertised by all cluster nodes
   # Only the Raft leader responds to DNS queries on this VIP
   # Configure your network to route this VIP to all cluster nodes

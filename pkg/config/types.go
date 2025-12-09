@@ -129,6 +129,21 @@ type ClusterConfig struct {
 	// AnycastVIP is the virtual IP advertised by all cluster nodes.
 	// Only the Raft leader responds to DNS queries on this VIP.
 	AnycastVIP string `yaml:"anycast_vip"`
+
+	// Overwatch contains configuration for the leader's health validation.
+	Overwatch OverwatchConfig `yaml:"overwatch"`
+}
+
+// OverwatchConfig defines settings for the leader's validation of agent health claims.
+type OverwatchConfig struct {
+	// ExternalCheckInterval is the frequency of leader-initiated external checks.
+	// Default: 10s
+	ExternalCheckInterval time.Duration `yaml:"external_check_interval"`
+
+	// VetoMode controls how disagreements between agent and external checks are resolved.
+	// Options: "strict", "balanced", "permissive"
+	// Default: "balanced"
+	VetoMode string `yaml:"veto_mode"`
 }
 
 // PredictiveHealthConfig defines predictive health monitoring settings.
