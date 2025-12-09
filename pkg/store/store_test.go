@@ -40,24 +40,8 @@ func TestRaftStore(t *testing.T) {
 	cfg.DataDir = dir
 	cfg.Bootstrap = true
 
-	// We need to resolve the address to a real port, which RaftNode does,
-	// but we need to know it before specific tests if we were checking cluster integration.
-	// Here we just rely on RaftNode's internal behavior.
-	// However, binding port 0 might be tricky if we don't know what it picked for Advertise.
-	// Let's pick a random port or just retry.
-	// For stability, let's use a specific port if possible, or trust underlying logic.
-	// A simpler way for unit test is mocking, but RaftNode is concrete.
-	// Let's ignore the network part: Raft inside a test is tough.
-	// Instead, for this level, maybe we skip full Raft test or rely on the fact that
-	// cluster tests cover RaftNode, and here we just test that RaftStore calls RaftNode correctly.
-	// But we want to test "Set -> Get".
-
-	// Let's try to start it.
-	// We need a port.
-	cfg.BindAddress = "127.0.0.1:18088" // Hope it's free
-
-	// Use a logger that discards output to avoid noise
-	// logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// Use a specific port for stability
+	cfg.BindAddress = "127.0.0.1:18088"
 
 	node, err := cluster.NewRaftNode(cfg, nil)
 	if err != nil {
@@ -74,12 +58,11 @@ func TestRaftStore(t *testing.T) {
 	}
 	defer node.Stop(context.Background())
 
-	// Wait for leader
-	// Give it some time to elect itself
+	// Wait for leader election
 	time.Sleep(2 * time.Second)
 	if !node.IsLeader() {
-		// Try to wait
-		timeoutCtx, _ := context.WithTimeout(ctx, 5*time.Second)
+		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer timeoutCancel()
 		if err := node.WaitForLeader(timeoutCtx); err != nil {
 			t.Skipf("Skipping RaftStore test: failed to become leader: %v", err)
 			return
@@ -156,13 +139,16 @@ func runStoreTests(t *testing.T, store Store) {
 
 	// 4. Watch
 	t.Run("Watch", func(t *testing.T) {
+		watchCtx, watchCancel := context.WithCancel(ctx)
+		defer watchCancel()
+
 		prefix := "watch/"
-		ch, err := store.Watch(ctx, prefix)
+		ch, err := store.Watch(watchCtx, prefix)
 		if err != nil {
 			t.Fatalf("Watch failed: %v", err)
 		}
 
-		// Set value
+		// Set value in a goroutine
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			store.Set(ctx, "watch/foo", []byte("bar"))
@@ -176,7 +162,7 @@ func runStoreTests(t *testing.T, store Store) {
 			if ev.Key != "watch/foo" {
 				t.Errorf("Event key = %s, want watch/foo", ev.Key)
 			}
-		case <-time.After(1 * time.Second):
+		case <-time.After(2 * time.Second):
 			t.Fatal("Timeout waiting for watch event")
 		}
 	})
@@ -184,13 +170,23 @@ func runStoreTests(t *testing.T, store Store) {
 	// 5. Delete
 	t.Run("Delete", func(t *testing.T) {
 		key := "del"
-		store.Set(ctx, key, []byte("val"))
+		if err := store.Set(ctx, key, []byte("val")); err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
 		if err := store.Delete(ctx, key); err != nil {
 			t.Fatalf("Delete failed: %v", err)
 		}
 		_, err := store.Get(ctx, key)
 		if err != ErrKeyNotFound {
 			t.Errorf("Get after delete error = %v, want ErrKeyNotFound", err)
+		}
+	})
+
+	// 6. Get non-existent key
+	t.Run("Get non-existent", func(t *testing.T) {
+		_, err := store.Get(ctx, "nonexistent-key-12345")
+		if err != ErrKeyNotFound {
+			t.Errorf("Get non-existent error = %v, want ErrKeyNotFound", err)
 		}
 	})
 }

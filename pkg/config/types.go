@@ -148,6 +148,11 @@ type OverwatchConfig struct {
 	// Options: "strict", "balanced", "permissive"
 	// Default: "balanced"
 	VetoMode string `yaml:"veto_mode"`
+
+	// VetoThreshold is the number of consecutive external check failures
+	// before the overwatch will veto an agent's healthy claim.
+	// Default: 3
+	VetoThreshold int `yaml:"veto_threshold"`
 }
 
 // PredictiveHealthConfig defines predictive health monitoring settings.

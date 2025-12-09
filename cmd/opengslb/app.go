@@ -712,7 +712,7 @@ func (a *Application) Start(ctx context.Context) error {
 						continue
 					}
 				}
-				// If Start returns nil (clean shutdown) or context cancelled, we exit
+				// If Start returns nil (clean shutdown) or context canceled, we exit
 				return
 			}
 			a.logger.Error("metrics server failed to start after 30 attempts")

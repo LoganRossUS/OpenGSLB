@@ -1,15 +1,15 @@
 // Copyright (C) 2025 Logan Ross
 //
-// This file is part of OpenGSLB – https://opengslb.org
+// This file is part of OpenGSLB \u2013 https://opengslb.org
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
 package store
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	bolt "go.etcd.io/bbolt"
@@ -21,10 +21,17 @@ var (
 
 // BboltStore implements Store using BoltDB.
 type BboltStore struct {
-	db       *bolt.DB
-	watchers map[string][]chan WatchEvent
+	db *bolt.DB
+
 	mu       sync.RWMutex
+	watchers map[string][]*watcherEntry
 	closed   bool
+}
+
+// watcherEntry tracks a watcher channel and its closed state.
+type watcherEntry struct {
+	ch     chan WatchEvent
+	closed bool
 }
 
 // NewBboltStore creates a new BboltStore.
@@ -46,7 +53,7 @@ func NewBboltStore(path string) (*BboltStore, error) {
 
 	return &BboltStore{
 		db:       db,
-		watchers: make(map[string][]chan WatchEvent),
+		watchers: make(map[string][]*watcherEntry),
 	}, nil
 }
 
@@ -104,7 +111,7 @@ func (s *BboltStore) List(ctx context.Context, prefix string) ([]KVPair, error) 
 		b := tx.Bucket(bucketName)
 		c := b.Cursor()
 
-		for k, v := c.Seek(prefixBytes); k != nil && bytes.HasPrefix(k, prefixBytes); k, v = c.Next() {
+		for k, v := c.Seek(prefixBytes); k != nil && hasPrefix(k, prefixBytes); k, v = c.Next() {
 			val := make([]byte, len(v))
 			copy(val, v)
 			pairs = append(pairs, KVPair{
@@ -117,6 +124,19 @@ func (s *BboltStore) List(ctx context.Context, prefix string) ([]KVPair, error) 
 	return pairs, err
 }
 
+// hasPrefix checks if b starts with prefix.
+func hasPrefix(b, prefix []byte) bool {
+	if len(b) < len(prefix) {
+		return false
+	}
+	for i := range prefix {
+		if b[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // Watch monitors keys with the given prefix for changes.
 func (s *BboltStore) Watch(ctx context.Context, prefix string) (<-chan WatchEvent, error) {
 	s.mu.Lock()
@@ -127,27 +147,32 @@ func (s *BboltStore) Watch(ctx context.Context, prefix string) (<-chan WatchEven
 	}
 
 	ch := make(chan WatchEvent, 10)
-	s.watchers[prefix] = append(s.watchers[prefix], ch)
+	entry := &watcherEntry{ch: ch}
+	s.watchers[prefix] = append(s.watchers[prefix], entry)
 
 	// Handle context cancellation to remove watcher
 	go func() {
 		<-ctx.Done()
-		s.removeWatcher(prefix, ch)
+		s.removeWatcher(prefix, entry)
 	}()
 
 	return ch, nil
 }
 
-func (s *BboltStore) removeWatcher(prefix string, ch chan WatchEvent) {
+func (s *BboltStore) removeWatcher(prefix string, entry *watcherEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	channels := s.watchers[prefix]
-	for i, c := range channels {
-		if c == ch {
-			// Remove element
-			s.watchers[prefix] = append(channels[:i], channels[i+1:]...)
-			close(ch)
+	entries := s.watchers[prefix]
+	for i, e := range entries {
+		if e == entry {
+			// Mark as closed and close channel (only once)
+			if !e.closed {
+				e.closed = true
+				close(e.ch)
+			}
+			// Remove from slice
+			s.watchers[prefix] = append(entries[:i], entries[i+1:]...)
 			break
 		}
 	}
@@ -160,18 +185,20 @@ func (s *BboltStore) notifyWatchers(eventType EventType, key string, value []byt
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for prefix, channels := range s.watchers {
-		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+	for prefix, entries := range s.watchers {
+		if strings.HasPrefix(key, prefix) {
 			event := WatchEvent{
 				Type:  eventType,
 				Key:   key,
 				Value: value,
 			}
-			for _, ch := range channels {
-				select {
-				case ch <- event:
-				default:
-					// Drop event if channel is full to prevent blocking
+			for _, entry := range entries {
+				if !entry.closed {
+					select {
+					case entry.ch <- event:
+					default:
+						// Drop event if channel is full to prevent blocking
+					}
 				}
 			}
 		}
@@ -181,11 +208,19 @@ func (s *BboltStore) notifyWatchers(eventType EventType, key string, value []byt
 // Close closes the store.
 func (s *BboltStore) Close() error {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
 	s.closed = true
-	// Close all watcher channels
-	for _, channels := range s.watchers {
-		for _, ch := range channels {
-			close(ch)
+
+	// Close all watcher channels (only if not already closed)
+	for _, entries := range s.watchers {
+		for _, entry := range entries {
+			if !entry.closed {
+				entry.closed = true
+				close(entry.ch)
+			}
 		}
 	}
 	s.watchers = nil

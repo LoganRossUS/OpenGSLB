@@ -1,6 +1,6 @@
 // Copyright (C) 2025 Logan Ross
 //
-// This file is part of OpenGSLB – https://opengslb.org
+// This file is part of OpenGSLB \u2013 https://opengslb.org
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
@@ -22,15 +22,19 @@ import (
 // Overwatch manages leader-initiated external health checks and veto logic.
 type Overwatch struct {
 	config config.OverwatchConfig
-	checks []config.Region // Use regions to know about servers
+	checks []config.Region
 	gossip *GossipManager
 	raft   *RaftNode
 	logger *slog.Logger
 
 	mu            sync.RWMutex
-	latestClaims  map[string]*HealthUpdate // key: server_addr (or unique ID)
-	vetoes        map[string]time.Time     // key: server_addr -> expiry
-	checkFailures map[string]int           // failure counter for external checks
+	latestClaims  map[string]*HealthUpdate
+	vetoes        map[string]time.Time
+	checkFailures map[string]int
+
+	// For graceful shutdown
+	stopCh chan struct{}
+	doneCh chan struct{}
 }
 
 // NewOverwatch creates a new Overwatch instance.
@@ -47,6 +51,8 @@ func NewOverwatch(cfg config.OverwatchConfig, regions []config.Region, gossip *G
 		latestClaims:  make(map[string]*HealthUpdate),
 		vetoes:        make(map[string]time.Time),
 		checkFailures: make(map[string]int),
+		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
 	}
 }
 
@@ -62,7 +68,6 @@ func (o *Overwatch) Start(ctx context.Context) error {
 		o.gossip.OnHealthUpdate(func(update *HealthUpdate, fromNode string) {
 			o.mu.Lock()
 			o.latestClaims[update.ServerAddr] = update
-			// If agent says unhealthy, we can clear our failure count (agreement)
 			if !update.Healthy {
 				delete(o.checkFailures, update.ServerAddr)
 			}
@@ -74,13 +79,29 @@ func (o *Overwatch) Start(ctx context.Context) error {
 	return nil
 }
 
+// Stop gracefully stops the overwatch.
+func (o *Overwatch) Stop(ctx context.Context) error {
+	close(o.stopCh)
+
+	select {
+	case <-o.doneCh:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (o *Overwatch) runLoop(ctx context.Context) {
+	defer close(o.doneCh)
+
 	ticker := time.NewTicker(o.config.ExternalCheckInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-o.stopCh:
 			return
 		case <-ticker.C:
 			if o.shouldRunChecks() {
@@ -92,7 +113,6 @@ func (o *Overwatch) runLoop(ctx context.Context) {
 }
 
 func (o *Overwatch) shouldRunChecks() bool {
-	// Only run checks if we are the leader
 	if o.raft == nil {
 		return false
 	}
@@ -102,35 +122,32 @@ func (o *Overwatch) shouldRunChecks() bool {
 func (o *Overwatch) performChecks(ctx context.Context) {
 	var wg sync.WaitGroup
 
-	// Flatten server list for checking
 	for _, region := range o.checks {
+		healthCheck := region.HealthCheck
+
 		for _, server := range region.Servers {
-			// Find the corresponding config for this server to know check details?
-			// The Region struct has HealthCheck config.
-			healthCheck := region.HealthCheck
 			serverAddr := fmt.Sprintf("%s:%d", server.Address, server.Port)
 
-			// We only check if the agent claims it is HEALTHY.
-			// If agent thinks it's unhealthy, we trust it (or at least don't need to VETO it being healthy).
-			// Exception: "Strict" mode might want to verify even unhealthy claims?
-			// For now, let's focus on VETOing false positives (Agent=Healthy, External=Fail).
+			// Check if agent claims unhealthy - if so, we don't need to verify
 			o.mu.RLock()
 			claim, exists := o.latestClaims[serverAddr]
+			agentClaimsUnhealthy := exists && !claim.Healthy
 			o.mu.RUnlock()
 
-			if exists && !claim.Healthy {
-				// Agent says unhealthy. Agreement.
+			if agentClaimsUnhealthy {
 				continue
 			}
 
-			// If we haven't heard from agent yet, assume healthy? Or assume unknown?
-			// Let's check anyway.
+			// Capture loop variables for goroutine
+			addr := serverAddr
+			hc := healthCheck
+			host := server.Host
 
 			wg.Add(1)
-			go func(addr string, hc config.HealthCheck, host string) {
+			go func() {
 				defer wg.Done()
 				o.checkServer(ctx, addr, hc, host)
-			}(serverAddr, healthCheck, server.Host)
+			}()
 		}
 	}
 	wg.Wait()
@@ -143,33 +160,40 @@ func (o *Overwatch) checkServer(ctx context.Context, addr string, hc config.Heal
 	defer o.mu.Unlock()
 
 	claim := o.latestClaims[addr]
-	// Default to assuming agent says healthy if we have no data (so we don't accidentally allow a broken server if gossip is slow)
 	agentSaysHealthy := true
 	if claim != nil {
 		agentSaysHealthy = claim.Healthy
 	}
 
-	o.decideVeto(addr, agentSaysHealthy, healthy)
+	o.decideVetoLocked(addr, agentSaysHealthy, healthy)
 }
 
 func (o *Overwatch) executeProbe(ctx context.Context, addr string, hc config.HealthCheck, host string) bool {
-	// Simple implementation supporting HTTP and TCP
 	timeout := hc.Timeout
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
 
-	if hc.Type == "tcp" {
+	switch hc.Type {
+	case "tcp":
 		conn, err := net.DialTimeout("tcp", addr, timeout)
 		if err != nil {
 			return false
 		}
 		conn.Close()
 		return true
-	}
 
-	// Default HTTP
-	url := fmt.Sprintf("http://%s%s", addr, hc.Path)
+	case "https":
+		return o.executeHTTPProbe(ctx, "https", addr, hc.Path, host, timeout)
+
+	default: // "http" or empty
+		return o.executeHTTPProbe(ctx, "http", addr, hc.Path, host, timeout)
+	}
+}
+
+func (o *Overwatch) executeHTTPProbe(ctx context.Context, scheme, addr, path, host string, timeout time.Duration) bool {
+	url := fmt.Sprintf("%s://%s%s", scheme, addr, path)
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return false
@@ -185,75 +209,73 @@ func (o *Overwatch) executeProbe(ctx context.Context, addr string, hc config.Hea
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return true
-	}
-	return false
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
+// decideVetoLocked decides whether to veto a server.
+// MUST be called with o.mu held.
+// decideVeto is a public wrapper around decideVetoLocked for testing.
+// It acquires the mutex before calling the internal method.
 func (o *Overwatch) decideVeto(addr string, agentHealthy bool, externalHealthy bool) {
-	// Decision Matrix:
-	// Mode        | Agent | External | Decision | Action
-	// ------------|-------|----------|----------|-------
-	// Any         | H     | H        | Healthy  | Clear Veto
-	// Any         | U     | H        | Unhealthy| Clear Veto (Trust agent's local failure)
-	// Any         | U     | F        | Unhealthy| Clear Veto
-	// Strict      | H     | F        | VETO     | Add Veto
-	// Balanced    | H     | F        | VETO     | Add Veto (after threshold?)
-	// Permissive  | H     | F        | Healthy  | Trust Agent (Log warning)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.decideVetoLocked(addr, agentHealthy, externalHealthy)
+}
 
+func (o *Overwatch) decideVetoLocked(addr string, agentHealthy bool, externalHealthy bool) {
 	if externalHealthy {
-		// If external check passes, we generally don't veto.
-		// Even if agent says unhealthy, we trust the agent (it might see disk full, etc).
-		o.deleteVeto(addr)
+		o.deleteVetoLocked(addr)
 		delete(o.checkFailures, addr)
 		return
 	}
 
 	// External Check Failed
 	if !agentHealthy {
-		// Agreement: Both say unhealthy.
+		// Agreement: Both say unhealthy
 		delete(o.checkFailures, addr)
 		return
 	}
 
-	// DISAGREEMENT: Agent says Healthy, External says Unhealthy.
+	// DISAGREEMENT: Agent says Healthy, External says Unhealthy
 	o.checkFailures[addr]++
 
-	threshold := 3 // Hardcoded threshold for now, or use config?
-	if o.checkFailures[addr] < threshold {
-		return // Wait for more failures
+	threshold := o.config.VetoThreshold
+	if threshold == 0 {
+		threshold = 3 // Default
 	}
 
-	// Apply Veto logic based on mode
+	if o.checkFailures[addr] < threshold {
+		return
+	}
+
 	switch o.config.VetoMode {
 	case "permissive":
-		o.logger.Warn("overwatch disagreement (permissive)", "server", addr, "agent", "healthy", "external", "failed")
-		// Do not veto
-	case "strict", "balanced":
-		// For now, strict and balanced behave similarly for clear failure: VETO.
-		// "Balanced" might be more nuanced in future (e.g. check neighbor views).
-		o.applyVeto(addr, "external_check_failed")
+		o.logger.Warn("overwatch disagreement (permissive mode, not vetoing)",
+			"server", addr,
+			"agent", "healthy",
+			"external", "failed",
+		)
+	case "strict", "balanced", "":
+		o.applyVetoLocked(addr, "external_check_failed")
 	default:
-		// Default to balanced behavior
-		o.applyVeto(addr, "external_check_failed")
+		o.applyVetoLocked(addr, "external_check_failed")
 	}
 }
 
-func (o *Overwatch) applyVeto(addr string, reason string) {
+// applyVetoLocked applies a veto to a server.
+// MUST be called with o.mu held.
+func (o *Overwatch) applyVetoLocked(addr string, reason string) {
 	expiry := time.Now().Add(o.config.ExternalCheckInterval * 2)
 	o.vetoes[addr] = expiry
 
-	o.logger.Warn("vetoing server", "server", addr, "reason", reason, "expiry", expiry)
+	o.logger.Warn("vetoing server",
+		"server", addr,
+		"reason", reason,
+		"expiry", expiry,
+	)
 	metrics.RecordOverwatchVeto(reason)
 
-	// Broadcast override to cluster?
-	// The implementation plan said: "Call gossip.BroadcastOverride".
-	// But simply maintaining local veto state might be enough if "Leader Routing" uses this struct.
-	// However, if we want *all* nodes (if we had distributed routing) to know, we would broadcast.
-	// Since currently only Leader routes, local state affects DNS responses.
-	// Broadcasting is useful if leadership changes or for UI/debug.
-
+	// Broadcast override to cluster (fire and forget, outside of lock)
 	if o.gossip != nil {
 		cmd := &OverrideCommand{
 			ServerAddr: addr,
@@ -261,7 +283,6 @@ func (o *Overwatch) applyVeto(addr string, reason string) {
 			Reason:     reason,
 			Expiry:     expiry.Unix(),
 		}
-		// Fire and forget, but log validation
 		go func() {
 			if err := o.gossip.BroadcastOverride(cmd); err != nil {
 				o.logger.Error("failed to broadcast veto override", "error", err)
@@ -270,7 +291,9 @@ func (o *Overwatch) applyVeto(addr string, reason string) {
 	}
 }
 
-func (o *Overwatch) deleteVeto(addr string) {
+// deleteVetoLocked removes a veto from a server.
+// MUST be called with o.mu held.
+func (o *Overwatch) deleteVetoLocked(addr string) {
 	if _, exists := o.vetoes[addr]; exists {
 		delete(o.vetoes, addr)
 		o.logger.Info("veto cleared", "server", addr)
@@ -293,10 +316,12 @@ func (o *Overwatch) deleteVeto(addr string) {
 func (o *Overwatch) cleanupVetoes() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
 	now := time.Now()
 	for addr, expiry := range o.vetoes {
 		if now.After(expiry) {
 			delete(o.vetoes, addr)
+			o.logger.Debug("veto expired", "server", addr)
 		}
 	}
 }
