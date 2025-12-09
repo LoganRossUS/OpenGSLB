@@ -1,6 +1,6 @@
 // Copyright (C) 2025 Logan Ross
 //
-// This file is part of OpenGSLB \u2013 https://opengslb.org
+// This file is part of OpenGSLB – https://opengslb.org
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
@@ -153,8 +153,45 @@ type RaftConfig struct {
 
 // GossipConfig defines memberlist gossip settings.
 type GossipConfig struct {
+	// Enabled controls whether gossip is enabled in cluster mode.
+	// Default: true (when in cluster mode)
+	Enabled bool `yaml:"enabled"`
+
+	// BindPort is the port for gossip communication.
+	// If not set, uses the port from ClusterConfig.BindAddress.
+	// Default: 7946
+	BindPort int `yaml:"bind_port"`
+
+	// AdvertisePort is the port advertised to other nodes.
+	// Defaults to BindPort if not set.
+	AdvertisePort int `yaml:"advertise_port"`
+
 	// EncryptionKey is an optional 32-byte base64-encoded encryption key.
+	// Generate with: head -c 32 /dev/urandom | base64
 	EncryptionKey string `yaml:"encryption_key"`
+
+	// ProbeInterval is the interval between failure probes.
+	// Lower values detect failures faster but increase network traffic.
+	// Default: 1s
+	ProbeInterval time.Duration `yaml:"probe_interval"`
+
+	// ProbeTimeout is the timeout for a single probe.
+	// Default: 500ms
+	ProbeTimeout time.Duration `yaml:"probe_timeout"`
+
+	// GossipInterval is the interval between gossip messages.
+	// Lower values propagate updates faster but increase network traffic.
+	// Default: 200ms
+	GossipInterval time.Duration `yaml:"gossip_interval"`
+
+	// PushPullInterval is the interval for full state synchronization.
+	// Default: 30s
+	PushPullInterval time.Duration `yaml:"push_pull_interval"`
+
+	// RetransmitMult controls message retransmission.
+	// Higher values improve reliability but increase bandwidth.
+	// Default: 4
+	RetransmitMult int `yaml:"retransmit_mult"`
 }
 
 // IsClusterMode returns true if the configuration is for cluster mode.
@@ -165,4 +202,31 @@ func (c *ClusterConfig) IsClusterMode() bool {
 // IsStandaloneMode returns true if the configuration is for standalone mode.
 func (c *ClusterConfig) IsStandaloneMode() bool {
 	return c.Mode == ModeStandalone || c.Mode == ""
+}
+
+// IsGossipEnabled returns true if gossip should be enabled.
+// Gossip is enabled by default in cluster mode unless explicitly disabled.
+func (c *ClusterConfig) IsGossipEnabled() bool {
+	if c.IsStandaloneMode() {
+		return false
+	}
+	// In cluster mode, gossip is enabled by default
+	// It can be explicitly disabled by setting gossip.enabled: false
+	return c.Gossip.Enabled || c.Gossip.BindPort > 0 || c.Gossip.EncryptionKey != ""
+}
+
+// GetGossipBindPort returns the gossip bind port, with defaults applied.
+func (c *ClusterConfig) GetGossipBindPort() int {
+	if c.Gossip.BindPort > 0 {
+		return c.Gossip.BindPort
+	}
+	return 7946 // Default memberlist port
+}
+
+// GetGossipAdvertisePort returns the gossip advertise port, with defaults applied.
+func (c *ClusterConfig) GetGossipAdvertisePort() int {
+	if c.Gossip.AdvertisePort > 0 {
+		return c.Gossip.AdvertisePort
+	}
+	return c.GetGossipBindPort()
 }
