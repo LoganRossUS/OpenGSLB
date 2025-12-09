@@ -431,6 +431,42 @@ func (r *RaftNode) AddVoter(id, address string) error {
 	return nil
 }
 
+// FSM returns the underlying FSM.
+func (r *RaftNode) FSM() *FSM {
+	return r.fsm
+}
+
+// ApplyCommand applies a command to the FSM via Raft.
+func (r *RaftNode) ApplyCommand(ctx context.Context, cmdType CommandType, key string, value []byte) error {
+	if !r.IsLeader() {
+		return ErrNotLeader
+	}
+
+	cmd := Command{
+		Type:  cmdType,
+		Key:   key,
+		Value: value,
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("failed to marshal command: %w", err)
+	}
+
+	future := r.raft.Apply(data, 10*time.Second) // TODO: Make timeout configurable?
+	if err := future.Error(); err != nil {
+		return err
+	}
+	// Check response from Apply
+	resp := future.Response()
+	if resp != nil {
+		if err, ok := resp.(error); ok {
+			return err
+		}
+	}
+	return nil
+}
+
 // RemoveServer removes a server from the cluster.
 func (r *RaftNode) RemoveServer(id string) error {
 	if r.raft == nil {

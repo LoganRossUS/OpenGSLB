@@ -35,9 +35,10 @@ type Command struct {
 // It provides a simple key-value store that can be used for
 // distributed configuration and runtime state.
 type FSM struct {
-	mu     sync.RWMutex
-	data   map[string][]byte
-	logger *slog.Logger
+	mu       sync.RWMutex
+	data     map[string][]byte
+	watchers []FSMWatcher
+	logger   *slog.Logger
 }
 
 // NewFSM creates a new FSM instance.
@@ -66,15 +67,26 @@ func (f *FSM) Apply(log *raft.Log) interface{} {
 	case CommandSet:
 		f.data[cmd.Key] = cmd.Value
 		f.logger.Debug("fsm set", "key", cmd.Key, "value_len", len(cmd.Value))
+		f.notifyWatchers(cmd.Key, cmd.Value, false)
 	case CommandDelete:
 		delete(f.data, cmd.Key)
 		f.logger.Debug("fsm delete", "key", cmd.Key)
+		f.notifyWatchers(cmd.Key, nil, true)
 	default:
 		f.logger.Warn("unknown command type", "type", cmd.Type)
 		return fmt.Errorf("unknown command type: %s", cmd.Type)
 	}
 
 	return nil
+}
+
+// notifyWatchers notifies all registered watchers of a change.
+// Must be called with lock held.
+func (f *FSM) notifyWatchers(key string, value []byte, isDelete bool) {
+	for _, w := range f.watchers {
+		// invoke callback synchronously; watcher implementations must be fast/async
+		w(key, value, isDelete)
+	}
 }
 
 // Snapshot returns an FSMSnapshot for creating a point-in-time snapshot.
@@ -168,3 +180,30 @@ func (s *FSMSnapshot) Persist(sink raft.SnapshotSink) error {
 
 // Release releases any resources associated with the snapshot.
 func (s *FSMSnapshot) Release() {}
+
+// FSMWatcher defines a callback for FSM events.
+type FSMWatcher func(key string, value []byte, isDelete bool)
+
+// AddWatcher adds a watcher to the FSM.
+func (f *FSM) AddWatcher(watcher FSMWatcher) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.watchers = append(f.watchers, watcher)
+}
+
+// List returns all key-value pairs where the key starts with the given prefix.
+func (f *FSM) List(prefix string) map[string][]byte {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	result := make(map[string][]byte)
+	for k, v := range f.data {
+		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+			// Copy value to prevent data races
+			valueCopy := make([]byte, len(v))
+			copy(valueCopy, v)
+			result[k] = valueCopy
+		}
+	}
+	return result
+}
