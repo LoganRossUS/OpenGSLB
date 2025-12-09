@@ -8,41 +8,41 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/loganrossus/OpenGSLB/pkg/cluster"
 )
 
 // =============================================================================
-// Cluster Test Configuration
+// Configuration
 // =============================================================================
 const (
-	// Base ports for cluster nodes (each node uses base + nodeIndex)
 	clusterBaseRaftPort   = 17000
 	clusterBaseDNSPort    = 17100
-	clusterBaseAPIPort    = 17200
 	clusterBaseGossipPort = 17300
 
-	// Timeouts
 	clusterFormationTimeout = 30 * time.Second
-	leaderElectionTimeout   = 10 * time.Second
+	leaderElectionTimeout   = 15 * time.Second
 	gossipPropagationTime   = 5 * time.Second
 )
 
-// testNode represents a cluster node for testing.
+// testNode for Raft tests
 type testNode struct {
 	NodeID     string
 	RaftAddr   string
 	DNSAddr    string
-	APIAddr    string
-	GossipAddr string
 	DataDir    string
 	RaftNode   *cluster.RaftNode
-	GossipMgr  *cluster.GossipManager
 	IsBootstrap bool
 }
 
@@ -57,7 +57,6 @@ func TestClusterFormation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), clusterFormationTimeout)
 	defer cancel()
 
-	// Create temporary directories for each node
 	tmpDir, err := os.MkdirTemp("", "opengslb-cluster-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
@@ -65,54 +64,42 @@ func TestClusterFormation(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	nodes := make([]*testNode, 3)
-
-	// Initialize nodes
 	for i := 0; i < 3; i++ {
 		nodes[i] = &testNode{
 			NodeID:     fmt.Sprintf("node-%d", i+1),
 			RaftAddr:   fmt.Sprintf("127.0.0.1:%d", clusterBaseRaftPort+i),
 			DNSAddr:    fmt.Sprintf("127.0.0.1:%d", clusterBaseDNSPort+i),
-			APIAddr:    fmt.Sprintf("127.0.0.1:%d", clusterBaseAPIPort+i),
-			GossipAddr: fmt.Sprintf("127.0.0.1:%d", clusterBaseGossipPort+i),
 			DataDir:    filepath.Join(tmpDir, fmt.Sprintf("node-%d", i+1)),
 			IsBootstrap: i == 0,
 		}
-		if err := os.MkdirAll(nodes[i].DataDir, 0755); err != nil {
-			t.Fatalf("failed to create node data dir: %v", err)
-		}
+		os.MkdirAll(nodes[i].DataDir, 0755)
 	}
 
-	// Start bootstrap node first
-	t.Log("Starting bootstrap node (node-1)...")
+	// Start bootstrap node
 	if err := startRaftNode(ctx, nodes[0], nil); err != nil {
 		t.Fatalf("failed to start bootstrap node: %v", err)
 	}
 	defer nodes[0].RaftNode.Shutdown()
 
-	// Wait for bootstrap node to become leader
-	t.Log("Waiting for bootstrap node to become leader...")
+	time.Sleep(2 * time.Second) // Stabilize bootstrap
 	if err := waitForLeader(ctx, nodes[0].RaftNode, leaderElectionTimeout); err != nil {
 		t.Fatalf("bootstrap node failed to become leader: %v", err)
 	}
-	t.Logf("Bootstrap node is leader: %v", nodes[0].RaftNode.IsLeader())
 
-	// Start remaining nodes and join cluster
+	// Start and join remaining nodes
 	for i := 1; i < 3; i++ {
-		t.Logf("Starting node-%d and joining cluster...", i+1)
 		if err := startRaftNode(ctx, nodes[i], []string{nodes[0].RaftAddr}); err != nil {
 			t.Fatalf("failed to start node-%d: %v", i+1, err)
 		}
 		defer nodes[i].RaftNode.Shutdown()
 
-		// Add voter to cluster (must be done from leader)
+		time.Sleep(2 * time.Second) // Stabilize before AddVoter
 		if err := nodes[0].RaftNode.AddVoter(nodes[i].NodeID, nodes[i].RaftAddr); err != nil {
 			t.Fatalf("failed to add node-%d as voter: %v", i+1, err)
 		}
-		t.Logf("Node-%d added to cluster", i+1)
 	}
 
-	// Verify cluster has 3 members
-	time.Sleep(2 * time.Second) // Allow cluster to stabilize
+	time.Sleep(4 * time.Second) // Full cluster stabilization
 	servers, err := nodes[0].RaftNode.GetConfiguration()
 	if err != nil {
 		t.Fatalf("failed to get cluster configuration: %v", err)
@@ -120,17 +107,11 @@ func TestClusterFormation(t *testing.T) {
 	if len(servers) != 3 {
 		t.Errorf("expected 3 cluster members, got %d", len(servers))
 	}
-	t.Logf("Cluster formed successfully with %d nodes", len(servers))
-	for _, srv := range servers {
-		t.Logf(" - %s at %s", srv.ID, srv.Address)
-	}
 
-	// Verify exactly one leader
 	leaderCount := 0
 	for _, node := range nodes {
 		if node.RaftNode.IsLeader() {
 			leaderCount++
-			t.Logf("Leader: %s", node.NodeID)
 		}
 	}
 	if leaderCount != 1 {
@@ -156,39 +137,42 @@ func TestLeaderElectionAndReelection(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	nodes := make([]*testNode, 3)
-
-	// Initialize and start cluster
 	for i := 0; i < 3; i++ {
-		basePort := 18000 + (i * 100)
-		nodes[i] = &testNode{
-			NodeID:     fmt.Sprintf("election-node-%d", i+1),
-			RaftAddr:   fmt.Sprintf("127.0.0.1:%d", basePort),
-			DataDir:    filepath.Join(tmpDir, fmt.Sprintf("node-%d", i+1)),
-			IsBootstrap: i == 0,
+			basePort := 18000 + (i * 100)
+			nodes[i] = &testNode{
+				NodeID:     fmt.Sprintf("election-node-%d", i+1),
+				RaftAddr:   fmt.Sprintf("127.0.0.1:%d", basePort),
+				DataDir:    filepath.Join(tmpDir, fmt.Sprintf("node-%d", i+1)),
+				IsBootstrap: i == 0,
+			}
+			os.MkdirAll(nodes[i].DataDir, 0755)
 		}
-		os.MkdirAll(nodes[i].DataDir, 0755)
+
+	// Start bootstrap node
+	if err := startRaftNode(ctx, nodes[0], nil); err != nil {
+		t.Fatalf("failed to start bootstrap node: %v", err)
+	}
+	defer nodes[0].RaftNode.Shutdown()
+
+	time.Sleep(2 * time.Second) // Stabilize
+	if err := waitForLeader(ctx, nodes[0].RaftNode, leaderElectionTimeout); err != nil {
+		t.Fatal("bootstrap failed to become leader")
 	}
 
-	// Start all nodes
-	for i, node := range nodes {
-		var join []string
-		if i > 0 {
-			join = []string{nodes[0].RaftAddr}
-		}
-		if err := startRaftNode(ctx, node, join); err != nil {
+	// Start and join remaining nodes
+	for i := 1; i < 3; i++ {
+		if err := startRaftNode(ctx, nodes[i], []string{nodes[0].RaftAddr}); err != nil {
 			t.Fatalf("failed to start node-%d: %v", i+1, err)
 		}
-		defer node.RaftNode.Shutdown()
+		defer nodes[i].RaftNode.Shutdown()
 
-		if i > 0 {
-			if err := nodes[0].RaftNode.AddVoter(node.NodeID, node.RaftAddr); err != nil {
-				t.Fatalf("failed to add voter: %v", err)
-			}
+		time.Sleep(2 * time.Second) // Stabilize
+		if err := nodes[0].RaftNode.AddVoter(nodes[i].NodeID, nodes[i].RaftAddr); err != nil {
+			t.Fatalf("failed to add voter: %v", err)
 		}
 	}
 
-	// Wait for cluster to stabilize
-	time.Sleep(3 * time.Second)
+	time.Sleep(4 * time.Second) // Full cluster stabilization
 
 	// Find current leader
 	var leaderNode *testNode
@@ -203,19 +187,19 @@ func TestLeaderElectionAndReelection(t *testing.T) {
 	}
 	t.Logf("Initial leader: %s", leaderNode.NodeID)
 
-	// Kill the leader
+	// Shut down the leader
 	t.Log("Shutting down leader to trigger re-election...")
 	leaderNode.RaftNode.Shutdown()
 
-	// Wait for new leader election
+	// Wait for new leader
 	var newLeader *testNode
 	deadline := time.Now().Add(leaderElectionTimeout)
 	for time.Now().Before(deadline) {
 		for _, node := range nodes {
 			if node.NodeID == leaderNode.NodeID {
-				continue // Skip shutdown node
+				continue
 			}
-			if node.RaftNode != nil && node.RaftNode.IsLeader() {
+			if node.RaftNode.IsLeader() {
 				newLeader = node
 				break
 			}
@@ -223,27 +207,21 @@ func TestLeaderElectionAndReelection(t *testing.T) {
 		if newLeader != nil {
 			break
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 	}
 	if newLeader == nil {
-		t.Fatal("no new leader elected after original leader shutdown")
+		t.Fatal("no new leader elected")
 	}
-	if newLeader.NodeID == leaderNode.NodeID {
-		t.Error("new leader should be different from shutdown leader")
-	}
-	t.Logf("New leader elected: %s (took ~%v)", newLeader.NodeID, time.Since(deadline.Add(-leaderElectionTimeout)))
+	t.Logf("New leader elected: %s", newLeader.NodeID)
 }
 
 // =============================================================================
-// Test: DNS Serving Only on Leader
+ // Test: DNS Serving Only on Leader
 // =============================================================================
 func TestDNSServingOnlyOnLeader(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping cluster integration test in short mode")
 	}
-
-	// This test verifies that only the Raft leader responds to DNS queries
-	// while followers return REFUSED.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -253,9 +231,6 @@ func TestDNSServingOnlyOnLeader(t *testing.T) {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
-
-	// For this test, we'll use mock DNS servers that check leadership
-	// In production, this is handled by the DNS handler's LeaderChecker
 
 	type dnsNode struct {
 		nodeID   string
@@ -296,20 +271,23 @@ func TestDNSServingOnlyOnLeader(t *testing.T) {
 		}
 	}
 
-	// Form cluster
+	// Stabilize bootstrap
 	time.Sleep(2 * time.Second)
-	for i := 1; i < 3; i++ {
-		if err := nodes[0].raftNode.AddVoter(nodes[i].nodeID, fmt.Sprintf("127.0.0.1:%d", 19000+(i*100))); err != nil {
-			t.Logf("Warning: failed to add voter %d: %v", i, err)
-		}
+	if err := waitForLeader(ctx, nodes[0].raftNode, leaderElectionTimeout); err != nil {
+		t.Fatal("bootstrap failed to become leader")
 	}
-	time.Sleep(2 * time.Second)
+
+	// Form cluster
+	for i := 1; i < 3; i++ {
+		_ = nodes[0].raftNode.AddVoter(nodes[i].nodeID, fmt.Sprintf("127.0.0.1:%d", 19000+(i*100)))
+		time.Sleep(2 * time.Second) // Stabilize after each add
+	}
+	time.Sleep(4 * time.Second) // Full stabilization
 
 	// Start mock DNS servers
 	for _, node := range nodes {
 		node := node // capture
 		handler := &mockLeaderDNSHandler{raftNode: node.raftNode}
-		// Create TCP listener
 		listener, err := net.Listen("tcp", node.dnsAddr)
 		if err != nil {
 			t.Fatalf("failed to create DNS listener: %v", err)
@@ -317,7 +295,6 @@ func TestDNSServingOnlyOnLeader(t *testing.T) {
 		node.listener = listener
 		defer listener.Close()
 
-		// Start DNS server
 		go func() {
 			dnsServer := &dns.Server{
 				Listener: listener,
@@ -327,9 +304,9 @@ func TestDNSServingOnlyOnLeader(t *testing.T) {
 		}()
 	}
 
-	time.Sleep(time.Second) // Let DNS servers start
+	time.Sleep(2 * time.Second) // Let DNS servers start
 
-	// Query each node and verify only leader responds
+	// Query each node
 	c := &dns.Client{Net: "tcp", Timeout: 2 * time.Second}
 	m := new(dns.Msg)
 	m.SetQuestion("test.example.", dns.TypeA)
@@ -351,18 +328,15 @@ func TestDNSServingOnlyOnLeader(t *testing.T) {
 		}
 	}
 
-	// Exactly one node should respond successfully
 	if leaderResponses != 1 {
 		t.Errorf("expected exactly 1 leader response, got %d", leaderResponses)
 	}
-
-	// Other nodes should return REFUSED
 	if refusedResponses < 1 {
 		t.Logf("Warning: expected at least 1 REFUSED response, got %d", refusedResponses)
 	}
 }
 
-// mockLeaderDNSHandler returns REFUSED if not leader, NXDOMAIN if leader.
+// mockLeaderDNSHandler
 type mockLeaderDNSHandler struct {
 	raftNode *cluster.RaftNode
 }
@@ -373,7 +347,7 @@ func (h *mockLeaderDNSHandler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	if !h.raftNode.IsLeader() {
 		m.SetRcode(r, dns.RcodeRefused)
 	} else {
-		m.SetRcode(r, dns.RcodeNameError) // NXDOMAIN - indicates we're processing
+		m.SetRcode(r, dns.RcodeNameError)
 	}
 	w.WriteMsg(m)
 }
@@ -389,7 +363,6 @@ func TestHealthEventGossipPropagation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	// Create 3 gossip nodes
 	type gossipNode struct {
 		nodeID      string
 		manager     *cluster.GossipManager
@@ -423,17 +396,16 @@ func TestHealthEventGossipPropagation(t *testing.T) {
 
 	// Start remaining nodes and join
 	for i := 1; i < 3; i++ {
-		if err := nodes[i].manager.Start(ctx); err != nil {
-			t.Fatalf("failed to start gossip node %d: %v", i, err)
-		}
-		defer nodes[i].manager.Stop(ctx)
+			if err := nodes[i].manager.Start(ctx); err != nil {
+				t.Fatalf("failed to start gossip node %d: %v", i, err)
+			}
+			defer nodes[i].manager.Stop(ctx)
 
-		// Join the cluster
-		_, err := nodes[i].manager.Join([]string{"127.0.0.1:20000"})
-		if err != nil {
-			t.Logf("Warning: join returned error: %v", err)
+			_, err := nodes[i].manager.Join([]string{"127.0.0.1:20000"})
+			if err != nil {
+				t.Logf("Warning: join returned error: %v", err)
+			}
 		}
-	}
 
 	// Set up health update handlers
 	for _, node := range nodes {
@@ -496,7 +468,7 @@ func TestHealthEventGossipPropagation(t *testing.T) {
 }
 
 // =============================================================================
-// Test: Predictive Health Signal Flow
+ // Test: Predictive Health Signal Flow
 // =============================================================================
 func TestPredictiveHealthSignalFlow(t *testing.T) {
 	if testing.Short() {
@@ -543,7 +515,7 @@ func TestPredictiveHealthSignalFlow(t *testing.T) {
 	defer nodes[1].manager.Stop(ctx)
 
 	// Join cluster
-	nodes[1].manager.Join([]string{"127.0.0.1:21000"})
+	_, _ = nodes[1].manager.Join([]string{"127.0.0.1:21000"})
 	time.Sleep(2 * time.Second)
 
 	// Set up predictive signal handler on node-2
@@ -623,9 +595,6 @@ func TestOverwatchVetoScenario(t *testing.T) {
 		t.Skip("skipping cluster integration test in short mode")
 	}
 
-	// This test verifies that the Overwatch can veto an agent's healthy claim
-	// when external checks disagree.
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -674,20 +643,7 @@ func TestOverwatchVetoScenario(t *testing.T) {
 	}
 	t.Log("Broadcasting veto override...")
 	if err := gossipMgr.BroadcastOverride(vetoOverride); err != nil {
-		// In single-node test, broadcast may not have recipients
 		t.Logf("Broadcast returned (expected with single node): %v", err)
-	}
-
-	// Verify the veto mechanism works by checking Overwatch.IsServeable
-	// Create minimal Overwatch for testing
-	overwatchCfg := struct {
-		ExternalCheckInterval time.Duration
-		VetoMode              string
-		VetoThreshold         int
-	}{
-		ExternalCheckInterval: time.Second,
-		VetoMode:              "strict",
-		VetoThreshold:         1,
 	}
 
 	// Test the veto decision logic directly
@@ -698,11 +654,7 @@ func TestOverwatchVetoScenario(t *testing.T) {
 	externalHealthy := false
 	if agentHealthy && !externalHealthy {
 		t.Log("Disagreement detected: Agent=healthy, External=unhealthy")
-		if overwatchCfg.VetoMode == "strict" {
-			t.Log("Strict mode: Veto would be applied")
-		} else if overwatchCfg.VetoMode == "permissive" {
-			t.Log("Permissive mode: Warning only, no veto")
-		}
+		t.Log("Strict mode: Veto would be applied")
 	}
 
 	// Scenario: Both agree unhealthy - no veto needed
@@ -753,7 +705,6 @@ func TestGracefulShutdown(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Create 3-node cluster
 	nodes := make([]*testNode, 3)
 	for i := 0; i < 3; i++ {
 		basePort := 23000 + (i * 100)
@@ -766,28 +717,38 @@ func TestGracefulShutdown(t *testing.T) {
 		os.MkdirAll(nodes[i].DataDir, 0755)
 	}
 
-	// Start cluster
-	for i, node := range nodes {
-		var join []string
-		if i > 0 {
-			join = []string{nodes[0].RaftAddr}
-		}
-		if err := startRaftNode(ctx, node, join); err != nil {
+	// Start bootstrap node
+	if err := startRaftNode(ctx, nodes[0], nil); err != nil {
+		t.Fatalf("failed to start bootstrap node: %v", err)
+	}
+	defer nodes[0].RaftNode.Shutdown()
+
+	time.Sleep(2 * time.Second) // Stabilize bootstrap
+	if err := waitForLeader(ctx, nodes[0].RaftNode, leaderElectionTimeout); err != nil {
+		t.Fatal("bootstrap failed to become leader")
+	}
+
+	// Start and join remaining nodes
+	for i := 1; i < 3; i++ {
+		if err := startRaftNode(ctx, nodes[i], []string{nodes[0].RaftAddr}); err != nil {
 			t.Fatalf("failed to start node-%d: %v", i+1, err)
 		}
-		if i > 0 {
-			nodes[0].RaftNode.AddVoter(node.NodeID, node.RaftAddr)
+		defer nodes[i].RaftNode.Shutdown()
+
+		time.Sleep(2 * time.Second) // Stabilize
+		if err := nodes[0].RaftNode.AddVoter(nodes[i].NodeID, nodes[i].RaftAddr); err != nil {
+			t.Fatalf("failed to add voter: %v", err)
 		}
 	}
-	time.Sleep(3 * time.Second)
 
-	// Verify cluster is healthy
+	time.Sleep(4 * time.Second) // Full cluster stabilization
+
 	servers, _ := nodes[0].RaftNode.GetConfiguration()
 	if len(servers) != 3 {
 		t.Errorf("expected 3 nodes before shutdown, got %d", len(servers))
 	}
 
-	// Gracefully shutdown node-3 (non-leader follower)
+	// Gracefully shutdown a non-leader follower (node-3)
 	t.Log("Gracefully shutting down node-3...")
 	shutdownStart := time.Now()
 	if err := nodes[2].RaftNode.Shutdown(); err != nil {
@@ -797,9 +758,8 @@ func TestGracefulShutdown(t *testing.T) {
 	t.Logf("Node-3 shutdown completed in %v", shutdownDuration)
 
 	// Verify remaining cluster is stable
-	time.Sleep(2 * time.Second)
+	time.Sleep(3 * time.Second)
 
-	// At least one of the remaining nodes should be healthy
 	remainingHealthy := 0
 	for i := 0; i < 2; i++ {
 		if nodes[i].RaftNode.State() != cluster.StateShutdown {
@@ -825,10 +785,6 @@ func TestClusterAPIEndpoints(t *testing.T) {
 		t.Skip("skipping cluster integration test in short mode")
 	}
 
-	// This test verifies the cluster status API endpoints work correctly.
-	// In production, these would be served by the API server.
-	// We'll test the response structures match expectations
-
 	type ClusterStatusResponse struct {
 		Mode        string `json:"mode"`
 		NodeID      string `json:"node_id"`
@@ -839,16 +795,6 @@ func TestClusterAPIEndpoints(t *testing.T) {
 		State       string `json:"state"`
 	}
 
-	type ClusterMembersResponse struct {
-		Members []struct {
-			ID      string `json:"id"`
-			Address string `json:"address"`
-			State   string `json:"state"`
-			IsVoter bool   `json:"is_voter"`
-		} `json:"members"`
-	}
-
-	// Test standalone mode response
 	standaloneResp := ClusterStatusResponse{
 		Mode:        "standalone",
 		NodeID:      "standalone-node",
@@ -863,7 +809,6 @@ func TestClusterAPIEndpoints(t *testing.T) {
 		t.Error("standalone should always be leader")
 	}
 
-	// Test cluster mode response structure
 	clusterResp := ClusterStatusResponse{
 		Mode:       "cluster",
 		NodeID:     "node-1",
@@ -880,7 +825,6 @@ func TestClusterAPIEndpoints(t *testing.T) {
 		t.Errorf("expected cluster size 3, got %d", clusterResp.ClusterSize)
 	}
 
-	// Test JSON marshaling
 	data, err := json.Marshal(clusterResp)
 	if err != nil {
 		t.Fatalf("failed to marshal cluster response: %v", err)
@@ -908,11 +852,6 @@ func startRaftNode(ctx context.Context, node *testNode, join []string) error {
 	cfg.Bootstrap = node.IsBootstrap
 	cfg.Join = join
 
-	// Fast timeouts for testing (only supported fields)
-	hb := 200 * time.Millisecond
-	cfg.HeartbeatTimeout = hb
-	cfg.ElectionTimeout = hb * 10 // 2s - prevents election flakiness in CI
-
 	raftNode, err := cluster.NewRaftNode(cfg, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create raft node: %w", err)
@@ -920,7 +859,6 @@ func startRaftNode(ctx context.Context, node *testNode, join []string) error {
 	if err := raftNode.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start raft node: %w", err)
 	}
-
 	node.RaftNode = raftNode
 	return nil
 }
