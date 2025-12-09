@@ -1,0 +1,138 @@
+# OpenGSLB Cluster Mode Configuration Example
+# 
+# This example shows a 3-node cluster deployment.
+# See docs/operations/deployment.md for full deployment guide.
+#
+# Node 1 (bootstrap): opengslb --mode=cluster --bootstrap --config /etc/opengslb/config.yaml
+# Node 2 (join):      opengslb --mode=cluster --join=10.0.1.10:7946 --config /etc/opengslb/config.yaml
+# Node 3 (join):      opengslb --mode=cluster --join=10.0.1.10:7946 --config /etc/opengslb/config.yaml
+
+# DNS server configuration
+dns:
+  listen_address: ":53"
+  default_ttl: 60
+  return_last_healthy: false
+
+# Cluster configuration (ADR-012, ADR-014)
+cluster:
+  # Runtime mode: "standalone" (default) or "cluster"
+  # Can be overridden with --mode flag
+  mode: cluster
+
+  # Unique node identifier (defaults to hostname if not set)
+  node_name: "gslb-node-1"
+
+  # Address for Raft and gossip communication
+  # Must be reachable by other cluster nodes
+  bind_address: "10.0.1.10:7946"
+
+  # Address advertised to other nodes (defaults to bind_address)
+  # Use if bind_address is a private IP behind NAT
+  advertise_address: "10.0.1.10:7946"
+
+  # Bootstrap a new cluster (set on first node only)
+  # Can be overridden with --bootstrap flag
+  # bootstrap: true
+
+  # Addresses of existing cluster nodes to join
+  # Can be overridden with --join flag
+  # join:
+  #   - "10.0.1.11:7946"
+  #   - "10.0.1.12:7946"
+
+  # Raft consensus settings
+  raft:
+    # Directory for Raft state and logs
+    data_dir: "/var/lib/opengslb/raft"
+    
+    # Time between leader heartbeats (lower = faster failover detection)
+    heartbeat_timeout: "1s"
+    
+    # Time before new election starts if no heartbeat received
+    election_timeout: "1s"
+    
+    # Minimum time between snapshots
+    snapshot_interval: "120s"
+    
+    # Number of log entries before triggering snapshot
+    snapshot_threshold: 8192
+
+  # Gossip protocol settings (memberlist)
+  gossip:
+    # Optional: 32-byte base64-encoded encryption key for gossip traffic
+    # Generate with: head -c 32 /dev/urandom | base64
+    encryption_key: ""
+
+  # Virtual IP advertised by all cluster nodes
+  # Only the Raft leader responds to DNS queries on this VIP
+  # Configure your network to route this VIP to all cluster nodes
+  anycast_vip: "10.99.99.1"
+
+# Backend regions and servers
+regions:
+  - name: us-east-1
+    servers:
+      - address: "10.0.1.100"
+        port: 80
+        weight: 100
+      - address: "10.0.1.101"
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      interval: 10s
+      timeout: 5s
+      path: /health
+      failure_threshold: 3
+      success_threshold: 2
+
+  - name: us-west-2
+    servers:
+      - address: "10.0.2.100"
+        port: 80
+        weight: 100
+      - address: "10.0.2.101"
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      interval: 10s
+      timeout: 5s
+      path: /health
+      failure_threshold: 3
+      success_threshold: 2
+
+# Domain routing configuration
+domains:
+  - name: app.example.com
+    routing_algorithm: failover
+    regions:
+      - us-east-1
+      - us-west-2
+    ttl: 30
+
+  - name: api.example.com
+    routing_algorithm: weighted
+    regions:
+      - us-east-1
+      - us-west-2
+    ttl: 30
+
+# Logging configuration
+logging:
+  level: info
+  format: json
+
+# Prometheus metrics
+metrics:
+  enabled: true
+  address: ":9090"
+
+# Health status API
+api:
+  enabled: true
+  address: ":8080"
+  allowed_networks:
+    - "127.0.0.1/32"
+    - "10.0.0.0/8"
+  trust_proxy_headers: false

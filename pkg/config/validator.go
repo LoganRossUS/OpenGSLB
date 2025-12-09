@@ -2,18 +2,6 @@
 //
 // This file is part of OpenGSLB – https://opengslb.org
 //
-// OpenGSLB is dual-licensed:
-//
-// 1. GNU Affero General Public License v3.0 (AGPLv3)
-//    Free forever for open-source and internal use. You may copy, modify,
-//    and distribute this software under the terms of the AGPLv3.
-//    → https://www.gnu.org/licenses/agpl-3.0.html
-//
-// 2. Commercial License
-//    Commercial licenses are available for proprietary integration,
-//    closed-source appliances, SaaS offerings, and dedicated support.
-//    Contact: licensing@opengslb.org
-//
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
 package config
@@ -45,6 +33,7 @@ func Validate(cfg *Config) error {
 	errs = append(errs, validateDomains(cfg.Domains, cfg.Regions)...)
 	errs = append(errs, validateLogging(&cfg.Logging)...)
 	errs = append(errs, validateAPI(&cfg.API)...)
+	errs = append(errs, validateCluster(&cfg.Cluster)...)
 
 	if len(errs) > 0 {
 		return errors.Join(errs...)
@@ -408,6 +397,106 @@ func validateAPI(api *APIConfig) []error {
 				Message: fmt.Sprintf("invalid CIDR notation: %v", err),
 			})
 		}
+	}
+
+	return errs
+}
+
+func validateCluster(cluster *ClusterConfig) []error {
+	var errs []error
+
+	// Validate mode value
+	validModes := map[RuntimeMode]bool{
+		ModeStandalone: true,
+		ModeCluster:    true,
+		"":             true, // Empty defaults to standalone
+	}
+	if !validModes[cluster.Mode] {
+		errs = append(errs, &ValidationError{
+			Field:   "cluster.mode",
+			Value:   cluster.Mode,
+			Message: "must be one of: standalone, cluster",
+		})
+	}
+
+	// Standalone mode: minimal validation
+	if cluster.IsStandaloneMode() {
+		return errs
+	}
+
+	// Cluster mode validation
+	if cluster.BindAddress == "" {
+		errs = append(errs, &ValidationError{
+			Field:   "cluster.bind_address",
+			Value:   cluster.BindAddress,
+			Message: "required in cluster mode",
+		})
+	} else {
+		// Validate bind_address format
+		host, _, err := net.SplitHostPort(cluster.BindAddress)
+		if err != nil {
+			errs = append(errs, &ValidationError{
+				Field:   "cluster.bind_address",
+				Value:   cluster.BindAddress,
+				Message: fmt.Sprintf("invalid address format: %v", err),
+			})
+		} else if host != "" {
+			if ip := net.ParseIP(host); ip == nil {
+				errs = append(errs, &ValidationError{
+					Field:   "cluster.bind_address",
+					Value:   cluster.BindAddress,
+					Message: "invalid IP address",
+				})
+			}
+		}
+	}
+
+	// Validate advertise_address if set
+	if cluster.AdvertiseAddress != "" {
+		host, _, err := net.SplitHostPort(cluster.AdvertiseAddress)
+		if err != nil {
+			errs = append(errs, &ValidationError{
+				Field:   "cluster.advertise_address",
+				Value:   cluster.AdvertiseAddress,
+				Message: fmt.Sprintf("invalid address format: %v", err),
+			})
+		} else if host != "" {
+			if ip := net.ParseIP(host); ip == nil {
+				errs = append(errs, &ValidationError{
+					Field:   "cluster.advertise_address",
+					Value:   cluster.AdvertiseAddress,
+					Message: "invalid IP address",
+				})
+			}
+		}
+	}
+
+	// Validate anycast_vip if set
+	if cluster.AnycastVIP != "" {
+		if ip := net.ParseIP(cluster.AnycastVIP); ip == nil {
+			errs = append(errs, &ValidationError{
+				Field:   "cluster.anycast_vip",
+				Value:   cluster.AnycastVIP,
+				Message: "invalid IP address",
+			})
+		}
+	}
+
+	// Validate Raft settings
+	if cluster.Raft.HeartbeatTimeout < 100*1_000_000 { // 100ms minimum
+		errs = append(errs, &ValidationError{
+			Field:   "cluster.raft.heartbeat_timeout",
+			Value:   cluster.Raft.HeartbeatTimeout,
+			Message: "must be at least 100ms",
+		})
+	}
+
+	if cluster.Raft.ElectionTimeout < cluster.Raft.HeartbeatTimeout {
+		errs = append(errs, &ValidationError{
+			Field:   "cluster.raft.election_timeout",
+			Value:   cluster.Raft.ElectionTimeout,
+			Message: "must be greater than or equal to heartbeat_timeout",
+		})
 	}
 
 	return errs

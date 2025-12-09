@@ -413,3 +413,300 @@ func TestValidate_MultipleErrors(t *testing.T) {
 		}
 	}
 }
+
+// =============================================================================
+// Cluster Configuration Tests
+// =============================================================================
+
+func TestParse_ClusterConfigDefaults(t *testing.T) {
+	yaml := `
+regions:
+  - name: us-east-1
+    servers:
+      - address: 10.0.1.10
+domains:
+  - name: app.example.com
+    regions:
+      - us-east-1
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Cluster defaults
+	if cfg.Cluster.Mode != ModeStandalone {
+		t.Errorf("expected default mode %s, got %s", ModeStandalone, cfg.Cluster.Mode)
+	}
+	if cfg.Cluster.Raft.DataDir != DefaultRaftDataDir {
+		t.Errorf("expected default raft data_dir %s, got %s", DefaultRaftDataDir, cfg.Cluster.Raft.DataDir)
+	}
+	if cfg.Cluster.Raft.HeartbeatTimeout != DefaultRaftHeartbeatTimeout {
+		t.Errorf("expected default heartbeat_timeout %v, got %v", DefaultRaftHeartbeatTimeout, cfg.Cluster.Raft.HeartbeatTimeout)
+	}
+	if cfg.Cluster.Raft.ElectionTimeout != DefaultRaftElectionTimeout {
+		t.Errorf("expected default election_timeout %v, got %v", DefaultRaftElectionTimeout, cfg.Cluster.Raft.ElectionTimeout)
+	}
+	if cfg.Cluster.Raft.SnapshotThreshold != DefaultRaftSnapshotThreshold {
+		t.Errorf("expected default snapshot_threshold %d, got %d", DefaultRaftSnapshotThreshold, cfg.Cluster.Raft.SnapshotThreshold)
+	}
+}
+
+func TestParse_ClusterConfigExplicit(t *testing.T) {
+	yaml := `
+regions:
+  - name: us-east-1
+    servers:
+      - address: 10.0.1.10
+domains:
+  - name: app.example.com
+    regions:
+      - us-east-1
+
+cluster:
+  mode: cluster
+  node_name: node-1
+  bind_address: "10.0.1.10:7946"
+  advertise_address: "10.0.1.10:7946"
+  anycast_vip: "10.99.99.1"
+  raft:
+    data_dir: "/custom/raft"
+    heartbeat_timeout: 500ms
+    election_timeout: 1s
+    snapshot_interval: 60s
+    snapshot_threshold: 4096
+  gossip:
+    encryption_key: "dGVzdGtleQ=="
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Cluster.Mode != ModeCluster {
+		t.Errorf("expected mode cluster, got %s", cfg.Cluster.Mode)
+	}
+	if cfg.Cluster.NodeName != "node-1" {
+		t.Errorf("expected node_name node-1, got %s", cfg.Cluster.NodeName)
+	}
+	if cfg.Cluster.BindAddress != "10.0.1.10:7946" {
+		t.Errorf("expected bind_address 10.0.1.10:7946, got %s", cfg.Cluster.BindAddress)
+	}
+	if cfg.Cluster.AnycastVIP != "10.99.99.1" {
+		t.Errorf("expected anycast_vip 10.99.99.1, got %s", cfg.Cluster.AnycastVIP)
+	}
+	if cfg.Cluster.Raft.DataDir != "/custom/raft" {
+		t.Errorf("expected data_dir /custom/raft, got %s", cfg.Cluster.Raft.DataDir)
+	}
+	if cfg.Cluster.Raft.HeartbeatTimeout != 500*time.Millisecond {
+		t.Errorf("expected heartbeat_timeout 500ms, got %v", cfg.Cluster.Raft.HeartbeatTimeout)
+	}
+	if cfg.Cluster.Raft.SnapshotThreshold != 4096 {
+		t.Errorf("expected snapshot_threshold 4096, got %d", cfg.Cluster.Raft.SnapshotThreshold)
+	}
+	if cfg.Cluster.Gossip.EncryptionKey != "dGVzdGtleQ==" {
+		t.Errorf("expected encryption_key dGVzdGtleQ==, got %s", cfg.Cluster.Gossip.EncryptionKey)
+	}
+}
+
+func TestValidate_ClusterModeRequiresBindAddress(t *testing.T) {
+	cfg := &Config{
+		DNS:     DNSConfig{ListenAddress: ":53", DefaultTTL: 60},
+		Logging: LoggingConfig{Level: "info", Format: "json"},
+		Regions: []Region{{
+			Name:    "us-east-1",
+			Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100}},
+			HealthCheck: HealthCheck{
+				Type: "http", Interval: 30 * time.Second, Timeout: 5 * time.Second,
+				Path: "/health", FailureThreshold: 3, SuccessThreshold: 2,
+			},
+		}},
+		Domains: []Domain{{Name: "app.example.com", RoutingAlgorithm: "round-robin", Regions: []string{"us-east-1"}, TTL: 60}},
+		Cluster: ClusterConfig{
+			Mode: ModeCluster,
+			// BindAddress intentionally omitted
+			Raft: RaftConfig{
+				DataDir:          "/var/lib/opengslb/raft",
+				HeartbeatTimeout: 1 * time.Second,
+				ElectionTimeout:  1 * time.Second,
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Error("expected error for cluster mode without bind_address")
+	}
+	if !strings.Contains(err.Error(), "bind_address") {
+		t.Errorf("expected bind_address error, got: %v", err)
+	}
+}
+
+func TestValidate_ClusterModeInvalidBindAddress(t *testing.T) {
+	cfg := &Config{
+		DNS:     DNSConfig{ListenAddress: ":53", DefaultTTL: 60},
+		Logging: LoggingConfig{Level: "info", Format: "json"},
+		Regions: []Region{{
+			Name:    "us-east-1",
+			Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100}},
+			HealthCheck: HealthCheck{
+				Type: "http", Interval: 30 * time.Second, Timeout: 5 * time.Second,
+				Path: "/health", FailureThreshold: 3, SuccessThreshold: 2,
+			},
+		}},
+		Domains: []Domain{{Name: "app.example.com", RoutingAlgorithm: "round-robin", Regions: []string{"us-east-1"}, TTL: 60}},
+		Cluster: ClusterConfig{
+			Mode:        ModeCluster,
+			BindAddress: "not-valid-address",
+			Raft: RaftConfig{
+				DataDir:          "/var/lib/opengslb/raft",
+				HeartbeatTimeout: 1 * time.Second,
+				ElectionTimeout:  1 * time.Second,
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Error("expected error for invalid bind_address")
+	}
+	if !strings.Contains(err.Error(), "bind_address") {
+		t.Errorf("expected bind_address error, got: %v", err)
+	}
+}
+
+func TestValidate_ClusterModeInvalidMode(t *testing.T) {
+	cfg := &Config{
+		DNS:     DNSConfig{ListenAddress: ":53", DefaultTTL: 60},
+		Logging: LoggingConfig{Level: "info", Format: "json"},
+		Regions: []Region{{
+			Name:    "us-east-1",
+			Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100}},
+			HealthCheck: HealthCheck{
+				Type: "http", Interval: 30 * time.Second, Timeout: 5 * time.Second,
+				Path: "/health", FailureThreshold: 3, SuccessThreshold: 2,
+			},
+		}},
+		Domains: []Domain{{Name: "app.example.com", RoutingAlgorithm: "round-robin", Regions: []string{"us-east-1"}, TTL: 60}},
+		Cluster: ClusterConfig{
+			Mode: "invalid-mode",
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Error("expected error for invalid mode")
+	}
+	if !strings.Contains(err.Error(), "cluster.mode") {
+		t.Errorf("expected mode error, got: %v", err)
+	}
+}
+
+func TestValidate_ClusterModeValidConfig(t *testing.T) {
+	cfg := &Config{
+		DNS:     DNSConfig{ListenAddress: ":53", DefaultTTL: 60},
+		Logging: LoggingConfig{Level: "info", Format: "json"},
+		Regions: []Region{{
+			Name:    "us-east-1",
+			Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100}},
+			HealthCheck: HealthCheck{
+				Type: "http", Interval: 30 * time.Second, Timeout: 5 * time.Second,
+				Path: "/health", FailureThreshold: 3, SuccessThreshold: 2,
+			},
+		}},
+		Domains: []Domain{{Name: "app.example.com", RoutingAlgorithm: "round-robin", Regions: []string{"us-east-1"}, TTL: 60}},
+		Cluster: ClusterConfig{
+			Mode:        ModeCluster,
+			NodeName:    "node-1",
+			BindAddress: "10.0.1.10:7946",
+			Raft: RaftConfig{
+				DataDir:          "/var/lib/opengslb/raft",
+				HeartbeatTimeout: 1 * time.Second,
+				ElectionTimeout:  1 * time.Second,
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err != nil {
+		t.Errorf("unexpected error for valid cluster config: %v", err)
+	}
+}
+
+func TestValidate_StandaloneModeSkipsClusterValidation(t *testing.T) {
+	cfg := &Config{
+		DNS:     DNSConfig{ListenAddress: ":53", DefaultTTL: 60},
+		Logging: LoggingConfig{Level: "info", Format: "json"},
+		Regions: []Region{{
+			Name:    "us-east-1",
+			Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100}},
+			HealthCheck: HealthCheck{
+				Type: "http", Interval: 30 * time.Second, Timeout: 5 * time.Second,
+				Path: "/health", FailureThreshold: 3, SuccessThreshold: 2,
+			},
+		}},
+		Domains: []Domain{{Name: "app.example.com", RoutingAlgorithm: "round-robin", Regions: []string{"us-east-1"}, TTL: 60}},
+		Cluster: ClusterConfig{
+			Mode: ModeStandalone,
+			// No bind_address - should be OK in standalone mode
+		},
+	}
+	err := Validate(cfg)
+	if err != nil {
+		t.Errorf("standalone mode should not require bind_address: %v", err)
+	}
+}
+
+func TestClusterConfig_ModeHelpers(t *testing.T) {
+	tests := []struct {
+		name           string
+		mode           RuntimeMode
+		wantCluster    bool
+		wantStandalone bool
+	}{
+		{"cluster mode", ModeCluster, true, false},
+		{"standalone mode", ModeStandalone, false, true},
+		{"empty mode defaults to standalone", "", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ClusterConfig{Mode: tt.mode}
+
+			if got := cfg.IsClusterMode(); got != tt.wantCluster {
+				t.Errorf("IsClusterMode() = %v, want %v", got, tt.wantCluster)
+			}
+			if got := cfg.IsStandaloneMode(); got != tt.wantStandalone {
+				t.Errorf("IsStandaloneMode() = %v, want %v", got, tt.wantStandalone)
+			}
+		})
+	}
+}
+
+func TestValidate_RaftElectionTimeoutLessThanHeartbeat(t *testing.T) {
+	cfg := &Config{
+		DNS:     DNSConfig{ListenAddress: ":53", DefaultTTL: 60},
+		Logging: LoggingConfig{Level: "info", Format: "json"},
+		Regions: []Region{{
+			Name:    "us-east-1",
+			Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100}},
+			HealthCheck: HealthCheck{
+				Type: "http", Interval: 30 * time.Second, Timeout: 5 * time.Second,
+				Path: "/health", FailureThreshold: 3, SuccessThreshold: 2,
+			},
+		}},
+		Domains: []Domain{{Name: "app.example.com", RoutingAlgorithm: "round-robin", Regions: []string{"us-east-1"}, TTL: 60}},
+		Cluster: ClusterConfig{
+			Mode:        ModeCluster,
+			BindAddress: "10.0.1.10:7946",
+			Raft: RaftConfig{
+				DataDir:          "/var/lib/opengslb/raft",
+				HeartbeatTimeout: 2 * time.Second,
+				ElectionTimeout:  1 * time.Second, // Less than heartbeat - invalid
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Error("expected error for election_timeout < heartbeat_timeout")
+	}
+	if !strings.Contains(err.Error(), "election_timeout") {
+		t.Errorf("expected election_timeout error, got: %v", err)
+	}
+}

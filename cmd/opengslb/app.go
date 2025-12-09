@@ -2,18 +2,6 @@
 //
 // This file is part of OpenGSLB – https://opengslb.org
 //
-// OpenGSLB is dual-licensed:
-//
-// 1. GNU Affero General Public License v3.0 (AGPLv3)
-//    Free forever for open-source and internal use. You may copy, modify,
-//    and distribute this software under the terms of the AGPLv3.
-//    → https://www.gnu.org/licenses/agpl-3.0.html
-//
-// 2. Commercial License
-//    Commercial licenses are available for proprietary integration,
-//    closed-source appliances, SaaS offerings, and dedicated support.
-//    Contact: licensing@opengslb.org
-//
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
 package main
@@ -44,6 +32,12 @@ type Application struct {
 	metricsServer *metrics.Server
 	apiServer     *api.Server
 	logger        *slog.Logger
+
+	// Cluster mode components (initialized only in cluster mode)
+	// These will be populated in Story 2 (Raft) and Story 4 (Gossip)
+	// raftNode    *cluster.RaftNode
+	// gossipNode  *cluster.GossipNode
+	// kvStore     *cluster.KVStore
 }
 
 // NewApplication creates a new Application instance with pre-loaded configuration.
@@ -59,7 +53,7 @@ func NewApplication(cfg *config.Config, logger *slog.Logger) *Application {
 
 // Initialize sets up all components using the loaded configuration.
 func (a *Application) Initialize() error {
-	a.logger.Info("initializing application")
+	a.logger.Info("initializing application", "mode", a.config.Cluster.Mode)
 
 	metrics.SetAppInfo(version.Version)
 
@@ -68,6 +62,15 @@ func (a *Application) Initialize() error {
 		serverCount += len(region.Servers)
 	}
 	metrics.SetConfigMetrics(len(a.config.Domains), serverCount, float64(time.Now().Unix()))
+
+	// Mode-specific initialization
+	if a.config.Cluster.IsClusterMode() {
+		if err := a.initializeClusterMode(); err != nil {
+			return fmt.Errorf("failed to initialize cluster mode: %w", err)
+		}
+	} else {
+		a.logger.Info("running in standalone mode")
+	}
 
 	if err := a.initializeHealthManager(); err != nil {
 		return fmt.Errorf("failed to initialize health manager: %w", err)
@@ -84,6 +87,42 @@ func (a *Application) Initialize() error {
 	if err := a.initializeAPIServer(); err != nil {
 		return fmt.Errorf("failed to initialize API server: %w", err)
 	}
+
+	return nil
+}
+
+// initializeClusterMode sets up cluster-specific components.
+// This is a placeholder - actual implementation comes in Stories 2-4.
+func (a *Application) initializeClusterMode() error {
+	a.logger.Info("initializing cluster mode components",
+		"node_name", a.config.Cluster.NodeName,
+		"bind_address", a.config.Cluster.BindAddress,
+		"bootstrap", a.config.Cluster.Bootstrap,
+	)
+
+	// Story 2: Raft integration
+	// - Initialize Raft node
+	// - If bootstrap: create new cluster
+	// - If join: connect to existing cluster
+	// - Wait for leader election
+
+	// Story 3: Leader guard
+	// - DNS server only responds if this node is leader
+
+	// Story 4: Gossip protocol
+	// - Initialize memberlist
+	// - Join gossip network
+	// - Start health event propagation
+
+	// Story 7: KV Store
+	// - Initialize bbolt
+	// - If cluster mode: wrap with Raft FSM
+
+	// For now, just log that we're in cluster mode
+	// Actual implementation will replace this placeholder
+	a.logger.Warn("cluster mode is not yet fully implemented - running with limited functionality",
+		"missing", []string{"raft", "gossip", "kv_store"},
+	)
 
 	return nil
 }
@@ -249,7 +288,14 @@ func (a *Application) initializeAPIServer() error {
 
 // Start begins all application components.
 func (a *Application) Start(ctx context.Context) error {
-	a.logger.Info("starting application")
+	a.logger.Info("starting application", "mode", a.config.Cluster.Mode)
+
+	// In cluster mode, start cluster components first
+	if a.config.Cluster.IsClusterMode() {
+		if err := a.startClusterComponents(ctx); err != nil {
+			return fmt.Errorf("failed to start cluster components: %w", err)
+		}
+	}
 
 	if err := a.healthManager.Start(); err != nil {
 		return fmt.Errorf("failed to start health manager: %w", err)
@@ -272,11 +318,32 @@ func (a *Application) Start(ctx context.Context) error {
 		}()
 	}
 
+	// In cluster mode, DNS server activation depends on leader status
+	// For now (Story 1), we start it unconditionally
+	// Story 3 will add the leader guard
 	a.logger.Info("starting DNS server", "address", a.config.DNS.ListenAddress)
 	if err := a.dnsServer.Start(ctx); err != nil {
 		return fmt.Errorf("DNS server error: %w", err)
 	}
 
+	return nil
+}
+
+// startClusterComponents starts Raft and gossip in cluster mode.
+// This is a placeholder - actual implementation comes in Stories 2-4.
+func (a *Application) startClusterComponents(ctx context.Context) error {
+	a.logger.Info("starting cluster components")
+
+	// Story 2: Start Raft
+	// - Open Raft transport
+	// - Bootstrap or join cluster
+	// - Wait for leader election
+
+	// Story 4: Start Gossip
+	// - Join memberlist cluster
+	// - Begin health event propagation
+
+	a.logger.Warn("cluster components not yet implemented")
 	return nil
 }
 
@@ -310,6 +377,20 @@ func (a *Application) Reload(newCfg *config.Config) error {
 		a.logger.Warn("API address change requires restart",
 			"old", oldCfg.API.Address,
 			"new", newCfg.API.Address,
+		)
+	}
+
+	// Cluster config changes require restart
+	if oldCfg.Cluster.Mode != newCfg.Cluster.Mode {
+		a.logger.Warn("cluster mode change requires restart",
+			"old", oldCfg.Cluster.Mode,
+			"new", newCfg.Cluster.Mode,
+		)
+	}
+	if oldCfg.Cluster.BindAddress != newCfg.Cluster.BindAddress {
+		a.logger.Warn("cluster bind_address change requires restart",
+			"old", oldCfg.Cluster.BindAddress,
+			"new", newCfg.Cluster.BindAddress,
 		)
 	}
 
@@ -410,6 +491,14 @@ func (a *Application) Shutdown(ctx context.Context) error {
 
 	var shutdownErr error
 
+	// In cluster mode, stop cluster components first
+	if a.config.Cluster.IsClusterMode() {
+		if err := a.shutdownClusterComponents(ctx); err != nil {
+			a.logger.Error("error stopping cluster components", "error", err)
+			shutdownErr = err
+		}
+	}
+
 	if a.apiServer != nil {
 		a.logger.Debug("stopping API server")
 		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -437,6 +526,32 @@ func (a *Application) Shutdown(ctx context.Context) error {
 
 	a.logger.Info("application shutdown complete")
 	return shutdownErr
+}
+
+// shutdownClusterComponents stops Raft and gossip in cluster mode.
+// This is a placeholder - actual implementation comes in Stories 2-4.
+func (a *Application) shutdownClusterComponents(ctx context.Context) error {
+	a.logger.Info("stopping cluster components")
+
+	// Story 4: Leave gossip cluster gracefully
+	// Story 2: Step down as leader if applicable, close Raft
+
+	return nil
+}
+
+// IsLeader returns true if this node is the Raft leader.
+// In standalone mode, always returns true.
+// This will be used by Story 3 (Leader Guard).
+func (a *Application) IsLeader() bool {
+	if a.config.Cluster.IsStandaloneMode() {
+		return true
+	}
+
+	// Story 2: Check Raft leadership status
+	// return a.raftNode.IsLeader()
+
+	// Placeholder: return true until Raft is implemented
+	return true
 }
 
 // readinessChecker implements api.ReadinessChecker for the Application.
