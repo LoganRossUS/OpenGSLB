@@ -84,7 +84,7 @@ func (p *Predictor) SetInterval(d time.Duration) {
 	}
 }
 
-// Start begins the evaluation loop. It runs until the context is cancelled.
+// Start begins the evaluation loop. It runs until the context is canceled.
 func (p *Predictor) Start(ctx context.Context) error {
 	if !p.config.Enabled {
 		p.logger.Info("predictive health monitoring disabled")

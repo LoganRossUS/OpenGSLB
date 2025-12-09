@@ -18,54 +18,6 @@ import (
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 )
 
-func createTestMonitor(t *testing.T, cpuPercent, memPercent float64) *Monitor {
-	dir := t.TempDir()
-	statPath := filepath.Join(dir, "stat")
-	meminfoPath := filepath.Join(dir, "meminfo")
-
-	// CPU file
-	statContent := `cpu  1000 100 200 8000 50 10 5 0 0 0
-`
-	if err := os.WriteFile(statPath, []byte(statContent), 0644); err != nil {
-		t.Fatalf("failed to write stat file: %v", err)
-	}
-
-	// Memory file - calculate values to get desired percentage
-	// percent = (total - available) / total * 100
-	// available = total * (1 - percent/100)
-	total := uint64(16384000)
-	available := uint64(float64(total) * (1 - memPercent/100))
-	meminfoContent := "MemTotal:       16384000 kB\n"
-	meminfoContent += "MemAvailable:   " + string(rune(available)) + " kB\n"
-
-	// Use specific values for predictable results
-	if memPercent >= 90 {
-		meminfoContent = `MemTotal:       16384000 kB
-MemAvailable:    1638400 kB
-`
-	} else if memPercent >= 50 {
-		meminfoContent = `MemTotal:       16384000 kB
-MemAvailable:    8192000 kB
-`
-	} else {
-		meminfoContent = `MemTotal:       16384000 kB
-MemAvailable:   12288000 kB
-`
-	}
-
-	if err := os.WriteFile(meminfoPath, []byte(meminfoContent), 0644); err != nil {
-		t.Fatalf("failed to write meminfo file: %v", err)
-	}
-
-	m := NewMonitor(nil, time.Minute)
-	m.SetProcPaths(statPath, meminfoPath)
-
-	// Initial read to establish baseline
-	_, _ = m.cpuPercent()
-
-	return m
-}
-
 func TestNewPredictor(t *testing.T) {
 	cfg := config.PredictiveHealthConfig{
 		Enabled: true,
