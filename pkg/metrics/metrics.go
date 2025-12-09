@@ -160,6 +160,45 @@ var (
 	)
 )
 
+// Predictive Health metrics
+var (
+	// PredictiveCPUPercent tracks current CPU utilization.
+	PredictiveCPUPercent = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "predictive_cpu_percent",
+			Help:      "Current CPU utilization percentage for predictive health",
+		},
+	)
+
+	// PredictiveMemoryPercent tracks current memory utilization.
+	PredictiveMemoryPercent = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "predictive_memory_percent",
+			Help:      "Current memory utilization percentage for predictive health",
+		},
+	)
+
+	// PredictiveErrorRate tracks current health check error rate.
+	PredictiveErrorRate = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "predictive_error_rate",
+			Help:      "Current health check error rate per minute",
+		},
+	)
+
+	// PredictiveBleeding tracks if the node is currently signaling bleed.
+	PredictiveBleeding = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "predictive_bleeding",
+			Help:      "1 if node is signaling bleed, 0 otherwise",
+		},
+	)
+)
+
 // RecordDNSQuery records a DNS query metric.
 func RecordDNSQuery(domain, queryType, status string) {
 	DNSQueriesTotal.WithLabelValues(domain, queryType, status).Inc()
@@ -211,5 +250,17 @@ func RecordReload(success bool) {
 	ConfigReloadsTotal.WithLabelValues(result).Inc()
 	if success {
 		ConfigReloadTimestamp.SetToCurrentTime()
+	}
+}
+
+// SetPredictiveMetrics sets predictive health metrics.
+func SetPredictiveMetrics(cpu, memory, errorRate float64, bleeding bool) {
+	PredictiveCPUPercent.Set(cpu)
+	PredictiveMemoryPercent.Set(memory)
+	PredictiveErrorRate.Set(errorRate)
+	if bleeding {
+		PredictiveBleeding.Set(1)
+	} else {
+		PredictiveBleeding.Set(0)
 	}
 }
