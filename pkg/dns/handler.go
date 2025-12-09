@@ -1,13 +1,13 @@
 // Copyright (C) 2025 Logan Ross
 //
-// This file is part of OpenGSLB – https://opengslb.org
+// This file is part of OpenGSLB \u2013 https://opengslb.org
 //
 // OpenGSLB is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPLv3)
 //    Free forever for open-source and internal use. You may copy, modify,
 //    and distribute this software under the terms of the AGPLv3.
-//    → https://www.gnu.org/licenses/agpl-3.0.html
+//    \u2192 https://www.gnu.org/licenses/agpl-3.0.html
 //
 // 2. Commercial License
 //    Commercial licenses are available for proprietary integration,
@@ -39,10 +39,23 @@ type HealthStatusProvider interface {
 	IsHealthy(address string, port int) bool
 }
 
+// LeaderChecker determines if this node should serve DNS queries.
+// In standalone mode, always returns true.
+// In cluster mode, returns true only if this node is the Raft leader.
+type LeaderChecker interface {
+	IsLeader() bool
+}
+
+// standaloneLeaderChecker always returns true (for standalone mode).
+type standaloneLeaderChecker struct{}
+
+func (s *standaloneLeaderChecker) IsLeader() bool { return true }
+
 // Handler processes DNS queries.
 type Handler struct {
 	registry       *Registry
 	healthProvider HealthStatusProvider
+	leaderChecker  LeaderChecker
 	defaultTTL     uint32
 	logger         *slog.Logger
 	ednsEnabled    bool
@@ -53,6 +66,7 @@ type Handler struct {
 type HandlerConfig struct {
 	Registry       *Registry
 	HealthProvider HealthStatusProvider
+	LeaderChecker  LeaderChecker // If nil, defaults to standalone (always leader)
 	DefaultTTL     uint32
 	Logger         *slog.Logger
 	EDNSEnabled    *bool  // Pointer to distinguish unset from false; defaults to true
@@ -83,9 +97,16 @@ func NewHandler(cfg HandlerConfig) *Handler {
 		ednsUDPSize = DefaultEDNSUDPSize
 	}
 
+	// Default to standalone mode (always leader)
+	leaderChecker := cfg.LeaderChecker
+	if leaderChecker == nil {
+		leaderChecker = &standaloneLeaderChecker{}
+	}
+
 	return &Handler{
 		registry:       cfg.Registry,
 		healthProvider: cfg.HealthProvider,
+		leaderChecker:  leaderChecker,
 		defaultTTL:     cfg.DefaultTTL,
 		logger:         logger,
 		ednsEnabled:    ednsEnabled,
@@ -93,9 +114,22 @@ func NewHandler(cfg HandlerConfig) *Handler {
 	}
 }
 
+// SetLeaderChecker updates the leader checker. Thread-safe for use during
+// leader transitions.
+func (h *Handler) SetLeaderChecker(checker LeaderChecker) {
+	h.leaderChecker = checker
+}
+
 // ServeDNS implements the dns.Handler interface.
 func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	start := time.Now()
+
+	// In cluster mode, only the leader serves DNS queries.
+	// Non-leaders return REFUSED to signal clients to try another server.
+	if !h.leaderChecker.IsLeader() {
+		h.handleNonLeader(w, r)
+		return
+	}
 
 	msg := new(dns.Msg)
 	msg.SetReply(r)
@@ -160,6 +194,39 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 			"error", err,
 			"name", domain,
 		)
+	}
+}
+
+// handleNonLeader responds with REFUSED when this node is not the cluster leader.
+// Per RFC 2136, REFUSED indicates the server refuses to perform the operation.
+// Clients (especially well-behaved resolvers) will retry with another server.
+func (h *Handler) handleNonLeader(w dns.ResponseWriter, r *dns.Msg) {
+	msg := new(dns.Msg)
+	msg.SetRcode(r, dns.RcodeRefused)
+
+	// Track refused queries for monitoring
+	metrics.RecordDNSRefused()
+
+	// Extract query info for logging
+	domain := ""
+	queryType := ""
+	if len(r.Question) > 0 {
+		domain = r.Question[0].Name
+		queryType = dns.TypeToString[r.Question[0].Qtype]
+	}
+
+	h.logger.Debug("refusing query - not leader",
+		"name", domain,
+		"type", queryType,
+	)
+
+	// Still include EDNS if client sent it
+	if clientOPT := h.getEDNS(r); clientOPT != nil {
+		h.addEDNS(msg, clientOPT)
+	}
+
+	if err := w.WriteMsg(msg); err != nil {
+		h.logger.Error("failed to write REFUSED response", "error", err)
 	}
 }
 
