@@ -1,9 +1,5 @@
 # OpenGSLB
-![OpenGSLB_Logo](docs/images/OpenGSLB.png)
-
-
-[![CI](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml/badge.svg)](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml)
-[![Docker Build](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml/badge.svg)](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml)
+[![CI](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml/badge.svg)](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml) [![Docker Build](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml/badge.svg)](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml)
 
 Buy Me a Coffee ☕: https://www.buymeacoffee.com/OpenGSLB 
 
