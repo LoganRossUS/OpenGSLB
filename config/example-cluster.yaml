@@ -94,6 +94,29 @@ cluster:
     # Default: 30s
     push_pull_interval: "30s"
 
+  # Predictive health monitoring (Story 5)
+  # Monitors local system metrics and signals when thresholds are exceeded
+  # to enable proactive traffic "bleeding" before failure
+  predictive_health:
+    # Enable predictive health monitoring
+    enabled: true
+
+    # CPU utilization monitoring
+    cpu:
+      threshold: 90        # Percentage (0-100)
+      bleed_duration: 30s  # Duration to gradually reduce traffic
+
+    # Memory utilization monitoring  
+    memory:
+      threshold: 85        # Percentage (0-100)
+      bleed_duration: 30s
+
+    # Health check error rate monitoring
+    error_rate:
+      threshold: 10        # Errors per minute
+      window: 60s          # Measurement window
+      bleed_duration: 60s
+
   # Virtual IP advertised by all cluster nodes
   # Only the Raft leader responds to DNS queries on this VIP
   # Configure your network to route this VIP to all cluster nodes

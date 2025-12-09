@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 )
 
 // ValidationError contains details about a configuration validation failure.
@@ -496,6 +497,73 @@ func validateCluster(cluster *ClusterConfig) []error {
 			Field:   "cluster.raft.election_timeout",
 			Value:   cluster.Raft.ElectionTimeout,
 			Message: "must be greater than or equal to heartbeat_timeout",
+		})
+	}
+
+	// Validate predictive health settings if enabled
+	if cluster.PredictiveHealth.Enabled {
+		errs = append(errs, validatePredictiveHealth(&cluster.PredictiveHealth)...)
+	}
+
+	return errs
+}
+
+func validatePredictiveHealth(ph *PredictiveHealthConfig) []error {
+	var errs []error
+	prefix := "cluster.predictive_health"
+
+	// Validate CPU threshold
+	if ph.CPU.Threshold < 0 || ph.CPU.Threshold > 100 {
+		errs = append(errs, &ValidationError{
+			Field:   prefix + ".cpu.threshold",
+			Value:   ph.CPU.Threshold,
+			Message: "must be between 0 and 100",
+		})
+	}
+	if ph.CPU.BleedDuration < time.Second {
+		errs = append(errs, &ValidationError{
+			Field:   prefix + ".cpu.bleed_duration",
+			Value:   ph.CPU.BleedDuration,
+			Message: "must be at least 1 second",
+		})
+	}
+
+	// Validate memory threshold
+	if ph.Memory.Threshold < 0 || ph.Memory.Threshold > 100 {
+		errs = append(errs, &ValidationError{
+			Field:   prefix + ".memory.threshold",
+			Value:   ph.Memory.Threshold,
+			Message: "must be between 0 and 100",
+		})
+	}
+	if ph.Memory.BleedDuration < time.Second {
+		errs = append(errs, &ValidationError{
+			Field:   prefix + ".memory.bleed_duration",
+			Value:   ph.Memory.BleedDuration,
+			Message: "must be at least 1 second",
+		})
+	}
+
+	// Validate error rate threshold
+	if ph.ErrorRate.Threshold < 0 {
+		errs = append(errs, &ValidationError{
+			Field:   prefix + ".error_rate.threshold",
+			Value:   ph.ErrorRate.Threshold,
+			Message: "must be non-negative",
+		})
+	}
+	if ph.ErrorRate.Window < time.Second {
+		errs = append(errs, &ValidationError{
+			Field:   prefix + ".error_rate.window",
+			Value:   ph.ErrorRate.Window,
+			Message: "must be at least 1 second",
+		})
+	}
+	if ph.ErrorRate.BleedDuration < time.Second {
+		errs = append(errs, &ValidationError{
+			Field:   prefix + ".error_rate.bleed_duration",
+			Value:   ph.ErrorRate.BleedDuration,
+			Message: "must be at least 1 second",
 		})
 	}
 
