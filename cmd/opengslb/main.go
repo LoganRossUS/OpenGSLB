@@ -1,18 +1,6 @@
 // Copyright (C) 2025 Logan Ross
 //
-// This file is part of OpenGSLB – https://opengslb.org
-//
-// OpenGSLB is dual-licensed:
-//
-// 1. GNU Affero General Public License v3.0 (AGPLv3)
-//    Free forever for open-source and internal use. You may copy, modify,
-//    and distribute this software under the terms of the AGPLv3.
-//    → https://www.gnu.org/licenses/agpl-3.0.html
-//
-// 2. Commercial License
-//    Commercial licenses are available for proprietary integration,
-//    closed-source appliances, SaaS offerings, and dedicated support.
-//    Contact: licensing@opengslb.org
+// This file is part of OpenGSLB \u2013 https://opengslb.org
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
@@ -26,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,20 +24,24 @@ import (
 )
 
 const (
-	// DefaultConfigPath is the default location for the configuration file.
-	DefaultConfigPath = "/etc/opengslb/config.yaml"
-
-	// MaxInsecureFileMode represents the most permissive acceptable file mode.
-	// Config files must not be world-readable (no 'other' read permission).
+	DefaultConfigPath               = "/etc/opengslb/config.yaml"
 	MaxInsecureFileMode fs.FileMode = 0o004
 )
 
-// configPath is stored at package level so reload handler can access it.
-var configPath string
+// Command-line flags stored at package level for reload handler access.
+var (
+	configPath    string
+	runtimeMode   string
+	bootstrapFlag bool
+	joinAddresses string
+)
 
 func main() {
 	// Parse command-line flags
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "path to configuration file")
+	flag.StringVar(&runtimeMode, "mode", "", "runtime mode: standalone (default) or cluster")
+	flag.BoolVar(&bootstrapFlag, "bootstrap", false, "bootstrap a new cluster (cluster mode only)")
+	flag.StringVar(&joinAddresses, "join", "", "comma-separated list of cluster nodes to join (cluster mode only)")
 	showVersion := flag.Bool("version", false, "show version information")
 	flag.Parse()
 
@@ -74,10 +67,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load configuration to get logging settings
+	// Load configuration
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		bootstrapLogger.Error("failed to load configuration", "error", err)
+		os.Exit(1)
+	}
+
+	// Apply command-line overrides to cluster config
+	applyClusterOverrides(cfg, bootstrapLogger)
+
+	// Validate cluster configuration (command-line specific validation)
+	if err := validateClusterFlags(cfg); err != nil {
+		bootstrapLogger.Error("cluster configuration invalid", "error", err)
 		os.Exit(1)
 	}
 
@@ -92,13 +94,30 @@ func main() {
 	}
 	slog.SetDefault(logger)
 
+	// Log effective mode
+	effectiveMode := cfg.Cluster.Mode
+	if effectiveMode == "" {
+		effectiveMode = config.ModeStandalone
+	}
+
 	logger.Info("configuration loaded",
+		"mode", effectiveMode,
 		"log_level", cfg.Logging.Level,
 		"log_format", cfg.Logging.Format,
 		"dns_listen", cfg.DNS.ListenAddress,
 		"regions", len(cfg.Regions),
 		"domains", len(cfg.Domains),
 	)
+
+	// Log cluster-specific information
+	if cfg.Cluster.IsClusterMode() {
+		logger.Info("cluster mode enabled",
+			"node_name", cfg.Cluster.NodeName,
+			"bind_address", cfg.Cluster.BindAddress,
+			"bootstrap", cfg.Cluster.Bootstrap,
+			"join", cfg.Cluster.Join,
+		)
+	}
 
 	// Create and initialize application
 	app := NewApplication(cfg, logger)
@@ -123,6 +142,7 @@ func main() {
 
 	logger.Info("OpenGSLB running",
 		"pid", os.Getpid(),
+		"mode", effectiveMode,
 		"reload", "send SIGHUP to reload configuration",
 	)
 
@@ -135,7 +155,6 @@ func main() {
 				logger.Info("received SIGHUP, reloading configuration")
 				if err := handleReload(app, logger); err != nil {
 					logger.Error("configuration reload failed", "error", err)
-					// Continue running with old configuration
 				}
 			case syscall.SIGINT, syscall.SIGTERM:
 				logger.Info("received shutdown signal", "signal", sig)
@@ -150,7 +169,6 @@ func main() {
 	}
 
 shutdown:
-	// Graceful shutdown with timeout
 	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
@@ -163,20 +181,93 @@ shutdown:
 	logger.Info("OpenGSLB stopped")
 }
 
+// applyClusterOverrides applies command-line flags to cluster configuration.
+func applyClusterOverrides(cfg *config.Config, logger *slog.Logger) {
+	// --mode flag overrides config file
+	if runtimeMode != "" {
+		cfg.Cluster.Mode = config.RuntimeMode(runtimeMode)
+		if logger != nil {
+			logger.Debug("mode overridden by flag", "mode", runtimeMode)
+		}
+	}
+
+	// --bootstrap flag overrides config file
+	if bootstrapFlag {
+		cfg.Cluster.Bootstrap = true
+		if logger != nil {
+			logger.Debug("bootstrap enabled by flag")
+		}
+	}
+
+	// --join flag overrides config file
+	if joinAddresses != "" {
+		cfg.Cluster.Join = strings.Split(joinAddresses, ",")
+		if logger != nil {
+			logger.Debug("join addresses set by flag", "addresses", cfg.Cluster.Join)
+		}
+	}
+
+	// Default to standalone if mode not specified anywhere
+	if cfg.Cluster.Mode == "" {
+		cfg.Cluster.Mode = config.ModeStandalone
+	}
+
+	// Set default node name from hostname if not specified
+	if cfg.Cluster.NodeName == "" {
+		if hostname, err := os.Hostname(); err == nil {
+			cfg.Cluster.NodeName = hostname
+		}
+	}
+}
+
+// validateClusterFlags validates cluster-specific command-line flag combinations.
+// This is separate from config.Validate() which handles YAML validation.
+func validateClusterFlags(cfg *config.Config) error {
+	if cfg.Cluster.IsStandaloneMode() {
+		// Standalone mode: warn if cluster flags were provided
+		if bootstrapFlag {
+			return fmt.Errorf("--bootstrap flag requires --mode=cluster")
+		}
+		if joinAddresses != "" {
+			return fmt.Errorf("--join flag requires --mode=cluster")
+		}
+		return nil
+	}
+
+	// Cluster mode validation
+	if cfg.Cluster.Bootstrap && len(cfg.Cluster.Join) > 0 {
+		return fmt.Errorf("--bootstrap and --join are mutually exclusive")
+	}
+
+	if !cfg.Cluster.Bootstrap && len(cfg.Cluster.Join) == 0 {
+		return fmt.Errorf("cluster mode requires either --bootstrap or --join")
+	}
+
+	return nil
+}
+
 // handleReload loads and applies a new configuration.
 func handleReload(app *Application, logger *slog.Logger) error {
-	// Check file permissions first
 	if err := checkConfigPermissions(configPath, logger); err != nil {
 		return fmt.Errorf("config file security check failed: %w", err)
 	}
 
-	// Load and validate new configuration
 	newCfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
-	// Apply the new configuration
+	// Reapply cluster overrides (flags take precedence)
+	applyClusterOverrides(newCfg, logger)
+
+	// Mode change requires restart
+	if app.config.Cluster.Mode != newCfg.Cluster.Mode {
+		logger.Warn("runtime mode change requires restart",
+			"old", app.config.Cluster.Mode,
+			"new", newCfg.Cluster.Mode,
+		)
+	}
+
 	if err := app.Reload(newCfg); err != nil {
 		return fmt.Errorf("failed to apply configuration: %w", err)
 	}
@@ -186,8 +277,8 @@ func handleReload(app *Application, logger *slog.Logger) error {
 }
 
 // checkConfigPermissions verifies the config file has secure permissions.
-func checkConfigPermissions(configPath string, logger *slog.Logger) error {
-	info, err := os.Stat(configPath)
+func checkConfigPermissions(path string, logger *slog.Logger) error {
+	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("failed to stat config file: %w", err)
 	}
@@ -197,12 +288,12 @@ func checkConfigPermissions(configPath string, logger *slog.Logger) error {
 		return fmt.Errorf(
 			"config file %s has insecure permissions %04o (world-readable); "+
 				"run 'chmod 640 %s' or 'chmod 600 %s' to fix",
-			configPath, mode, configPath, configPath,
+			path, mode, path, path,
 		)
 	}
 
 	if logger != nil {
-		logger.Debug("config file permissions verified", "path", configPath, "mode", fmt.Sprintf("%04o", mode))
+		logger.Debug("config file permissions verified", "path", path, "mode", fmt.Sprintf("%04o", mode))
 	}
 
 	return nil
