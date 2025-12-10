@@ -169,9 +169,13 @@ dns:
   listen_address: "127.0.0.1:15353"
   default_ttl: 30
 
-gossip:
-  encryption_key: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
-  bind_address: "127.0.0.1:17946"
+overwatch:
+  gossip:
+    encryption_key: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
+    bind_address: "127.0.0.1:17946"
+  dnssec:
+    enabled: false
+    security_acknowledgment: "I understand that disabling DNSSEC removes cryptographic authentication of DNS responses and allows DNS spoofing attacks against my zones"
 
 regions:
   - name: test-region
