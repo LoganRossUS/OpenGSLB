@@ -1,0 +1,111 @@
+# OpenGSLB Agent Configuration Example
+# ADR-015: Agent-Overwatch Architecture
+#
+# Agents run on application servers and:
+# - Monitor local backend health
+# - Gossip health state to Overwatch nodes
+# - Send predictive signals when thresholds are exceeded
+#
+# Usage: opengslb --mode=agent --config=/etc/opengslb/agent.yaml
+
+mode: agent
+
+agent:
+  # Identity configuration
+  identity:
+    # Pre-shared token for authentication with Overwatch nodes
+    # Must match the token configured in overwatch.agent_tokens
+    service_token: "your-secure-service-token-here"
+    
+    # Geographic region this agent belongs to
+    region: us-east
+    
+    # Optional: paths to agent certificate and key
+    # Generated automatically on first start if not specified
+    # cert_path: /var/lib/opengslb/agent.crt
+    # key_path: /var/lib/opengslb/agent.key
+
+  # Backends this agent monitors
+  # Each agent can monitor multiple services/backends
+  backends:
+    - service: webapp
+      address: 127.0.0.1
+      port: 8080
+      weight: 100
+      health_check:
+        type: http
+        path: /health
+        interval: 5s
+        timeout: 2s
+        failure_threshold: 3
+        success_threshold: 2
+
+    - service: api
+      address: 127.0.0.1
+      port: 9000
+      weight: 100
+      health_check:
+        type: http
+        path: /api/health
+        interval: 5s
+        timeout: 2s
+        failure_threshold: 3
+        success_threshold: 2
+
+    # Example TCP health check for database proxy
+    - service: dbproxy
+      address: 127.0.0.1
+      port: 5432
+      weight: 50
+      health_check:
+        type: tcp
+        interval: 10s
+        timeout: 3s
+        failure_threshold: 2
+        success_threshold: 1
+
+  # Predictive health monitoring
+  # Sends early warning signals before failures occur
+  predictive:
+    enabled: true
+    check_interval: 10s
+    cpu:
+      threshold: 85        # Start bleeding at 85% CPU
+      bleed_duration: 30s  # Gradually reduce traffic over 30s
+    memory:
+      threshold: 90        # Start bleeding at 90% memory
+      bleed_duration: 30s
+    error_rate:
+      threshold: 10        # Errors per minute
+      window: 60s          # Measurement window
+      bleed_duration: 60s
+
+  # Gossip configuration for communicating with Overwatch nodes
+  gossip:
+    # REQUIRED: 32-byte base64-encoded encryption key
+    # Generate with: openssl rand -base64 32
+    # Must match the key used by Overwatch nodes
+    encryption_key: "REPLACE_WITH_YOUR_32_BYTE_BASE64_KEY"
+    
+    # Overwatch nodes to gossip to
+    # Agent sends health updates to ALL configured nodes
+    overwatch_nodes:
+      - overwatch-1.internal:7946
+      - overwatch-2.internal:7946
+      - overwatch-3.internal:7946
+
+  # Heartbeat configuration
+  heartbeat:
+    interval: 10s        # Send heartbeat every 10s
+    missed_threshold: 3  # Deregister after 3 missed heartbeats
+
+# Logging configuration
+logging:
+  level: info    # debug, info, warn, error
+  format: json   # text or json
+
+# Metrics configuration
+# Prometheus metrics endpoint
+metrics:
+  enabled: true
+  address: ":9100"  # Different port from Overwatch to avoid conflicts

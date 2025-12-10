@@ -1,6 +1,6 @@
 // Copyright (C) 2025 Logan Ross
 //
-// This file is part of OpenGSLB \u2013 https://opengslb.org
+// This file is part of OpenGSLB – https://opengslb.org
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -30,18 +29,14 @@ const (
 
 // Command-line flags stored at package level for reload handler access.
 var (
-	configPath    string
-	runtimeMode   string
-	bootstrapFlag bool
-	joinAddresses string
+	configPath  string
+	runtimeMode string
 )
 
 func main() {
 	// Parse command-line flags
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "path to configuration file")
-	flag.StringVar(&runtimeMode, "mode", "", "runtime mode: standalone (default) or cluster")
-	flag.BoolVar(&bootstrapFlag, "bootstrap", false, "bootstrap a new cluster (cluster mode only)")
-	flag.StringVar(&joinAddresses, "join", "", "comma-separated list of cluster nodes to join (cluster mode only)")
+	flag.StringVar(&runtimeMode, "mode", "", "runtime mode: agent or overwatch")
 	showVersion := flag.Bool("version", false, "show version information")
 	flag.Parse()
 
@@ -74,12 +69,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Apply command-line overrides to cluster config
-	applyClusterOverrides(cfg, bootstrapLogger)
+	// Apply command-line overrides
+	applyModeOverride(cfg, bootstrapLogger)
 
-	// Validate cluster configuration (command-line specific validation)
-	if err := validateClusterFlags(cfg); err != nil {
-		bootstrapLogger.Error("cluster configuration invalid", "error", err)
+	// Validate mode configuration
+	if err := validateModeFlags(cfg); err != nil {
+		bootstrapLogger.Error("mode configuration invalid", "error", err)
 		os.Exit(1)
 	}
 
@@ -95,27 +90,29 @@ func main() {
 	slog.SetDefault(logger)
 
 	// Log effective mode
-	effectiveMode := cfg.Cluster.Mode
+	effectiveMode := cfg.Mode
 	if effectiveMode == "" {
-		effectiveMode = config.ModeStandalone
+		effectiveMode = config.ModeOverwatch // Default to overwatch for backward compat
 	}
 
 	logger.Info("configuration loaded",
 		"mode", effectiveMode,
 		"log_level", cfg.Logging.Level,
 		"log_format", cfg.Logging.Format,
-		"dns_listen", cfg.DNS.ListenAddress,
-		"regions", len(cfg.Regions),
-		"domains", len(cfg.Domains),
 	)
 
-	// Log cluster-specific information
-	if cfg.Cluster.IsClusterMode() {
-		logger.Info("cluster mode enabled",
-			"node_name", cfg.Cluster.NodeName,
-			"bind_address", cfg.Cluster.BindAddress,
-			"bootstrap", cfg.Cluster.Bootstrap,
-			"join", cfg.Cluster.Join,
+	// Mode-specific logging
+	switch effectiveMode {
+	case config.ModeAgent:
+		logger.Info("agent mode enabled",
+			"region", cfg.Agent.Identity.Region,
+			"backends", len(cfg.Agent.Backends),
+		)
+	case config.ModeOverwatch:
+		logger.Info("overwatch mode enabled",
+			"dns_listen", cfg.DNS.ListenAddress,
+			"regions", len(cfg.Regions),
+			"domains", len(cfg.Domains),
 		)
 	}
 
@@ -181,68 +178,54 @@ shutdown:
 	logger.Info("OpenGSLB stopped")
 }
 
-// applyClusterOverrides applies command-line flags to cluster configuration.
-func applyClusterOverrides(cfg *config.Config, logger *slog.Logger) {
+// applyModeOverride applies command-line flags to configuration.
+func applyModeOverride(cfg *config.Config, logger *slog.Logger) {
 	// --mode flag overrides config file
 	if runtimeMode != "" {
-		cfg.Cluster.Mode = config.RuntimeMode(runtimeMode)
+		cfg.Mode = config.RuntimeMode(runtimeMode)
 		if logger != nil {
 			logger.Debug("mode overridden by flag", "mode", runtimeMode)
 		}
 	}
 
-	// --bootstrap flag overrides config file
-	if bootstrapFlag {
-		cfg.Cluster.Bootstrap = true
-		if logger != nil {
-			logger.Debug("bootstrap enabled by flag")
-		}
+	// Default to overwatch if mode not specified anywhere (backward compat)
+	if cfg.Mode == "" {
+		cfg.Mode = config.ModeOverwatch
 	}
 
-	// --join flag overrides config file
-	if joinAddresses != "" {
-		cfg.Cluster.Join = strings.Split(joinAddresses, ",")
-		if logger != nil {
-			logger.Debug("join addresses set by flag", "addresses", cfg.Cluster.Join)
-		}
-	}
-
-	// Default to standalone if mode not specified anywhere
-	if cfg.Cluster.Mode == "" {
-		cfg.Cluster.Mode = config.ModeStandalone
-	}
-
-	// Set default node name from hostname if not specified
-	if cfg.Cluster.NodeName == "" {
+	// Set default node name from hostname if not specified (for overwatch)
+	if cfg.Mode == config.ModeOverwatch && cfg.Overwatch.Identity.NodeID == "" {
 		if hostname, err := os.Hostname(); err == nil {
-			cfg.Cluster.NodeName = hostname
+			cfg.Overwatch.Identity.NodeID = hostname
 		}
 	}
 }
 
-// validateClusterFlags validates cluster-specific command-line flag combinations.
-// This is separate from config.Validate() which handles YAML validation.
-func validateClusterFlags(cfg *config.Config) error {
-	if cfg.Cluster.IsStandaloneMode() {
-		// Standalone mode: warn if cluster flags were provided
-		if bootstrapFlag {
-			return fmt.Errorf("--bootstrap flag requires --mode=cluster")
+// validateModeFlags validates mode-specific command-line flag combinations.
+func validateModeFlags(cfg *config.Config) error {
+	switch cfg.Mode {
+	case config.ModeAgent:
+		// Agent mode validation
+		if cfg.Agent.Identity.ServiceToken == "" {
+			return fmt.Errorf("agent mode requires identity.service_token")
 		}
-		if joinAddresses != "" {
-			return fmt.Errorf("--join flag requires --mode=cluster")
+		if len(cfg.Agent.Backends) == 0 {
+			return fmt.Errorf("agent mode requires at least one backend")
 		}
-		return nil
+		if cfg.Agent.Gossip.EncryptionKey == "" {
+			return fmt.Errorf("agent mode requires gossip.encryption_key (generate with: openssl rand -base64 32)")
+		}
+		if len(cfg.Agent.Gossip.OverwatchNodes) == 0 {
+			return fmt.Errorf("agent mode requires at least one gossip.overwatch_nodes address")
+		}
+	case config.ModeOverwatch:
+		// Overwatch mode validation
+		if cfg.Overwatch.Gossip.EncryptionKey == "" {
+			return fmt.Errorf("overwatch mode requires gossip.encryption_key (generate with: openssl rand -base64 32)")
+		}
+	default:
+		return fmt.Errorf("invalid mode %q: must be 'agent' or 'overwatch'", cfg.Mode)
 	}
-
-	// Cluster mode validation
-	if cfg.Cluster.Bootstrap && len(cfg.Cluster.Join) > 0 {
-		return fmt.Errorf("--bootstrap and --join are mutually exclusive")
-	}
-
-	if !cfg.Cluster.Bootstrap && len(cfg.Cluster.Join) == 0 {
-		return fmt.Errorf("cluster mode requires either --bootstrap or --join")
-	}
-
 	return nil
 }
 
@@ -257,15 +240,16 @@ func handleReload(app *Application, logger *slog.Logger) error {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
-	// Reapply cluster overrides (flags take precedence)
-	applyClusterOverrides(newCfg, logger)
+	// Reapply mode override (flags take precedence)
+	applyModeOverride(newCfg, logger)
 
 	// Mode change requires restart
-	if app.config.Cluster.Mode != newCfg.Cluster.Mode {
+	if app.config.Mode != newCfg.Mode {
 		logger.Warn("runtime mode change requires restart",
-			"old", app.config.Cluster.Mode,
-			"new", newCfg.Cluster.Mode,
+			"old", app.config.Mode,
+			"new", newCfg.Mode,
 		)
+		return fmt.Errorf("mode change requires restart")
 	}
 
 	if err := app.Reload(newCfg); err != nil {

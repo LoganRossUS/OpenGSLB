@@ -1,0 +1,3966 @@
+diff --git a/cmd/opengslb/app.go b/cmd/opengslb/app.go
+index c173037..5d1689f 100644
+--- a/cmd/opengslb/app.go
++++ b/cmd/opengslb/app.go
+@@ -10,15 +10,10 @@ import (
+ 	"context"
+ 	"fmt"
+ 	"log/slog"
+-	"net"
+-	"path/filepath"
+ 	"sync"
+ 	"time"
+ 
+-	"github.com/hashicorp/memberlist"
+-	"github.com/loganrossus/OpenGSLB/pkg/agent"
+ 	"github.com/loganrossus/OpenGSLB/pkg/api"
+-	"github.com/loganrossus/OpenGSLB/pkg/cluster"
+ 	"github.com/loganrossus/OpenGSLB/pkg/config"
+ 	"github.com/loganrossus/OpenGSLB/pkg/dns"
+ 	"github.com/loganrossus/OpenGSLB/pkg/health"
+@@ -28,24 +23,25 @@ import (
+ )
+ 
+ // Application manages the lifecycle of all OpenGSLB components.
++// ADR-015: Simplified architecture - no Raft, no cluster coordination.
+ type Application struct {
+-	config        *config.Config
+-	configMu      sync.RWMutex
++	config   *config.Config
++	configMu sync.RWMutex
++	logger   *slog.Logger
++
++	// Overwatch mode components
+ 	dnsServer     *dns.Server
+ 	dnsHandler    *dns.Handler
+ 	dnsRegistry   *dns.Registry
+ 	healthManager *health.Manager
+ 	metricsServer *metrics.Server
+ 	apiServer     *api.Server
+-	logger        *slog.Logger
+ 
+-	// Cluster mode components
+-	// Cluster mode components
+-	raftNode      *cluster.RaftNode
+-	gossipManager *cluster.GossipManager
+-	monitor       *agent.Monitor
+-	predictor     *agent.Predictor
+-	overwatch     *cluster.Overwatch
++	// Agent mode components (Story 2 will add these)
++	// agentManager *agent.Manager
++
++	// Gossip - used in both modes but differently (Story 2/3 will add)
++	// gossipManager *gossip.Manager
+ 
+ 	// shutdownCh is closed when the application is shutting down.
+ 	shutdownCh chan struct{}
+@@ -65,301 +61,93 @@ func NewApplication(cfg *config.Config, logger *slog.Logger) *Application {
+ 
+ // Initialize sets up all components using the loaded configuration.
+ func (a *Application) Initialize() error {
+-	a.logger.Info("initializing application", "mode", a.config.Cluster.Mode)
++	a.logger.Info("initializing application", "mode", a.config.GetEffectiveMode())
+ 
+ 	metrics.SetAppInfo(version.Version)
+ 
+-	serverCount := 0
+-	for _, region := range a.config.Regions {
+-		serverCount += len(region.Servers)
+-	}
+-	metrics.SetConfigMetrics(len(a.config.Domains), serverCount, float64(time.Now().Unix()))
+-
+ 	// Mode-specific initialization
+-	if a.config.Cluster.IsClusterMode() {
+-		if err := a.initializeClusterMode(); err != nil {
+-			return fmt.Errorf("failed to initialize cluster mode: %w", err)
++	switch a.config.GetEffectiveMode() {
++	case config.ModeAgent:
++		if err := a.initializeAgentMode(); err != nil {
++			return fmt.Errorf("failed to initialize agent mode: %w", err)
+ 		}
+-		// Set cluster mode metric
+-		metrics.SetClusterMode(true)
+-	} else {
+-		a.logger.Info("running in standalone mode")
+-		// Set standalone mode metric
+-		metrics.SetClusterMode(false)
+-	}
+-
+-	if err := a.initializeHealthManager(); err != nil {
+-		return fmt.Errorf("failed to initialize health manager: %w", err)
+-	}
+-
+-	if err := a.initializeDNSServer(); err != nil {
+-		return fmt.Errorf("failed to initialize DNS server: %w", err)
+-	}
+-
+-	if err := a.initializeMetricsServer(); err != nil {
+-		return fmt.Errorf("failed to initialize metrics server: %w", err)
+-	}
+-
+-	if err := a.initializeAPIServer(); err != nil {
+-		return fmt.Errorf("failed to initialize API server: %w", err)
++	case config.ModeOverwatch:
++		if err := a.initializeOverwatchMode(); err != nil {
++			return fmt.Errorf("failed to initialize overwatch mode: %w", err)
++		}
++	default:
++		return fmt.Errorf("unknown mode: %s", a.config.Mode)
+ 	}
+ 
+ 	return nil
+ }
+ 
+-// initializeClusterMode sets up cluster-specific components.
+-func (a *Application) initializeClusterMode() error {
+-	a.logger.Info("initializing cluster mode components",
+-		"node_name", a.config.Cluster.NodeName,
+-		"bind_address", a.config.Cluster.BindAddress,
+-		"bootstrap", a.config.Cluster.Bootstrap,
++// initializeAgentMode sets up agent-specific components.
++// ADR-015: Agent monitors local backends, gossips to overwatch nodes.
++func (a *Application) initializeAgentMode() error {
++	a.logger.Info("initializing agent mode",
++		"region", a.config.Agent.Identity.Region,
++		"backends", len(a.config.Agent.Backends),
+ 	)
+ 
+-	// Determine data directory for Raft
+-	dataDir := a.config.Cluster.Raft.DataDir
+-	if dataDir == "" {
+-		dataDir = filepath.Join(".", "data", a.config.Cluster.NodeName)
+-	}
+-
+-	// Create Raft node configuration
+-	raftCfg := cluster.DefaultConfig()
+-	raftCfg.NodeID = a.config.Cluster.NodeName
+-	raftCfg.NodeName = a.config.Cluster.NodeName
+-	raftCfg.BindAddress = a.config.Cluster.BindAddress
+-	raftCfg.AdvertiseAddress = a.config.Cluster.AdvertiseAddress
+-	raftCfg.DataDir = dataDir
+-	raftCfg.Bootstrap = a.config.Cluster.Bootstrap
+-	raftCfg.Join = a.config.Cluster.Join
+-
+-	// Apply timeouts from config if set
+-	if a.config.Cluster.Raft.HeartbeatTimeout > 0 {
+-		raftCfg.HeartbeatTimeout = a.config.Cluster.Raft.HeartbeatTimeout
+-	}
+-	if a.config.Cluster.Raft.ElectionTimeout > 0 {
+-		raftCfg.ElectionTimeout = a.config.Cluster.Raft.ElectionTimeout
+-	}
+-
+-	// Create Raft node
+-	raftNode, err := cluster.NewRaftNode(raftCfg, a.logger.With("component", "raft"))
+-	if err != nil {
+-		return fmt.Errorf("failed to create raft node: %w", err)
+-	}
+-	a.raftNode = raftNode
+-
+-	// Set node info metric
+-	metrics.SetClusterNodeInfo(a.config.Cluster.NodeName, a.config.Cluster.BindAddress)
++	// Story 2 will implement:
++	// - Multi-backend health checking
++	// - Heartbeat mechanism
++	// - Gossip to overwatch nodes
++	// - Predictive health monitoring
+ 
+-	// Register leader observer for metrics and DNS server activation
+-	a.raftNode.RegisterLeaderObserver(func(isLeader bool) {
+-		a.onLeadershipChange(isLeader)
+-	})
+-
+-	// Initialize gossip if enabled
+-	if err := a.initializeGossip(); err != nil {
+-		return fmt.Errorf("failed to initialize gossip: %w", err)
+-	}
+-
+-	// Initialize predictive health monitoring (Story 5)
+-	if err := a.initializePredictiveHealth(); err != nil {
+-		return fmt.Errorf("failed to initialize predictive health: %w", err)
+-	}
+-
+-	// Initialize Overwatch (Story 6)
+-	overwatch := cluster.NewOverwatch(
+-		a.config.Cluster.Overwatch,
+-		a.config.Regions,
+-		a.gossipManager,
+-		a.raftNode,
+-		a.logger.With("component", "overwatch"),
+-	)
+-	if err := overwatch.Start(context.Background()); err != nil {
+-		return fmt.Errorf("failed to start overwatch: %w", err)
++	// For now, just initialize metrics
++	if err := a.initializeMetricsServer(); err != nil {
++		return fmt.Errorf("failed to initialize metrics server: %w", err)
+ 	}
+-	a.overwatch = overwatch
+ 
+-	a.logger.Info("cluster mode components initialized")
++	a.logger.Info("agent mode initialized (stub - Story 2 will complete)")
+ 	return nil
+ }
+ 
+-// initializeGossip sets up the gossip protocol for health event propagation.
+-func (a *Application) initializeGossip() error {
+-	// Parse bind address to get IP
+-	bindIP, _, err := net.SplitHostPort(a.config.Cluster.BindAddress)
+-	if err != nil {
+-		// If no port, assume it's just an IP
+-		bindIP = a.config.Cluster.BindAddress
+-	}
++// initializeOverwatchMode sets up overwatch-specific components.
++// ADR-015: Overwatch serves DNS, validates health, receives agent gossip.
++func (a *Application) initializeOverwatchMode() error {
++	a.logger.Info("initializing overwatch mode",
++		"node_id", a.config.Overwatch.Identity.NodeID,
++		"region", a.config.Overwatch.Identity.Region,
++	)
+ 
+-	// Parse advertise address
+-	advertiseIP := bindIP
+-	if a.config.Cluster.AdvertiseAddress != "" {
+-		advertiseIP, _, err = net.SplitHostPort(a.config.Cluster.AdvertiseAddress)
+-		if err != nil {
+-			advertiseIP = a.config.Cluster.AdvertiseAddress
+-		}
++	// Set config metrics
++	serverCount := 0
++	for _, region := range a.config.Regions {
++		serverCount += len(region.Servers)
+ 	}
++	metrics.SetConfigMetrics(len(a.config.Domains), serverCount, float64(time.Now().Unix()))
+ 
+-	// Create gossip configuration
+-	gossipCfg := cluster.DefaultGossipConfig()
+-	gossipCfg.NodeID = a.config.Cluster.NodeName
+-	gossipCfg.NodeName = a.config.Cluster.NodeName
+-	gossipCfg.BindAddr = bindIP
+-	gossipCfg.BindPort = a.config.Cluster.GetGossipBindPort()
+-	gossipCfg.AdvertiseAddr = advertiseIP
+-	gossipCfg.AdvertisePort = a.config.Cluster.GetGossipAdvertisePort()
+-	gossipCfg.EncryptionKey = a.config.Cluster.Gossip.EncryptionKey
+-
+-	// Apply timing configuration
+-	if a.config.Cluster.Gossip.ProbeInterval > 0 {
+-		gossipCfg.ProbeInterval = a.config.Cluster.Gossip.ProbeInterval
+-	}
+-	if a.config.Cluster.Gossip.ProbeTimeout > 0 {
+-		gossipCfg.ProbeTimeout = a.config.Cluster.Gossip.ProbeTimeout
+-	}
+-	if a.config.Cluster.Gossip.GossipInterval > 0 {
+-		gossipCfg.GossipInterval = a.config.Cluster.Gossip.GossipInterval
+-	}
+-	if a.config.Cluster.Gossip.PushPullInterval > 0 {
+-		gossipCfg.PushPullInterval = a.config.Cluster.Gossip.PushPullInterval
++	// Initialize health manager (for external validation)
++	if err := a.initializeHealthManager(); err != nil {
++		return fmt.Errorf("failed to initialize health manager: %w", err)
+ 	}
+ 
+-	// Build seed list from join addresses
+-	// Convert API addresses to gossip addresses (same IP, gossip port)
+-	for _, joinAddr := range a.config.Cluster.Join {
+-		host, _, err := net.SplitHostPort(joinAddr)
+-		if err != nil {
+-			host = joinAddr
+-		}
+-		gossipCfg.Seeds = append(gossipCfg.Seeds,
+-			fmt.Sprintf("%s:%d", host, gossipCfg.BindPort))
++	// Initialize DNS server
++	if err := a.initializeDNSServer(); err != nil {
++		return fmt.Errorf("failed to initialize DNS server: %w", err)
+ 	}
+ 
+-	// Create gossip manager
+-	gossipManager, err := cluster.NewGossipManager(gossipCfg, a.logger.With("component", "gossip"))
+-	if err != nil {
+-		return fmt.Errorf("failed to create gossip manager: %w", err)
++	// Initialize metrics server
++	if err := a.initializeMetricsServer(); err != nil {
++		return fmt.Errorf("failed to initialize metrics server: %w", err)
+ 	}
+-	a.gossipManager = gossipManager
+-
+-	// Set up gossip event handlers
+-	a.setupGossipHandlers()
+-
+-	a.logger.Info("gossip manager initialized",
+-		"bind_addr", gossipCfg.BindAddr,
+-		"bind_port", gossipCfg.BindPort,
+-		"seeds", gossipCfg.Seeds,
+-	)
+-
+-	return nil
+-}
+ 
+-// setupGossipHandlers configures callbacks for gossip events.
+-func (a *Application) setupGossipHandlers() {
+-	if a.gossipManager == nil {
+-		return
+-	}
+-
+-	// Handle health updates from other nodes
+-	a.gossipManager.OnHealthUpdate(func(update *cluster.HealthUpdate, fromNode string) {
+-		a.logger.Debug("received health update via gossip",
+-			"server", update.ServerAddr,
+-			"region", update.Region,
+-			"healthy", update.Healthy,
+-			"from", fromNode,
+-		)
+-		metrics.RecordGossipHealthUpdateReceived()
+-		metrics.RecordGossipMessageReceived("health_update")
+-
+-		// Calculate propagation latency if we have a reasonable reference
+-		// (In production, this would use synchronized time or vector clocks)
+-	})
+-
+-	// Handle predictive signals
+-	a.gossipManager.OnPredictive(func(signal *cluster.PredictiveSignal, fromNode string) {
+-		a.logger.Info("received predictive signal via gossip",
+-			"node", signal.NodeID,
+-			"signal", signal.Signal,
+-			"reason", signal.Reason,
+-			"value", signal.Value,
+-			"threshold", signal.Threshold,
+-			"from", fromNode,
+-		)
+-		metrics.RecordGossipPredictiveSignal(signal.Signal)
+-		metrics.RecordGossipMessageReceived("predictive")
+-
+-		// TODO: Implement predictive signal handling
+-		// - Adjust routing weights
+-		// - Trigger preemptive failover if critical
+-	})
+-
+-	// Handle override commands
+-	a.gossipManager.OnOverride(func(override *cluster.OverrideCommand, fromNode string) {
+-		a.logger.Info("received override command via gossip",
+-			"target_node", override.TargetNode,
+-			"server", override.ServerAddr,
+-			"action", override.Action,
+-			"reason", override.Reason,
+-			"from", fromNode,
+-		)
+-		metrics.RecordGossipOverride(override.Action)
+-		metrics.RecordGossipMessageReceived("override")
+-
+-		// TODO: Implement override command handling
+-		// - Force health status if target_node is us
+-		// - Store in KV for persistence
+-	})
+-
+-	// Handle node membership changes
+-	a.gossipManager.OnNodeJoin(func(node *memberlist.Node) {
+-		a.logger.Info("gossip: node joined",
+-			"name", node.Name,
+-			"address", node.Address(),
+-		)
+-		metrics.RecordGossipNodeJoin()
+-		a.updateGossipMetrics()
+-	})
+-
+-	a.gossipManager.OnNodeLeave(func(node *memberlist.Node) {
+-		a.logger.Info("gossip: node left",
+-			"name", node.Name,
+-			"address", node.Address(),
+-		)
+-		metrics.RecordGossipNodeLeave()
+-		a.updateGossipMetrics()
+-	})
+-}
+-
+-// updateGossipMetrics updates Prometheus metrics for gossip state.
+-func (a *Application) updateGossipMetrics() {
+-	if a.gossipManager == nil {
+-		return
++	// Initialize API server
++	if err := a.initializeAPIServer(); err != nil {
++		return fmt.Errorf("failed to initialize API server: %w", err)
+ 	}
+ 
+-	members := a.gossipManager.Members()
+-	healthyCount := 0
+-	for _, m := range members {
+-		if m.State == "alive" {
+-			healthyCount++
+-		}
+-	}
+-	metrics.SetGossipMembers(len(members), healthyCount)
+-}
++	// Story 3 will add:
++	// - Gossip receiver for agent messages
++	// - Backend registry from agent registrations
++	// - External validation of agent health claims
++	// - Override API
+ 
+-// onLeadershipChange is called when this node's leadership status changes.
+-// It updates metrics and logs the transition.
+-func (a *Application) onLeadershipChange(isLeader bool) {
+-	a.logger.Info("leadership changed", "is_leader", isLeader)
+-
+-	// Update metrics
+-	metrics.SetClusterLeader(isLeader)
+-	if isLeader {
+-		metrics.SetClusterState("leader")
+-		a.logger.Info("this node is now the cluster leader - DNS queries will be served")
+-	} else {
+-		metrics.SetClusterState("follower")
+-		a.logger.Info("this node is now a follower - DNS queries will be refused")
+-	}
+-	metrics.RecordLeaderChange()
++	a.logger.Info("overwatch mode initialized")
++	return nil
+ }
+ 
+ // initializeHealthManager creates and configures the health manager.
+@@ -388,66 +176,12 @@ func (a *Application) initializeHealthManager() error {
+ 		return err
+ 	}
+ 
+-	// Register callback for status changes
+-	a.healthManager.OnStatusChange(func(address string, status health.Status) {
+-		a.broadcastHealthUpdate(address, status)
+-
+-		// Record error for predictive health monitoring if check failed
+-		if status != health.StatusHealthy && a.monitor != nil {
+-			a.monitor.RecordError()
+-		}
+-	})
+-
+ 	a.logger.Info("health manager initialized",
+ 		"servers", a.healthManager.ServerCount(),
+ 	)
+ 	return nil
+ }
+ 
+-// broadcastHealthUpdate sends a health status change to the gossip cluster.
+-func (a *Application) broadcastHealthUpdate(address string, status health.Status) {
+-	if a.gossipManager == nil || !a.gossipManager.IsRunning() {
+-		return
+-	}
+-
+-	// Find the region for this server
+-	region := a.getServerRegion(address)
+-
+-	update := &cluster.HealthUpdate{
+-		ServerAddr: address,
+-		Region:     region,
+-		Healthy:    status == health.StatusHealthy,
+-		CheckType:  "local", // Indicates this is from local health checks
+-	}
+-
+-	if err := a.gossipManager.BroadcastHealthUpdate(update); err != nil {
+-		a.logger.Warn("failed to broadcast health update",
+-			"address", address,
+-			"error", err,
+-		)
+-		metrics.RecordGossipSendFailure()
+-	} else {
+-		metrics.RecordGossipHealthUpdateBroadcast()
+-		metrics.RecordGossipMessageSent("health_update")
+-	}
+-}
+-
+-// getServerRegion finds the region name for a server address.
+-func (a *Application) getServerRegion(address string) string {
+-	a.configMu.RLock()
+-	defer a.configMu.RUnlock()
+-
+-	for _, region := range a.config.Regions {
+-		for _, server := range region.Servers {
+-			serverAddr := fmt.Sprintf("%s:%d", server.Address, server.Port)
+-			if serverAddr == address {
+-				return region.Name
+-			}
+-		}
+-	}
+-	return ""
+-}
+-
+ // registerHealthCheckServers registers all configured servers with the health manager.
+ func (a *Application) registerHealthCheckServers() error {
+ 	for _, region := range a.config.Regions {
+@@ -503,25 +237,11 @@ func (a *Application) initializeDNSServer() error {
+ 		}
+ 	}
+ 
+-	// Create leader checker - in cluster mode, use raftNode; in standalone, use nil (defaults to always leader)
+-	var leaderChecker dns.LeaderChecker
+-	if a.config.Cluster.IsClusterMode() && a.raftNode != nil {
+-		leaderChecker = a.raftNode
+-	}
+-
+-	// Use VetoHealthProvider if Overwatch is enabled (cluster mode)
+-	var healthProvider dns.HealthStatusProvider = a.healthManager
+-	if a.overwatch != nil {
+-		healthProvider = &vetoHealthProvider{
+-			base:      a.healthManager,
+-			overwatch: a.overwatch,
+-		}
+-	}
+-
++	// ADR-015: No leader checker needed - all Overwatch nodes serve DNS independently
+ 	handler := dns.NewHandler(dns.HandlerConfig{
+ 		Registry:       registry,
+-		HealthProvider: healthProvider,
+-		LeaderChecker:  leaderChecker,
++		HealthProvider: a.healthManager,
++		LeaderChecker:  nil, // Standalone mode - always serve
+ 		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
+ 		Logger:         a.logger,
+ 	})
+@@ -536,7 +256,6 @@ func (a *Application) initializeDNSServer() error {
+ 	a.logger.Info("DNS server initialized",
+ 		"address", a.config.DNS.ListenAddress,
+ 		"domains", registry.Count(),
+-		"cluster_mode", a.config.Cluster.IsClusterMode(),
+ 	)
+ 	return nil
+ }
+@@ -585,17 +304,7 @@ func (a *Application) initializeAPIServer() error {
+ 		return fmt.Errorf("failed to create API server: %w", err)
+ 	}
+ 
+-	// Set up cluster handlers if in cluster mode
+-	if a.config.Cluster.IsClusterMode() && a.raftNode != nil {
+-		clusterHandlers := api.NewClusterHandlers(
+-			a.raftNode,
+-			string(a.config.Cluster.Mode),
+-			a.logger.With("component", "cluster-api"),
+-		)
+-		server.SetClusterHandlers(clusterHandlers)
+-		a.logger.Debug("cluster API handlers configured")
+-	}
+-
++	// ADR-015: No cluster handlers - removed
+ 	a.apiServer = server
+ 
+ 	a.logger.Info("API server initialized",
+@@ -605,106 +314,57 @@ func (a *Application) initializeAPIServer() error {
+ 	return nil
+ }
+ 
+-// initializePredictiveHealth sets up the predictive health monitoring agent.
+-func (a *Application) initializePredictiveHealth() error {
+-	a.configMu.RLock()
+-	cfg := a.config.Cluster.PredictiveHealth
+-	nodeID := a.config.Cluster.NodeName
+-	a.configMu.RUnlock()
+-
+-	if !cfg.Enabled {
+-		a.logger.Info("predictive health monitoring disabled")
+-		return nil
+-	}
+-
+-	a.logger.Info("initializing predictive health monitoring")
+-
+-	// Create monitor
+-	a.monitor = agent.NewMonitor(a.logger, cfg.ErrorRate.Window)
+-
+-	// Create predictor
+-	a.predictor = agent.NewPredictor(cfg, nodeID, a.monitor, a.logger)
+-
+-	// Wire up predictor to broadcast signals via gossip
+-	if a.gossipManager != nil {
+-		a.predictor.OnSignal(func(signal *cluster.PredictiveSignal) {
+-			a.logger.Info("broadcasting predictive health signal",
+-				"signal", signal.Signal,
+-				"reason", signal.Reason,
+-			)
+-			if err := a.gossipManager.BroadcastPredictive(signal); err != nil {
+-				a.logger.Error("failed to broadcast predictive signal", "error", err)
+-			}
+-		})
+-	}
+-
+-	return nil
+-}
+-
+ // Start begins all application components.
+ func (a *Application) Start(ctx context.Context) error {
+-	a.logger.Info("starting application", "mode", a.config.Cluster.Mode)
++	a.logger.Info("starting application", "mode", a.config.GetEffectiveMode())
+ 
+-	// In cluster mode, start Raft first
+-	if a.config.Cluster.IsClusterMode() && a.raftNode != nil {
+-		if err := a.raftNode.Start(ctx); err != nil {
+-			return fmt.Errorf("failed to start Raft node: %w", err)
+-		}
+-		a.logger.Info("Raft node started")
+-
+-		// Wait for leader election
+-		leaderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+-		defer cancel()
+-		if err := a.raftNode.WaitForLeader(leaderCtx); err != nil {
+-			a.logger.Warn("timeout waiting for leader election", "error", err)
+-		} else {
+-			leader, _ := a.raftNode.Leader()
+-			a.logger.Info("leader elected", "leader_id", leader.NodeID)
+-
+-			// Explicitly sync leadership metric in case event was missed or handled before metrics were ready
+-			if leader.NodeID == a.config.Cluster.NodeName {
+-				a.onLeadershipChange(true)
+-			}
+-		}
+-	}
+-
+-	// Start gossip after Raft (so we have node identity established)
+-	if a.gossipManager != nil {
+-		if err := a.gossipManager.Start(context.Background()); err != nil { // Changed ctx to context.Background() as per instruction
+-			return fmt.Errorf("failed to start gossip manager: %w", err)
+-		}
+-		a.logger.Info("gossip manager started",
+-			"members", a.gossipManager.NumMembers(),
+-		)
+-		a.updateGossipMetrics()
++	switch a.config.GetEffectiveMode() {
++	case config.ModeAgent:
++		return a.startAgentMode(ctx)
++	case config.ModeOverwatch:
++		return a.startOverwatchMode(ctx)
++	default:
++		return fmt.Errorf("unknown mode: %s", a.config.Mode)
+ 	}
++}
+ 
+-	if a.monitor != nil {
+-		a.logger.Info("agent monitor initialized")
+-	}
++// startAgentMode starts agent-specific components.
++func (a *Application) startAgentMode(ctx context.Context) error {
++	// Story 2 will implement:
++	// - Start gossip to overwatch nodes
++	// - Start health checks for local backends
++	// - Start heartbeat sender
++	// - Start predictive health monitoring
+ 
+-	if a.predictor != nil {
++	if a.metricsServer != nil {
+ 		go func() {
+-			if err := a.predictor.Start(ctx); err != nil {
+-				a.logger.Error("predictive health monitoring stopped with error", "error", err)
++			if err := a.metricsServer.Start(ctx); err != nil {
++				a.logger.Error("metrics server error", "error", err)
+ 			}
+ 		}()
+-		a.logger.Info("agent predictor started")
+ 	}
+ 
++	a.logger.Info("agent mode started (stub - Story 2 will complete)")
++
++	// Block until context is canceled
++	<-ctx.Done()
++	return nil
++}
++
++// startOverwatchMode starts overwatch-specific components.
++func (a *Application) startOverwatchMode(ctx context.Context) error {
++	// Start health manager
+ 	if err := a.healthManager.Start(); err != nil {
+ 		return fmt.Errorf("failed to start health manager: %w", err)
+ 	}
+ 	a.logger.Info("health manager started")
+ 
++	// Start metrics server
+ 	if a.metricsServer != nil {
+ 		go func() {
+-			// Retry loop for metrics server
+ 			for i := 0; i < 30; i++ {
+ 				if err := a.metricsServer.Start(ctx); err != nil {
+-					// Log as warning during retries
+ 					a.logger.Warn("metrics server failed to start, retrying", "error", err, "attempt", i+1)
+-					// If error is "addr in use", wait and retry
+ 					select {
+ 					case <-ctx.Done():
+ 						return
+@@ -712,13 +372,13 @@ func (a *Application) Start(ctx context.Context) error {
+ 						continue
+ 					}
+ 				}
+-				// If Start returns nil (clean shutdown) or context canceled, we exit
+ 				return
+ 			}
+ 			a.logger.Error("metrics server failed to start after 30 attempts")
+ 		}()
+ 	}
+ 
++	// Start API server
+ 	if a.apiServer != nil {
+ 		go func() {
+ 			if err := a.apiServer.Start(ctx); err != nil {
+@@ -727,13 +387,12 @@ func (a *Application) Start(ctx context.Context) error {
+ 		}()
+ 	}
+ 
+-	// Start DNS server
+-	// In cluster mode, the server always runs but the handler checks leadership
+-	// before processing queries. Non-leaders return REFUSED.
+-	a.logger.Info("starting DNS server",
+-		"address", a.config.DNS.ListenAddress,
+-		"leader_check", a.config.Cluster.IsClusterMode(),
+-	)
++	// Story 3 will add:
++	// - Start gossip receiver
++	// - Start external validation loop
++
++	// Start DNS server (blocks until shutdown)
++	a.logger.Info("starting DNS server", "address", a.config.DNS.ListenAddress)
+ 	if err := a.dnsServer.Start(ctx); err != nil {
+ 		return fmt.Errorf("DNS server error: %w", err)
+ 	}
+@@ -747,24 +406,33 @@ func (a *Application) Shutdown(ctx context.Context) error {
+ 
+ 	var shutdownErr error
+ 
+-	// Stop gossip first (quick, allows graceful leave)
+-	if a.gossipManager != nil {
+-		a.logger.Debug("stopping gossip manager")
+-		if err := a.gossipManager.Stop(ctx); err != nil {
+-			a.logger.Error("error stopping gossip manager", "error", err)
++	// Mode-specific shutdown
++	switch a.config.GetEffectiveMode() {
++	case config.ModeAgent:
++		// Story 2 will add agent-specific shutdown
++	case config.ModeOverwatch:
++		if err := a.shutdownOverwatchMode(ctx); err != nil {
+ 			shutdownErr = err
+ 		}
+ 	}
+ 
+-	// Stop Raft node if in cluster mode
+-	if a.raftNode != nil {
+-		a.logger.Debug("stopping Raft node")
+-		if err := a.raftNode.Stop(ctx); err != nil {
+-			a.logger.Error("error stopping Raft node", "error", err)
+-			shutdownErr = err
+-		}
++	// Common shutdown
++	if a.metricsServer != nil {
++		a.logger.Debug("stopping metrics server")
++		// Metrics server doesn't have explicit shutdown
+ 	}
+ 
++	a.logger.Info("application shutdown complete")
++	return shutdownErr
++}
++
++// shutdownOverwatchMode stops overwatch-specific components.
++func (a *Application) shutdownOverwatchMode(ctx context.Context) error {
++	var shutdownErr error
++
++	// Story 3 will add:
++	// - Stop gossip receiver
++
+ 	if a.apiServer != nil {
+ 		a.logger.Debug("stopping API server")
+ 		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+@@ -783,41 +451,11 @@ func (a *Application) Shutdown(ctx context.Context) error {
+ 		}
+ 	}
+ 
+-	select {
+-	case <-ctx.Done():
+-		a.logger.Warn("shutdown deadline exceeded")
+-		return ctx.Err()
+-	case <-time.After(100 * time.Millisecond):
+-	}
++	// DNS server shuts down when context is canceled
+ 
+-	a.logger.Info("application shutdown complete")
+ 	return shutdownErr
+ }
+ 
+-// IsLeader returns true if this node is the Raft leader.
+-// In standalone mode, always returns true.
+-func (a *Application) IsLeader() bool {
+-	if a.config.Cluster.IsStandaloneMode() {
+-		return true
+-	}
+-	if a.raftNode == nil {
+-		return true
+-	}
+-	return a.raftNode.IsLeader()
+-}
+-
+-// GetRaftNode returns the Raft node for cluster operations.
+-// Returns nil in standalone mode.
+-func (a *Application) GetRaftNode() *cluster.RaftNode {
+-	return a.raftNode
+-}
+-
+-// GetGossipManager returns the gossip manager for cluster communication.
+-// Returns nil in standalone mode.
+-func (a *Application) GetGossipManager() *cluster.GossipManager {
+-	return a.gossipManager
+-}
+-
+ // Reload applies a new configuration without restarting.
+ func (a *Application) Reload(newCfg *config.Config) error {
+ 	a.configMu.Lock()
+@@ -834,18 +472,16 @@ func (a *Application) Reload(newCfg *config.Config) error {
+ 	if oldCfg.DNS.ListenAddress != newCfg.DNS.ListenAddress {
+ 		a.logger.Warn("DNS listen address change requires restart")
+ 	}
+-	if oldCfg.Cluster.Mode != newCfg.Cluster.Mode {
+-		a.logger.Warn("cluster mode change requires restart")
+-	}
+-
+-	if err := a.reloadDNSRegistry(newCfg); err != nil {
+-		metrics.RecordReload(false)
+-		return fmt.Errorf("failed to reload DNS registry: %w", err)
+-	}
+ 
+-	if err := a.reloadHealthManager(newCfg); err != nil {
+-		metrics.RecordReload(false)
+-		return fmt.Errorf("failed to reload health manager: %w", err)
++	// Mode-specific reload
++	switch a.config.GetEffectiveMode() {
++	case config.ModeAgent:
++		// Story 2 will add agent-specific reload
++	case config.ModeOverwatch:
++		if err := a.reloadOverwatchMode(newCfg); err != nil {
++			metrics.RecordReload(false)
++			return err
++		}
+ 	}
+ 
+ 	a.config = newCfg
+@@ -853,22 +489,17 @@ func (a *Application) Reload(newCfg *config.Config) error {
+ 	return nil
+ }
+ 
+-// vetoHealthProvider wraps a base provider and checks Overwatch for vetoes.
+-type vetoHealthProvider struct {
+-	base      dns.HealthStatusProvider
+-	overwatch *cluster.Overwatch
+-}
++// reloadOverwatchMode reloads overwatch-specific configuration.
++func (a *Application) reloadOverwatchMode(newCfg *config.Config) error {
++	if err := a.reloadDNSRegistry(newCfg); err != nil {
++		return fmt.Errorf("failed to reload DNS registry: %w", err)
++	}
+ 
+-func (v *vetoHealthProvider) IsHealthy(address string, port int) bool {
+-	// 1. Check Overwatch Veto (External Veto Logic)
+-	// address in Overwatch is "ip:port"
+-	fullAddr := fmt.Sprintf("%s:%d", address, port)
+-	if !v.overwatch.IsServeable(fullAddr) {
+-		return false // Vetoed!
++	if err := a.reloadHealthManager(newCfg); err != nil {
++		return fmt.Errorf("failed to reload health manager: %w", err)
+ 	}
+ 
+-	// 2. Delegate to base provider (Local Agent Health)
+-	return v.base.IsHealthy(address, port)
++	return nil
+ }
+ 
+ // reloadDNSRegistry updates the DNS registry with new domain configuration.
+@@ -963,4 +594,4 @@ func (r *regionMapper) GetServerRegion(address string, port int) string {
+ 		}
+ 	}
+ 	return ""
+-}
++}
+\ No newline at end of file
+diff --git a/cmd/opengslb/cluster_config_test.go b/cmd/opengslb/cluster_config_test.go
+deleted file mode 100644
+index 782817b..0000000
+--- a/cmd/opengslb/cluster_config_test.go
++++ /dev/null
+@@ -1,285 +0,0 @@
+-// Copyright (C) 2025 Logan Ross
+-//
+-// This file is part of OpenGSLB – https://opengslb.org
+-//
+-// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
+-
+-package main
+-
+-import (
+-	"strings"
+-	"testing"
+-
+-	"github.com/loganrossus/OpenGSLB/pkg/config"
+-)
+-
+-func TestValidateClusterFlags_Standalone(t *testing.T) {
+-	tests := []struct {
+-		name          string
+-		cfg           *config.Config
+-		bootstrapFlag bool
+-		joinAddresses string
+-		wantErr       bool
+-		errContains   string
+-	}{
+-		{
+-			name: "standalone with no flags",
+-			cfg: &config.Config{
+-				Cluster: config.ClusterConfig{Mode: config.ModeStandalone},
+-			},
+-			wantErr: false,
+-		},
+-		{
+-			name: "standalone with empty mode (defaults to standalone)",
+-			cfg: &config.Config{
+-				Cluster: config.ClusterConfig{Mode: ""},
+-			},
+-			wantErr: false,
+-		},
+-		{
+-			name: "standalone with bootstrap flag errors",
+-			cfg: &config.Config{
+-				Cluster: config.ClusterConfig{Mode: config.ModeStandalone},
+-			},
+-			bootstrapFlag: true,
+-			wantErr:       true,
+-			errContains:   "--bootstrap flag requires --mode=cluster",
+-		},
+-		{
+-			name: "standalone with join flag errors",
+-			cfg: &config.Config{
+-				Cluster: config.ClusterConfig{Mode: config.ModeStandalone},
+-			},
+-			joinAddresses: "10.0.1.10:7946",
+-			wantErr:       true,
+-			errContains:   "--join flag requires --mode=cluster",
+-		},
+-	}
+-
+-	for _, tt := range tests {
+-		t.Run(tt.name, func(t *testing.T) {
+-			// Save and restore global flags
+-			oldBootstrap := bootstrapFlag
+-			oldJoin := joinAddresses
+-			defer func() {
+-				bootstrapFlag = oldBootstrap
+-				joinAddresses = oldJoin
+-			}()
+-
+-			bootstrapFlag = tt.bootstrapFlag
+-			joinAddresses = tt.joinAddresses
+-
+-			err := validateClusterFlags(tt.cfg)
+-			if tt.wantErr {
+-				if err == nil {
+-					t.Errorf("expected error containing %q, got nil", tt.errContains)
+-				} else if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+-					t.Errorf("expected error containing %q, got %q", tt.errContains, err.Error())
+-				}
+-			} else {
+-				if err != nil {
+-					t.Errorf("unexpected error: %v", err)
+-				}
+-			}
+-		})
+-	}
+-}
+-
+-func TestValidateClusterFlags_ClusterMode(t *testing.T) {
+-	tests := []struct {
+-		name        string
+-		cfg         *config.Config
+-		wantErr     bool
+-		errContains string
+-	}{
+-		{
+-			name: "cluster with bootstrap",
+-			cfg: &config.Config{
+-				Cluster: config.ClusterConfig{
+-					Mode:        config.ModeCluster,
+-					BindAddress: "10.0.1.10:7946",
+-					Bootstrap:   true,
+-				},
+-			},
+-			wantErr: false,
+-		},
+-		{
+-			name: "cluster with join",
+-			cfg: &config.Config{
+-				Cluster: config.ClusterConfig{
+-					Mode:        config.ModeCluster,
+-					BindAddress: "10.0.1.10:7946",
+-					Join:        []string{"10.0.1.11:7946"},
+-				},
+-			},
+-			wantErr: false,
+-		},
+-		{
+-			name: "cluster with both bootstrap and join errors",
+-			cfg: &config.Config{
+-				Cluster: config.ClusterConfig{
+-					Mode:        config.ModeCluster,
+-					BindAddress: "10.0.1.10:7946",
+-					Bootstrap:   true,
+-					Join:        []string{"10.0.1.11:7946"},
+-				},
+-			},
+-			wantErr:     true,
+-			errContains: "mutually exclusive",
+-		},
+-		{
+-			name: "cluster with neither bootstrap nor join errors",
+-			cfg: &config.Config{
+-				Cluster: config.ClusterConfig{
+-					Mode:        config.ModeCluster,
+-					BindAddress: "10.0.1.10:7946",
+-				},
+-			},
+-			wantErr:     true,
+-			errContains: "requires either --bootstrap or --join",
+-		},
+-	}
+-
+-	for _, tt := range tests {
+-		t.Run(tt.name, func(t *testing.T) {
+-			// Reset global flags
+-			oldBootstrap := bootstrapFlag
+-			oldJoin := joinAddresses
+-			defer func() {
+-				bootstrapFlag = oldBootstrap
+-				joinAddresses = oldJoin
+-			}()
+-			bootstrapFlag = false
+-			joinAddresses = ""
+-
+-			err := validateClusterFlags(tt.cfg)
+-			if tt.wantErr {
+-				if err == nil {
+-					t.Errorf("expected error containing %q, got nil", tt.errContains)
+-				} else if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+-					t.Errorf("expected error containing %q, got %q", tt.errContains, err.Error())
+-				}
+-			} else {
+-				if err != nil {
+-					t.Errorf("unexpected error: %v", err)
+-				}
+-			}
+-		})
+-	}
+-}
+-
+-func TestApplyClusterOverrides(t *testing.T) {
+-	tests := []struct {
+-		name           string
+-		cfg            *config.Config
+-		modeFlag       string
+-		bootstrapFlagV bool
+-		joinFlag       string
+-		wantMode       config.RuntimeMode
+-		wantBootstrap  bool
+-		wantJoin       []string
+-	}{
+-		{
+-			name:     "defaults to standalone when nothing set",
+-			cfg:      &config.Config{},
+-			wantMode: config.ModeStandalone,
+-		},
+-		{
+-			name:     "mode flag overrides config",
+-			cfg:      &config.Config{Cluster: config.ClusterConfig{Mode: config.ModeStandalone}},
+-			modeFlag: "cluster",
+-			wantMode: config.ModeCluster,
+-		},
+-		{
+-			name:           "bootstrap flag overrides config",
+-			cfg:            &config.Config{Cluster: config.ClusterConfig{Bootstrap: false}},
+-			bootstrapFlagV: true,
+-			wantMode:       config.ModeStandalone,
+-			wantBootstrap:  true,
+-		},
+-		{
+-			name:     "join flag overrides config",
+-			cfg:      &config.Config{Cluster: config.ClusterConfig{Join: []string{"old:7946"}}},
+-			joinFlag: "new1:7946,new2:7946",
+-			wantMode: config.ModeStandalone,
+-			wantJoin: []string{"new1:7946", "new2:7946"},
+-		},
+-		{
+-			name: "config values preserved when no flags",
+-			cfg: &config.Config{
+-				Cluster: config.ClusterConfig{
+-					Mode:      config.ModeCluster,
+-					Bootstrap: true,
+-					Join:      []string{"existing:7946"},
+-				},
+-			},
+-			wantMode:      config.ModeCluster,
+-			wantBootstrap: true,
+-			wantJoin:      []string{"existing:7946"},
+-		},
+-	}
+-
+-	for _, tt := range tests {
+-		t.Run(tt.name, func(t *testing.T) {
+-			// Save and restore global flags
+-			oldMode := runtimeMode
+-			oldBootstrap := bootstrapFlag
+-			oldJoin := joinAddresses
+-			defer func() {
+-				runtimeMode = oldMode
+-				bootstrapFlag = oldBootstrap
+-				joinAddresses = oldJoin
+-			}()
+-
+-			runtimeMode = tt.modeFlag
+-			bootstrapFlag = tt.bootstrapFlagV
+-			joinAddresses = tt.joinFlag
+-
+-			applyClusterOverrides(tt.cfg, nil)
+-
+-			if tt.cfg.Cluster.Mode != tt.wantMode {
+-				t.Errorf("mode = %v, want %v", tt.cfg.Cluster.Mode, tt.wantMode)
+-			}
+-			if tt.cfg.Cluster.Bootstrap != tt.wantBootstrap {
+-				t.Errorf("bootstrap = %v, want %v", tt.cfg.Cluster.Bootstrap, tt.wantBootstrap)
+-			}
+-			if tt.wantJoin != nil {
+-				if len(tt.cfg.Cluster.Join) != len(tt.wantJoin) {
+-					t.Errorf("join = %v, want %v", tt.cfg.Cluster.Join, tt.wantJoin)
+-				} else {
+-					for i, v := range tt.wantJoin {
+-						if tt.cfg.Cluster.Join[i] != v {
+-							t.Errorf("join[%d] = %v, want %v", i, tt.cfg.Cluster.Join[i], v)
+-						}
+-					}
+-				}
+-			}
+-		})
+-	}
+-}
+-
+-func TestClusterConfig_ModeHelpers(t *testing.T) {
+-	tests := []struct {
+-		name           string
+-		mode           config.RuntimeMode
+-		wantCluster    bool
+-		wantStandalone bool
+-	}{
+-		{"cluster mode", config.ModeCluster, true, false},
+-		{"standalone mode", config.ModeStandalone, false, true},
+-		{"empty mode defaults to standalone", "", false, true},
+-	}
+-
+-	for _, tt := range tests {
+-		t.Run(tt.name, func(t *testing.T) {
+-			cfg := config.ClusterConfig{Mode: tt.mode}
+-
+-			if got := cfg.IsClusterMode(); got != tt.wantCluster {
+-				t.Errorf("IsClusterMode() = %v, want %v", got, tt.wantCluster)
+-			}
+-			if got := cfg.IsStandaloneMode(); got != tt.wantStandalone {
+-				t.Errorf("IsStandaloneMode() = %v, want %v", got, tt.wantStandalone)
+-			}
+-		})
+-	}
+-}
+diff --git a/cmd/opengslb/main.go b/cmd/opengslb/main.go
+index cf4a5c2..20df2da 100644
+--- a/cmd/opengslb/main.go
++++ b/cmd/opengslb/main.go
+@@ -1,6 +1,6 @@
+ // Copyright (C) 2025 Logan Ross
+ //
+-// This file is part of OpenGSLB \u2013 https://opengslb.org
++// This file is part of OpenGSLB – https://opengslb.org
+ //
+ // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
+ 
+@@ -14,7 +14,6 @@ import (
+ 	"log/slog"
+ 	"os"
+ 	"os/signal"
+-	"strings"
+ 	"syscall"
+ 	"time"
+ 
+@@ -30,18 +29,14 @@ const (
+ 
+ // Command-line flags stored at package level for reload handler access.
+ var (
+-	configPath    string
+-	runtimeMode   string
+-	bootstrapFlag bool
+-	joinAddresses string
++	configPath  string
++	runtimeMode string
+ )
+ 
+ func main() {
+ 	// Parse command-line flags
+ 	flag.StringVar(&configPath, "config", DefaultConfigPath, "path to configuration file")
+-	flag.StringVar(&runtimeMode, "mode", "", "runtime mode: standalone (default) or cluster")
+-	flag.BoolVar(&bootstrapFlag, "bootstrap", false, "bootstrap a new cluster (cluster mode only)")
+-	flag.StringVar(&joinAddresses, "join", "", "comma-separated list of cluster nodes to join (cluster mode only)")
++	flag.StringVar(&runtimeMode, "mode", "", "runtime mode: agent or overwatch")
+ 	showVersion := flag.Bool("version", false, "show version information")
+ 	flag.Parse()
+ 
+@@ -74,12 +69,12 @@ func main() {
+ 		os.Exit(1)
+ 	}
+ 
+-	// Apply command-line overrides to cluster config
+-	applyClusterOverrides(cfg, bootstrapLogger)
++	// Apply command-line overrides
++	applyModeOverride(cfg, bootstrapLogger)
+ 
+-	// Validate cluster configuration (command-line specific validation)
+-	if err := validateClusterFlags(cfg); err != nil {
+-		bootstrapLogger.Error("cluster configuration invalid", "error", err)
++	// Validate mode configuration
++	if err := validateModeFlags(cfg); err != nil {
++		bootstrapLogger.Error("mode configuration invalid", "error", err)
+ 		os.Exit(1)
+ 	}
+ 
+@@ -95,27 +90,29 @@ func main() {
+ 	slog.SetDefault(logger)
+ 
+ 	// Log effective mode
+-	effectiveMode := cfg.Cluster.Mode
++	effectiveMode := cfg.Mode
+ 	if effectiveMode == "" {
+-		effectiveMode = config.ModeStandalone
++		effectiveMode = config.ModeOverwatch // Default to overwatch for backward compat
+ 	}
+ 
+ 	logger.Info("configuration loaded",
+ 		"mode", effectiveMode,
+ 		"log_level", cfg.Logging.Level,
+ 		"log_format", cfg.Logging.Format,
+-		"dns_listen", cfg.DNS.ListenAddress,
+-		"regions", len(cfg.Regions),
+-		"domains", len(cfg.Domains),
+ 	)
+ 
+-	// Log cluster-specific information
+-	if cfg.Cluster.IsClusterMode() {
+-		logger.Info("cluster mode enabled",
+-			"node_name", cfg.Cluster.NodeName,
+-			"bind_address", cfg.Cluster.BindAddress,
+-			"bootstrap", cfg.Cluster.Bootstrap,
+-			"join", cfg.Cluster.Join,
++	// Mode-specific logging
++	switch effectiveMode {
++	case config.ModeAgent:
++		logger.Info("agent mode enabled",
++			"region", cfg.Agent.Identity.Region,
++			"backends", len(cfg.Agent.Backends),
++		)
++	case config.ModeOverwatch:
++		logger.Info("overwatch mode enabled",
++			"dns_listen", cfg.DNS.ListenAddress,
++			"regions", len(cfg.Regions),
++			"domains", len(cfg.Domains),
+ 		)
+ 	}
+ 
+@@ -181,68 +178,54 @@ shutdown:
+ 	logger.Info("OpenGSLB stopped")
+ }
+ 
+-// applyClusterOverrides applies command-line flags to cluster configuration.
+-func applyClusterOverrides(cfg *config.Config, logger *slog.Logger) {
++// applyModeOverride applies command-line flags to configuration.
++func applyModeOverride(cfg *config.Config, logger *slog.Logger) {
+ 	// --mode flag overrides config file
+ 	if runtimeMode != "" {
+-		cfg.Cluster.Mode = config.RuntimeMode(runtimeMode)
++		cfg.Mode = config.RuntimeMode(runtimeMode)
+ 		if logger != nil {
+ 			logger.Debug("mode overridden by flag", "mode", runtimeMode)
+ 		}
+ 	}
+ 
+-	// --bootstrap flag overrides config file
+-	if bootstrapFlag {
+-		cfg.Cluster.Bootstrap = true
+-		if logger != nil {
+-			logger.Debug("bootstrap enabled by flag")
+-		}
+-	}
+-
+-	// --join flag overrides config file
+-	if joinAddresses != "" {
+-		cfg.Cluster.Join = strings.Split(joinAddresses, ",")
+-		if logger != nil {
+-			logger.Debug("join addresses set by flag", "addresses", cfg.Cluster.Join)
+-		}
+-	}
+-
+-	// Default to standalone if mode not specified anywhere
+-	if cfg.Cluster.Mode == "" {
+-		cfg.Cluster.Mode = config.ModeStandalone
++	// Default to overwatch if mode not specified anywhere (backward compat)
++	if cfg.Mode == "" {
++		cfg.Mode = config.ModeOverwatch
+ 	}
+ 
+-	// Set default node name from hostname if not specified
+-	if cfg.Cluster.NodeName == "" {
++	// Set default node name from hostname if not specified (for overwatch)
++	if cfg.Mode == config.ModeOverwatch && cfg.Overwatch.Identity.NodeID == "" {
+ 		if hostname, err := os.Hostname(); err == nil {
+-			cfg.Cluster.NodeName = hostname
++			cfg.Overwatch.Identity.NodeID = hostname
+ 		}
+ 	}
+ }
+ 
+-// validateClusterFlags validates cluster-specific command-line flag combinations.
+-// This is separate from config.Validate() which handles YAML validation.
+-func validateClusterFlags(cfg *config.Config) error {
+-	if cfg.Cluster.IsStandaloneMode() {
+-		// Standalone mode: warn if cluster flags were provided
+-		if bootstrapFlag {
+-			return fmt.Errorf("--bootstrap flag requires --mode=cluster")
++// validateModeFlags validates mode-specific command-line flag combinations.
++func validateModeFlags(cfg *config.Config) error {
++	switch cfg.Mode {
++	case config.ModeAgent:
++		// Agent mode validation
++		if cfg.Agent.Identity.ServiceToken == "" {
++			return fmt.Errorf("agent mode requires identity.service_token")
+ 		}
+-		if joinAddresses != "" {
+-			return fmt.Errorf("--join flag requires --mode=cluster")
++		if len(cfg.Agent.Backends) == 0 {
++			return fmt.Errorf("agent mode requires at least one backend")
+ 		}
+-		return nil
+-	}
+-
+-	// Cluster mode validation
+-	if cfg.Cluster.Bootstrap && len(cfg.Cluster.Join) > 0 {
+-		return fmt.Errorf("--bootstrap and --join are mutually exclusive")
+-	}
+-
+-	if !cfg.Cluster.Bootstrap && len(cfg.Cluster.Join) == 0 {
+-		return fmt.Errorf("cluster mode requires either --bootstrap or --join")
++		if cfg.Agent.Gossip.EncryptionKey == "" {
++			return fmt.Errorf("agent mode requires gossip.encryption_key (generate with: openssl rand -base64 32)")
++		}
++		if len(cfg.Agent.Gossip.OverwatchNodes) == 0 {
++			return fmt.Errorf("agent mode requires at least one gossip.overwatch_nodes address")
++		}
++	case config.ModeOverwatch:
++		// Overwatch mode validation
++		if cfg.Overwatch.Gossip.EncryptionKey == "" {
++			return fmt.Errorf("overwatch mode requires gossip.encryption_key (generate with: openssl rand -base64 32)")
++		}
++	default:
++		return fmt.Errorf("invalid mode %q: must be 'agent' or 'overwatch'", cfg.Mode)
+ 	}
+-
+ 	return nil
+ }
+ 
+@@ -257,15 +240,16 @@ func handleReload(app *Application, logger *slog.Logger) error {
+ 		return fmt.Errorf("failed to load configuration: %w", err)
+ 	}
+ 
+-	// Reapply cluster overrides (flags take precedence)
+-	applyClusterOverrides(newCfg, logger)
++	// Reapply mode override (flags take precedence)
++	applyModeOverride(newCfg, logger)
+ 
+ 	// Mode change requires restart
+-	if app.config.Cluster.Mode != newCfg.Cluster.Mode {
++	if app.config.Mode != newCfg.Mode {
+ 		logger.Warn("runtime mode change requires restart",
+-			"old", app.config.Cluster.Mode,
+-			"new", newCfg.Cluster.Mode,
++			"old", app.config.Mode,
++			"new", newCfg.Mode,
+ 		)
++		return fmt.Errorf("mode change requires restart")
+ 	}
+ 
+ 	if err := app.Reload(newCfg); err != nil {
+@@ -297,4 +281,4 @@ func checkConfigPermissions(path string, logger *slog.Logger) error {
+ 	}
+ 
+ 	return nil
+-}
++}
+\ No newline at end of file
+diff --git a/config/example-agent.yaml b/config/example-agent.yaml
+new file mode 100644
+index 0000000..c88ce06
+--- /dev/null
++++ b/config/example-agent.yaml
+@@ -0,0 +1,111 @@
++# OpenGSLB Agent Configuration Example
++# ADR-015: Agent-Overwatch Architecture
++#
++# Agents run on application servers and:
++# - Monitor local backend health
++# - Gossip health state to Overwatch nodes
++# - Send predictive signals when thresholds are exceeded
++#
++# Usage: opengslb --mode=agent --config=/etc/opengslb/agent.yaml
++
++mode: agent
++
++agent:
++  # Identity configuration
++  identity:
++    # Pre-shared token for authentication with Overwatch nodes
++    # Must match the token configured in overwatch.agent_tokens
++    service_token: "your-secure-service-token-here"
++    
++    # Geographic region this agent belongs to
++    region: us-east
++    
++    # Optional: paths to agent certificate and key
++    # Generated automatically on first start if not specified
++    # cert_path: /var/lib/opengslb/agent.crt
++    # key_path: /var/lib/opengslb/agent.key
++
++  # Backends this agent monitors
++  # Each agent can monitor multiple services/backends
++  backends:
++    - service: webapp
++      address: 127.0.0.1
++      port: 8080
++      weight: 100
++      health_check:
++        type: http
++        path: /health
++        interval: 5s
++        timeout: 2s
++        failure_threshold: 3
++        success_threshold: 2
++
++    - service: api
++      address: 127.0.0.1
++      port: 9000
++      weight: 100
++      health_check:
++        type: http
++        path: /api/health
++        interval: 5s
++        timeout: 2s
++        failure_threshold: 3
++        success_threshold: 2
++
++    # Example TCP health check for database proxy
++    - service: dbproxy
++      address: 127.0.0.1
++      port: 5432
++      weight: 50
++      health_check:
++        type: tcp
++        interval: 10s
++        timeout: 3s
++        failure_threshold: 2
++        success_threshold: 1
++
++  # Predictive health monitoring
++  # Sends early warning signals before failures occur
++  predictive:
++    enabled: true
++    check_interval: 10s
++    cpu:
++      threshold: 85        # Start bleeding at 85% CPU
++      bleed_duration: 30s  # Gradually reduce traffic over 30s
++    memory:
++      threshold: 90        # Start bleeding at 90% memory
++      bleed_duration: 30s
++    error_rate:
++      threshold: 10        # Errors per minute
++      window: 60s          # Measurement window
++      bleed_duration: 60s
++
++  # Gossip configuration for communicating with Overwatch nodes
++  gossip:
++    # REQUIRED: 32-byte base64-encoded encryption key
++    # Generate with: openssl rand -base64 32
++    # Must match the key used by Overwatch nodes
++    encryption_key: "REPLACE_WITH_YOUR_32_BYTE_BASE64_KEY"
++    
++    # Overwatch nodes to gossip to
++    # Agent sends health updates to ALL configured nodes
++    overwatch_nodes:
++      - overwatch-1.internal:7946
++      - overwatch-2.internal:7946
++      - overwatch-3.internal:7946
++
++  # Heartbeat configuration
++  heartbeat:
++    interval: 10s        # Send heartbeat every 10s
++    missed_threshold: 3  # Deregister after 3 missed heartbeats
++
++# Logging configuration
++logging:
++  level: info    # debug, info, warn, error
++  format: json   # text or json
++
++# Metrics configuration
++# Prometheus metrics endpoint
++metrics:
++  enabled: true
++  address: ":9100"  # Different port from Overwatch to avoid conflicts
+\ No newline at end of file
+diff --git a/config/example-cluster.yaml b/config/example-cluster.yaml
+deleted file mode 100644
+index cb0a189..0000000
+--- a/config/example-cluster.yaml
++++ /dev/null
+@@ -1,205 +0,0 @@
+-# OpenGSLB Cluster Mode Configuration Example
+-# 
+-# This example shows a 3-node cluster deployment with gossip protocol enabled.
+-# See docs/operations/deployment.md for full deployment guide.
+-#
+-# Node 1 (bootstrap): opengslb --mode=cluster --bootstrap --config /etc/opengslb/config.yaml
+-# Node 2 (join):      opengslb --mode=cluster --join=10.0.1.10:8080 --config /etc/opengslb/config.yaml
+-# Node 3 (join):      opengslb --mode=cluster --join=10.0.1.10:8080 --config /etc/opengslb/config.yaml
+-
+-# DNS server configuration
+-dns:
+-  listen_address: ":53"
+-  default_ttl: 60
+-  return_last_healthy: false
+-
+-# Cluster configuration (ADR-012, ADR-014)
+-cluster:
+-  # Runtime mode: "standalone" (default) or "cluster"
+-  # Can be overridden with --mode flag
+-  mode: cluster
+-
+-  # Unique node identifier (defaults to hostname if not set)
+-  node_name: "gslb-node-1"
+-
+-  # Address for Raft communication (Raft uses this port directly)
+-  # Must be reachable by other cluster nodes
+-  bind_address: "10.0.1.10:7946"
+-
+-  # Address advertised to other nodes (defaults to bind_address)
+-  # Use if bind_address is a private IP behind NAT
+-  advertise_address: "10.0.1.10:7946"
+-
+-  # Bootstrap a new cluster (set on first node only)
+-  # Can be overridden with --bootstrap flag
+-  # bootstrap: true
+-
+-  # Addresses of existing cluster nodes to join (API addresses)
+-  # Can be overridden with --join flag
+-  # join:
+-  #   - "10.0.1.11:8080"
+-  #   - "10.0.1.12:8080"
+-
+-  # Raft consensus settings
+-  raft:
+-    # Directory for Raft state and logs
+-    data_dir: "/var/lib/opengslb/raft"
+-    
+-    # Time between leader heartbeats (lower = faster failover detection)
+-    heartbeat_timeout: "1s"
+-    
+-    # Time before new election starts if no heartbeat received
+-    election_timeout: "1s"
+-    
+-    # Minimum time between snapshots
+-    snapshot_interval: "120s"
+-    
+-    # Number of log entries before triggering snapshot
+-    snapshot_threshold: 8192
+-
+-  # Gossip protocol settings (memberlist)
+-  # Used for fast health event propagation across cluster nodes
+-  gossip:
+-    # Enable gossip protocol (default: true in cluster mode)
+-    enabled: true
+-
+-    # Port for gossip communication
+-    # Uses same IP as bind_address
+-    # Default: 7946 (same as Raft bind port by default)
+-    bind_port: 7947
+-
+-    # Port advertised to other nodes (defaults to bind_port)
+-    advertise_port: 7947
+-
+-    # Optional: 32-byte base64-encoded encryption key for gossip traffic
+-    # Generate with: head -c 32 /dev/urandom | base64
+-    # All nodes in the cluster must use the same key
+-    encryption_key: ""
+-
+-    # Interval between failure detection probes
+-    # Lower values detect failures faster but increase network traffic
+-    # Default: 1s
+-    probe_interval: "1s"
+-
+-    # Timeout for a single probe
+-    # Default: 500ms
+-    probe_timeout: "500ms"
+-
+-    # Interval between gossip messages
+-    # Lower values propagate updates faster but increase network traffic
+-    # Default: 200ms (health events propagate within ~500ms)
+-    gossip_interval: "200ms"
+-
+-    # Interval for full state synchronization between nodes
+-    # Default: 30s
+-    push_pull_interval: "30s"
+-
+-  # Predictive health monitoring (Story 5)
+-  # Monitors local system metrics and signals when thresholds are exceeded
+-  # to enable proactive traffic "bleeding" before failure
+-  predictive_health:
+-    # Enable predictive health monitoring
+-    enabled: true
+-
+-    # CPU utilization monitoring
+-    cpu:
+-      threshold: 90        # Percentage (0-100)
+-      bleed_duration: 30s  # Duration to gradually reduce traffic
+-
+-    # Memory utilization monitoring  
+-    memory:
+-      threshold: 85        # Percentage (0-100)
+-      bleed_duration: 30s
+-
+-    # Health check error rate monitoring
+-    error_rate:
+-      threshold: 10        # Errors per minute
+-      window: 60s          # Measurement window
+-      bleed_duration: 60s
+-
+-  # Overwatch configuration (Story 6)
+-  # Leader validation of agent health claims
+-  overwatch:
+-    # Frequency of leader-initiated external checks
+-    # Default: 10s
+-    external_check_interval: "10s"
+-
+-    # Veto mode: strict, balanced, permissive
+-    # strict: external check always wins
+-    # balanced: veto only clear disagreements
+-    # permissive: trust agents unless external clearly fails
+-    veto_mode: "balanced"
+-
+-  # Virtual IP advertised by all cluster nodes
+-  # Only the Raft leader responds to DNS queries on this VIP
+-  # Configure your network to route this VIP to all cluster nodes
+-  anycast_vip: "10.99.99.1"
+-
+-# Backend regions and servers
+-regions:
+-  - name: us-east-1
+-    servers:
+-      - address: "10.0.1.100"
+-        port: 80
+-        weight: 100
+-      - address: "10.0.1.101"
+-        port: 80
+-        weight: 100
+-    health_check:
+-      type: http
+-      interval: 10s
+-      timeout: 5s
+-      path: /health
+-      failure_threshold: 3
+-      success_threshold: 2
+-
+-  - name: us-west-2
+-    servers:
+-      - address: "10.0.2.100"
+-        port: 80
+-        weight: 100
+-      - address: "10.0.2.101"
+-        port: 80
+-        weight: 100
+-    health_check:
+-      type: http
+-      interval: 10s
+-      timeout: 5s
+-      path: /health
+-      failure_threshold: 3
+-      success_threshold: 2
+-
+-# Domain routing configuration
+-domains:
+-  - name: app.example.com
+-    routing_algorithm: failover
+-    regions:
+-      - us-east-1
+-      - us-west-2
+-    ttl: 30
+-
+-  - name: api.example.com
+-    routing_algorithm: weighted
+-    regions:
+-      - us-east-1
+-      - us-west-2
+-    ttl: 30
+-
+-# Logging configuration
+-logging:
+-  level: info
+-  format: json
+-
+-# Prometheus metrics
+-metrics:
+-  enabled: true
+-  address: ":9090"
+-
+-# Health status API
+-api:
+-  enabled: true
+-  address: ":8080"
+-  allowed_networks:
+-    - "127.0.0.1/32"
+-    - "10.0.0.0/8"
+-  trust_proxy_headers: false
+\ No newline at end of file
+diff --git a/config/example-overwatch.yaml b/config/example-overwatch.yaml
+new file mode 100644
+index 0000000..2603271
+--- /dev/null
++++ b/config/example-overwatch.yaml
+@@ -0,0 +1,166 @@
++# OpenGSLB Overwatch Configuration Example
++# ADR-015: Agent-Overwatch Architecture
++#
++# Overwatch nodes serve authoritative DNS and:
++# - Receive health updates from agents via gossip
++# - Perform external validation of agent health claims
++# - Operate independently (no cluster coordination)
++#
++# Usage: opengslb --mode=overwatch --config=/etc/opengslb/overwatch.yaml
++#
++# Deploy multiple Overwatch nodes and configure clients with all addresses
++# in resolv.conf - DNS clients automatically handle failover.
++
++mode: overwatch
++
++overwatch:
++  # Identity configuration
++  identity:
++    node_id: overwatch-us-east-1  # Unique identifier for this node
++    region: us-east               # Geographic region
++
++  # Agent authentication tokens
++  # Maps service names to their pre-shared tokens
++  agent_tokens:
++    webapp: "your-secure-service-token-here"
++    api: "different-token-for-api-service"
++    dbproxy: "another-secure-token"
++
++  # Gossip configuration for receiving agent updates
++  gossip:
++    bind_address: "0.0.0.0:7946"
++    
++    # REQUIRED: 32-byte base64-encoded encryption key
++    # Generate with: openssl rand -base64 32
++    # Must match the key used by agents
++    encryption_key: "REPLACE_WITH_YOUR_32_BYTE_BASE64_KEY"
++    
++    # Timing configuration
++    probe_interval: 1s
++    probe_timeout: 500ms
++    gossip_interval: 200ms
++
++  # External validation settings
++  # Overwatch performs its own health checks to validate agent claims
++  validation:
++    enabled: true
++    check_interval: 30s  # How often to validate
++    check_timeout: 5s    # Timeout for validation checks
++
++  # Stale backend detection
++  stale:
++    threshold: 30s   # Mark stale after 30s without heartbeat
++    remove_after: 5m # Remove completely after 5 minutes
++
++  # DNSSEC configuration (enabled by default)
++  dnssec:
++    enabled: true
++    algorithm: ECDSAP256SHA256
++    key_sync:
++      # Other Overwatch nodes for key synchronization
++      peers:
++        - "https://overwatch-us-east-2.internal:9090"
++        - "https://overwatch-eu-west-1.internal:9090"
++      poll_interval: 1h
++      timeout: 30s
++
++# DNS server configuration
++dns:
++  listen_address: "0.0.0.0:53"
++  default_ttl: 30
++  return_last_healthy: false  # Return SERVFAIL when all backends unhealthy
++  zones:
++    - gslb.example.com
++    - internal.example.com
++
++# Regions define the server pools
++# In Overwatch mode, these are used for:
++# 1. Initial static configuration (before agents register)
++# 2. Mapping agent registrations to regions
++regions:
++  - name: us-east
++    servers:
++      - address: 10.0.1.10
++        port: 8080
++        weight: 100
++      - address: 10.0.1.11
++        port: 8080
++        weight: 100
++    health_check:
++      type: http
++      interval: 30s
++      timeout: 5s
++      path: /health
++      failure_threshold: 3
++      success_threshold: 2
++
++  - name: us-west
++    servers:
++      - address: 10.0.2.10
++        port: 8080
++        weight: 100
++    health_check:
++      type: http
++      interval: 30s
++      timeout: 5s
++      path: /health
++      failure_threshold: 3
++      success_threshold: 2
++
++  - name: eu-west
++    servers:
++      - address: 10.0.3.10
++        port: 8080
++        weight: 100
++    health_check:
++      type: http
++      interval: 30s
++      timeout: 5s
++      path: /health
++      failure_threshold: 3
++      success_threshold: 2
++
++# Domains define GSLB-managed DNS zones
++domains:
++  - name: webapp.gslb.example.com
++    routing_algorithm: round-robin
++    regions:
++      - us-east
++      - us-west
++      - eu-west
++    ttl: 30
++
++  - name: api.gslb.example.com
++    routing_algorithm: weighted
++    regions:
++      - us-east
++      - us-west
++    ttl: 30
++
++  - name: critical.gslb.example.com
++    routing_algorithm: failover
++    regions:
++      - us-east    # Primary
++      - us-west    # Secondary
++      - eu-west    # Tertiary
++    ttl: 15
++
++# Logging configuration
++logging:
++  level: info
++  format: json
++
++# Metrics configuration
++metrics:
++  enabled: true
++  address: ":9090"
++
++# API configuration
++api:
++  enabled: true
++  address: ":9091"
++  allowed_networks:
++    - 10.0.0.0/8
++    - 192.168.0.0/16
++    - 127.0.0.1/32
++  trust_proxy_headers: false
+\ No newline at end of file
+diff --git a/go.mod b/go.mod
+index 0784bb4..286d892 100644
+--- a/go.mod
++++ b/go.mod
+@@ -7,24 +7,24 @@ toolchain go1.24.10
+ require (
+ 	github.com/hashicorp/go-hclog v1.6.3
+ 	github.com/hashicorp/memberlist v0.5.1
+-	github.com/hashicorp/raft v1.7.1
+-	github.com/hashicorp/raft-boltdb/v2 v2.3.1
+ 	github.com/miekg/dns v1.1.68
+ 	github.com/prometheus/client_golang v1.23.2
+ 	go.etcd.io/bbolt v1.3.5
+ 	gopkg.in/yaml.v3 v3.0.1
+ )
+ 
++// ADR-015: Removed Raft dependencies
++// - github.com/hashicorp/raft
++// - github.com/hashicorp/raft-boltdb/v2
++
+ require (
+ 	github.com/armon/go-metrics v0.4.1 // indirect
+ 	github.com/beorn7/perks v1.0.1 // indirect
+-	github.com/boltdb/bolt v1.3.1 // indirect
+ 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+ 	github.com/fatih/color v1.13.0 // indirect
+ 	github.com/google/btree v1.0.0 // indirect
+ 	github.com/hashicorp/errwrap v1.0.0 // indirect
+ 	github.com/hashicorp/go-immutable-radix v1.0.0 // indirect
+-	github.com/hashicorp/go-metrics v0.5.4 // indirect
+ 	github.com/hashicorp/go-msgpack/v2 v2.1.2 // indirect
+ 	github.com/hashicorp/go-multierror v1.1.0 // indirect
+ 	github.com/hashicorp/go-sockaddr v1.0.0 // indirect
+@@ -44,4 +44,4 @@ require (
+ 	golang.org/x/sys v0.35.0 // indirect
+ 	golang.org/x/tools v0.33.0 // indirect
+ 	google.golang.org/protobuf v1.36.8 // indirect
+-)
++)
+\ No newline at end of file
+diff --git a/pkg/api/cluster_handlers.go b/pkg/api/cluster_handlers.go
+deleted file mode 100644
+index f386a4e..0000000
+--- a/pkg/api/cluster_handlers.go
++++ /dev/null
+@@ -1,279 +0,0 @@
+-// Copyright (C) 2025 Logan Ross
+-//
+-// This file is part of OpenGSLB \u2013 https://opengslb.org
+-//
+-// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
+-
+-package api
+-
+-import (
+-	"encoding/json"
+-	"log/slog"
+-	"net/http"
+-
+-	"github.com/loganrossus/OpenGSLB/pkg/cluster"
+-)
+-
+-// ClusterManager defines the interface for cluster operations needed by handlers.
+-// This allows for easy testing with mocks.
+-type ClusterManager interface {
+-	IsLeader() bool
+-	NodeID() string
+-	State() cluster.State
+-	Leader() (cluster.LeaderInfo, error)
+-	Nodes() []cluster.NodeInfo
+-	AddVoter(nodeID, address string) error
+-	RemoveServer(nodeID string) error
+-}
+-
+-// ClusterHandlers provides HTTP handlers for cluster management APIs.
+-type ClusterHandlers struct {
+-	manager ClusterManager
+-	mode    string // "standalone" or "cluster"
+-	logger  *slog.Logger
+-}
+-
+-// NewClusterHandlers creates a new ClusterHandlers instance.
+-// manager can be nil if running in standalone mode.
+-func NewClusterHandlers(manager ClusterManager, mode string, logger *slog.Logger) *ClusterHandlers {
+-	if logger == nil {
+-		logger = slog.Default()
+-	}
+-	return &ClusterHandlers{
+-		manager: manager,
+-		mode:    mode,
+-		logger:  logger,
+-	}
+-}
+-
+-// HandleJoin processes requests from nodes wanting to join the cluster.
+-// POST /api/v1/cluster/join
+-func (h *ClusterHandlers) HandleJoin(w http.ResponseWriter, r *http.Request) {
+-	if r.Method != http.MethodPost {
+-		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+-		return
+-	}
+-
+-	if h.mode != "cluster" {
+-		h.writeJSON(w, http.StatusBadRequest, cluster.JoinResponse{
+-			Success: false,
+-			Message: "node is running in standalone mode",
+-		})
+-		return
+-	}
+-
+-	if h.manager == nil {
+-		h.writeJSON(w, http.StatusServiceUnavailable, cluster.JoinResponse{
+-			Success: false,
+-			Message: "cluster manager not initialized",
+-		})
+-		return
+-	}
+-
+-	var req cluster.JoinRequest
+-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+-		h.writeJSON(w, http.StatusBadRequest, cluster.JoinResponse{
+-			Success: false,
+-			Message: "invalid request body: " + err.Error(),
+-		})
+-		return
+-	}
+-
+-	if req.NodeID == "" {
+-		h.writeJSON(w, http.StatusBadRequest, cluster.JoinResponse{
+-			Success: false,
+-			Message: "node_id is required",
+-		})
+-		return
+-	}
+-	if req.RaftAddress == "" {
+-		h.writeJSON(w, http.StatusBadRequest, cluster.JoinResponse{
+-			Success: false,
+-			Message: "raft_address is required",
+-		})
+-		return
+-	}
+-
+-	if !h.manager.IsLeader() {
+-		leader, err := h.manager.Leader()
+-		if err != nil {
+-			h.writeJSON(w, http.StatusServiceUnavailable, cluster.JoinResponse{
+-				Success: false,
+-				Message: "no leader available: " + err.Error(),
+-			})
+-			return
+-		}
+-		h.writeJSON(w, http.StatusTemporaryRedirect, cluster.JoinResponse{
+-			Success:       false,
+-			Message:       "not the leader, redirect to leader",
+-			LeaderID:      leader.NodeID,
+-			LeaderAddress: leader.Address,
+-		})
+-		return
+-	}
+-
+-	h.logger.Info("processing cluster join request",
+-		"joining_node_id", req.NodeID,
+-		"joining_raft_address", req.RaftAddress,
+-	)
+-
+-	if err := h.manager.AddVoter(req.NodeID, req.RaftAddress); err != nil {
+-		h.logger.Error("failed to add voter",
+-			"node_id", req.NodeID,
+-			"error", err,
+-		)
+-		h.writeJSON(w, http.StatusInternalServerError, cluster.JoinResponse{
+-			Success: false,
+-			Message: "failed to add node: " + err.Error(),
+-		})
+-		return
+-	}
+-
+-	h.logger.Info("node joined cluster successfully",
+-		"node_id", req.NodeID,
+-		"raft_address", req.RaftAddress,
+-	)
+-
+-	h.writeJSON(w, http.StatusOK, cluster.JoinResponse{
+-		Success:  true,
+-		Message:  "node added to cluster successfully",
+-		LeaderID: h.manager.NodeID(),
+-	})
+-}
+-
+-// ClusterStatusResponse provides information about the cluster state.
+-type ClusterStatusResponse struct {
+-	Mode          string             `json:"mode"`
+-	NodeID        string             `json:"node_id"`
+-	State         string             `json:"state"`
+-	IsLeader      bool               `json:"is_leader"`
+-	LeaderID      string             `json:"leader_id,omitempty"`
+-	LeaderAddress string             `json:"leader_address,omitempty"`
+-	Nodes         []cluster.NodeInfo `json:"nodes,omitempty"`
+-}
+-
+-// HandleStatus returns the current cluster status.
+-// GET /api/v1/cluster/status
+-func (h *ClusterHandlers) HandleStatus(w http.ResponseWriter, r *http.Request) {
+-	if r.Method != http.MethodGet {
+-		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+-		return
+-	}
+-
+-	if h.mode != "cluster" || h.manager == nil {
+-		h.writeJSON(w, http.StatusOK, ClusterStatusResponse{
+-			Mode:     "standalone",
+-			IsLeader: true,
+-			State:    "standalone",
+-		})
+-		return
+-	}
+-
+-	leader, _ := h.manager.Leader()
+-
+-	status := ClusterStatusResponse{
+-		Mode:          "cluster",
+-		NodeID:        h.manager.NodeID(),
+-		State:         h.manager.State().String(),
+-		IsLeader:      h.manager.IsLeader(),
+-		LeaderID:      leader.NodeID,
+-		LeaderAddress: leader.Address,
+-		Nodes:         h.manager.Nodes(),
+-	}
+-
+-	h.writeJSON(w, http.StatusOK, status)
+-}
+-
+-// ClusterRemoveRequest is sent to remove a node from the cluster.
+-type ClusterRemoveRequest struct {
+-	NodeID string `json:"node_id"`
+-}
+-
+-// ClusterRemoveResponse is returned after processing a remove request.
+-type ClusterRemoveResponse struct {
+-	Success bool   `json:"success"`
+-	Message string `json:"message"`
+-}
+-
+-// HandleRemove processes requests to remove a node from the cluster.
+-// POST /api/v1/cluster/remove
+-func (h *ClusterHandlers) HandleRemove(w http.ResponseWriter, r *http.Request) {
+-	if r.Method != http.MethodPost {
+-		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+-		return
+-	}
+-
+-	if h.mode != "cluster" {
+-		h.writeJSON(w, http.StatusBadRequest, ClusterRemoveResponse{
+-			Success: false,
+-			Message: "node is running in standalone mode",
+-		})
+-		return
+-	}
+-
+-	if h.manager == nil {
+-		h.writeJSON(w, http.StatusServiceUnavailable, ClusterRemoveResponse{
+-			Success: false,
+-			Message: "cluster manager not initialized",
+-		})
+-		return
+-	}
+-
+-	var req ClusterRemoveRequest
+-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+-		h.writeJSON(w, http.StatusBadRequest, ClusterRemoveResponse{
+-			Success: false,
+-			Message: "invalid request body: " + err.Error(),
+-		})
+-		return
+-	}
+-
+-	if req.NodeID == "" {
+-		h.writeJSON(w, http.StatusBadRequest, ClusterRemoveResponse{
+-			Success: false,
+-			Message: "node_id is required",
+-		})
+-		return
+-	}
+-
+-	if !h.manager.IsLeader() {
+-		leader, _ := h.manager.Leader()
+-		h.writeJSON(w, http.StatusTemporaryRedirect, ClusterRemoveResponse{
+-			Success: false,
+-			Message: "not the leader, redirect to " + leader.Address,
+-		})
+-		return
+-	}
+-
+-	h.logger.Info("processing cluster remove request", "node_id", req.NodeID)
+-
+-	if err := h.manager.RemoveServer(req.NodeID); err != nil {
+-		h.logger.Error("failed to remove node", "node_id", req.NodeID, "error", err)
+-		h.writeJSON(w, http.StatusInternalServerError, ClusterRemoveResponse{
+-			Success: false,
+-			Message: "failed to remove node: " + err.Error(),
+-		})
+-		return
+-	}
+-
+-	h.logger.Info("node removed from cluster", "node_id", req.NodeID)
+-
+-	h.writeJSON(w, http.StatusOK, ClusterRemoveResponse{
+-		Success: true,
+-		Message: "node removed successfully",
+-	})
+-}
+-
+-// writeJSON writes a JSON response with the given status code.
+-func (h *ClusterHandlers) writeJSON(w http.ResponseWriter, status int, data interface{}) {
+-	w.Header().Set("Content-Type", "application/json")
+-	w.WriteHeader(status)
+-	if err := json.NewEncoder(w).Encode(data); err != nil {
+-		h.logger.Error("failed to encode response", "error", err)
+-	}
+-}
+-
+-// writeError writes a simple JSON error response.
+-func (h *ClusterHandlers) writeError(w http.ResponseWriter, status int, message string) {
+-	h.writeJSON(w, status, map[string]string{"error": message})
+-}
+diff --git a/pkg/cluster/cluster.go b/pkg/cluster/cluster.go
+deleted file mode 100644
+index 22b16e5..0000000
+--- a/pkg/cluster/cluster.go
++++ /dev/null
+@@ -1,157 +0,0 @@
+-// Copyright (C) 2025 Logan Ross
+-//
+-// This file is part of OpenGSLB – https://opengslb.org
+-//
+-// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
+-
+-// Package cluster provides distributed coordination using Raft consensus.
+-package cluster
+-
+-import (
+-	"context"
+-	"errors"
+-	"time"
+-
+-	"github.com/hashicorp/raft"
+-)
+-
+-// Common errors.
+-var (
+-	ErrNotLeader     = errors.New("not the cluster leader")
+-	ErrBootstrapJoin = errors.New("cannot specify both bootstrap and join")
+-	ErrNotFound      = errors.New("key not found")
+-	ErrTimeout       = errors.New("operation timed out")
+-)
+-
+-// Manager defines the interface for cluster coordination operations.
+-type Manager interface {
+-	// Start initializes and starts the cluster manager.
+-	Start(ctx context.Context) error
+-
+-	// Shutdown gracefully stops the cluster manager.
+-	Shutdown(ctx context.Context) error
+-
+-	// IsLeader returns true if this node is the cluster leader.
+-	IsLeader() bool
+-
+-	// NodeID returns this node's unique identifier.
+-	NodeID() string
+-
+-	// State returns the current Raft state as a string.
+-	State() string
+-
+-	// Leader returns the address of the current leader.
+-	Leader() raft.ServerAddress
+-
+-	// LeaderWithID returns both the address and ID of the current leader.
+-	LeaderWithID() (raft.ServerAddress, raft.ServerID)
+-
+-	// AddVoter adds a new voting member to the cluster.
+-	// Only the leader can add voters.
+-	AddVoter(nodeID string, address string) error
+-
+-	// RemoveServer removes a server from the cluster.
+-	// Only the leader can remove servers.
+-	RemoveServer(nodeID string) error
+-
+-	// GetConfiguration returns the current Raft configuration.
+-	GetConfiguration() []raft.Server
+-
+-	// LeaderCh returns a channel that signals leader state changes.
+-	// Sends true when becoming leader, false when losing leadership.
+-	LeaderCh() <-chan bool
+-
+-	// Barrier ensures all preceding operations are applied.
+-	// Useful for read-after-write consistency.
+-	Barrier(timeout time.Duration) error
+-
+-	// WaitForLeader blocks until a leader is elected or timeout.
+-	WaitForLeader(timeout time.Duration) error
+-}
+-
+-// Config holds the configuration for a cluster Manager.
+-type Config struct {
+-	// NodeID is a unique identifier for this node.
+-	// If empty, defaults to NodeName.
+-	NodeID string
+-
+-	// NodeName is a human-readable name for this node.
+-	NodeName string
+-
+-	// BindAddress is the address for Raft communication (ip:port).
+-	BindAddress string
+-
+-	// AdvertiseAddress is the address advertised to other nodes.
+-	// Defaults to BindAddress if empty.
+-	AdvertiseAddress string
+-
+-	// APIAddress is the address of this node's API server.
+-	// Used by join client to know where to send join requests.
+-	// If empty, defaults to the metrics/API listen address.
+-	APIAddress string
+-
+-	// DataDir is the directory for Raft state and logs.
+-	DataDir string
+-
+-	// Bootstrap indicates this node should initialize a new cluster.
+-	Bootstrap bool
+-
+-	// Join specifies API addresses of existing cluster nodes to join.
+-	// Format: "host:port" or "http://host:port"
+-	Join []string
+-
+-	// HeartbeatTimeout is the time between heartbeats.
+-	HeartbeatTimeout time.Duration
+-
+-	// ElectionTimeout is the time before a new election starts.
+-	ElectionTimeout time.Duration
+-
+-	// SnapshotInterval is the minimum time between snapshots.
+-	SnapshotInterval time.Duration
+-
+-	// SnapshotThreshold is the number of log entries before snapshot.
+-	SnapshotThreshold uint64
+-}
+-
+-// DefaultConfig returns a Config with sensible defaults.
+-func DefaultConfig() *Config {
+-	return &Config{
+-		HeartbeatTimeout:  1000 * time.Millisecond,
+-		ElectionTimeout:   1000 * time.Millisecond,
+-		SnapshotInterval:  120 * time.Second,
+-		SnapshotThreshold: 8192,
+-	}
+-}
+-
+-// GetNodeID returns NodeID if set, otherwise falls back to NodeName.
+-func (c *Config) GetNodeID() string {
+-	if c.NodeID != "" {
+-		return c.NodeID
+-	}
+-	return c.NodeName
+-}
+-
+-// GetAdvertiseAddress returns AdvertiseAddress if set, otherwise BindAddress.
+-func (c *Config) GetAdvertiseAddress() string {
+-	if c.AdvertiseAddress != "" {
+-		return c.AdvertiseAddress
+-	}
+-	return c.BindAddress
+-}
+-
+-// Validate checks the configuration for errors.
+-func (c *Config) Validate() error {
+-	if c.NodeID == "" && c.NodeName == "" {
+-		return errors.New("either NodeID or NodeName must be set")
+-	}
+-	if c.BindAddress == "" {
+-		return errors.New("BindAddress is required")
+-	}
+-	if c.DataDir == "" {
+-		return errors.New("DataDir is required")
+-	}
+-	if c.Bootstrap && len(c.Join) > 0 {
+-		return ErrBootstrapJoin
+-	}
+-	return nil
+-}
+diff --git a/pkg/config/types.go b/pkg/config/types.go
+index 939b321..32dc04c 100644
+--- a/pkg/config/types.go
++++ b/pkg/config/types.go
+@@ -8,37 +8,254 @@
+ package config
+ 
+ import (
+-	"net"
+-	"strconv"
+ 	"time"
+ )
+ 
+-// RuntimeMode defines the operational mode of OpenGSLB.
++// RuntimeMode defines the operational mode of OpenGSLB (ADR-015).
+ type RuntimeMode string
+ 
+ const (
+-	// ModeStandalone runs OpenGSLB as a single node (default).
+-	ModeStandalone RuntimeMode = "standalone"
+-	// ModeCluster runs OpenGSLB as part of a distributed cluster.
+-	ModeCluster RuntimeMode = "cluster"
++	// ModeAgent runs OpenGSLB as a health-reporting agent on application servers.
++	ModeAgent RuntimeMode = "agent"
++	// ModeOverwatch runs OpenGSLB as a DNS-serving, health-validating authority.
++	ModeOverwatch RuntimeMode = "overwatch"
+ )
+ 
+ // Config is the root configuration structure for OpenGSLB.
+ type Config struct {
+-	DNS     DNSConfig     `yaml:"dns"`
+-	Regions []Region      `yaml:"regions"`
+-	Domains []Domain      `yaml:"domains"`
++	// Mode specifies the runtime mode: "agent" or "overwatch" (ADR-015)
++	Mode RuntimeMode `yaml:"mode"`
++
++	// Agent configuration (only used when mode=agent)
++	Agent AgentConfig `yaml:"agent"`
++
++	// Overwatch configuration (only used when mode=overwatch)
++	Overwatch OverwatchConfig `yaml:"overwatch"`
++
++	// DNS server settings (overwatch mode only)
++	DNS DNSConfig `yaml:"dns"`
++
++	// Regions define backend server pools (overwatch mode, or agent can reference)
++	Regions []Region `yaml:"regions"`
++
++	// Domains define GSLB-managed zones (overwatch mode only)
++	Domains []Domain `yaml:"domains"`
++
++	// Logging settings (both modes)
+ 	Logging LoggingConfig `yaml:"logging"`
++
++	// Metrics settings (both modes)
+ 	Metrics MetricsConfig `yaml:"metrics"`
+-	API     APIConfig     `yaml:"api"`
+-	Cluster ClusterConfig `yaml:"cluster"`
++
++	// API settings (overwatch mode only)
++	API APIConfig `yaml:"api"`
++}
++
++// ============================================================================
++// Agent Mode Configuration (ADR-015)
++// ============================================================================
++
++// AgentConfig defines configuration for agent mode.
++type AgentConfig struct {
++	// Identity contains agent identification settings
++	Identity AgentIdentityConfig `yaml:"identity"`
++
++	// Backends are the services this agent monitors
++	Backends []AgentBackend `yaml:"backends"`
++
++	// Predictive contains predictive health monitoring settings
++	Predictive PredictiveHealthConfig `yaml:"predictive"`
++
++	// Gossip contains settings for communicating with Overwatch nodes
++	Gossip AgentGossipConfig `yaml:"gossip"`
++
++	// Heartbeat contains keepalive settings
++	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
++}
++
++// AgentIdentityConfig defines agent identity settings.
++type AgentIdentityConfig struct {
++	// ServiceToken is the pre-shared token for initial authentication
++	ServiceToken string `yaml:"service_token"`
++
++	// Region is the geographic region this agent belongs to
++	Region string `yaml:"region"`
++
++	// CertPath is the path to store/load the agent's certificate
++	// If empty, defaults to /var/lib/opengslb/agent.crt
++	CertPath string `yaml:"cert_path"`
++
++	// KeyPath is the path to store/load the agent's private key
++	// If empty, defaults to /var/lib/opengslb/agent.key
++	KeyPath string `yaml:"key_path"`
++}
++
++// AgentBackend defines a service backend monitored by this agent.
++type AgentBackend struct {
++	// Service is the service name (used for DNS domain mapping)
++	Service string `yaml:"service"`
++
++	// Address is the backend server IP address
++	Address string `yaml:"address"`
++
++	// Port is the backend server port
++	Port int `yaml:"port"`
++
++	// Weight is the routing weight (higher = more traffic)
++	Weight int `yaml:"weight"`
++
++	// HealthCheck defines how to check this backend's health
++	HealthCheck HealthCheck `yaml:"health_check"`
++}
++
++// AgentGossipConfig defines gossip settings for agents.
++type AgentGossipConfig struct {
++	// EncryptionKey is a REQUIRED 32-byte base64-encoded encryption key
++	// Generate with: openssl rand -base64 32
++	EncryptionKey string `yaml:"encryption_key"`
++
++	// OverwatchNodes is a list of Overwatch gossip addresses to connect to
++	// Format: "host:port" (e.g., "overwatch-1.internal:7946")
++	OverwatchNodes []string `yaml:"overwatch_nodes"`
++}
++
++// HeartbeatConfig defines agent heartbeat settings.
++type HeartbeatConfig struct {
++	// Interval is the time between heartbeat messages
++	// Default: 10s
++	Interval time.Duration `yaml:"interval"`
++
++	// MissedThreshold is the number of missed heartbeats before deregistration
++	// Default: 3
++	MissedThreshold int `yaml:"missed_threshold"`
+ }
+ 
+-// DNSConfig defines the DNS server settings.
++// ============================================================================
++// Overwatch Mode Configuration (ADR-015)
++// ============================================================================
++
++// OverwatchConfig defines configuration for overwatch mode.
++type OverwatchConfig struct {
++	// Identity contains overwatch node identification settings
++	Identity OverwatchIdentityConfig `yaml:"identity"`
++
++	// AgentTokens maps service names to their authentication tokens
++	AgentTokens map[string]string `yaml:"agent_tokens"`
++
++	// Gossip contains settings for receiving agent gossip
++	Gossip OverwatchGossipConfig `yaml:"gossip"`
++
++	// Validation contains external health validation settings
++	Validation ValidationConfig `yaml:"validation"`
++
++	// Stale contains settings for detecting stale backends
++	Stale StaleConfig `yaml:"stale"`
++
++	// DNSSEC contains DNSSEC signing settings
++	DNSSEC DNSSECConfig `yaml:"dnssec"`
++}
++
++// OverwatchIdentityConfig defines overwatch node identity settings.
++type OverwatchIdentityConfig struct {
++	// NodeID is a unique identifier for this overwatch node
++	// Defaults to hostname if not specified
++	NodeID string `yaml:"node_id"`
++
++	// Region is the geographic region this overwatch node serves
++	Region string `yaml:"region"`
++}
++
++// OverwatchGossipConfig defines gossip settings for overwatch nodes.
++type OverwatchGossipConfig struct {
++	// BindAddress is the address to listen for gossip (host:port)
++	// Default: "0.0.0.0:7946"
++	BindAddress string `yaml:"bind_address"`
++
++	// EncryptionKey is a REQUIRED 32-byte base64-encoded encryption key
++	// Must match the key used by agents
++	EncryptionKey string `yaml:"encryption_key"`
++
++	// ProbeInterval is the interval between failure probes
++	// Default: 1s
++	ProbeInterval time.Duration `yaml:"probe_interval"`
++
++	// ProbeTimeout is the timeout for a single probe
++	// Default: 500ms
++	ProbeTimeout time.Duration `yaml:"probe_timeout"`
++
++	// GossipInterval is the interval between gossip messages
++	// Default: 200ms
++	GossipInterval time.Duration `yaml:"gossip_interval"`
++}
++
++// ValidationConfig defines external health validation settings.
++type ValidationConfig struct {
++	// Enabled controls whether external validation is active
++	// Default: true
++	Enabled bool `yaml:"enabled"`
++
++	// CheckInterval is the frequency of validation checks
++	// Default: 30s
++	CheckInterval time.Duration `yaml:"check_interval"`
++
++	// CheckTimeout is the timeout for validation checks
++	// Default: 5s
++	CheckTimeout time.Duration `yaml:"check_timeout"`
++}
++
++// StaleConfig defines settings for detecting stale backends.
++type StaleConfig struct {
++	// Threshold is the time after which a backend with no heartbeat is stale
++	// Default: 30s
++	Threshold time.Duration `yaml:"threshold"`
++
++	// RemoveAfter is the time after which a stale backend is removed
++	// Default: 5m
++	RemoveAfter time.Duration `yaml:"remove_after"`
++}
++
++// DNSSECConfig defines DNSSEC signing settings.
++type DNSSECConfig struct {
++	// Enabled controls whether DNSSEC is active
++	// Default: true (secure by default)
++	Enabled bool `yaml:"enabled"`
++
++	// SecurityAcknowledgment is REQUIRED if Enabled=false
++	// Must contain specific text acknowledging security implications
++	SecurityAcknowledgment string `yaml:"security_acknowledgment"`
++
++	// Algorithm is the DNSSEC signing algorithm
++	// Default: ECDSAP256SHA256
++	Algorithm string `yaml:"algorithm"`
++
++	// KeySync contains settings for syncing keys between Overwatch nodes
++	KeySync DNSSECKeySyncConfig `yaml:"key_sync"`
++}
++
++// DNSSECKeySyncConfig defines DNSSEC key synchronization settings.
++type DNSSECKeySyncConfig struct {
++	// Peers are the API addresses of other Overwatch nodes for key sync
++	Peers []string `yaml:"peers"`
++
++	// PollInterval is the time between key sync polls
++	// Default: 1h
++	PollInterval time.Duration `yaml:"poll_interval"`
++
++	// Timeout is the timeout for key sync requests
++	// Default: 30s
++	Timeout time.Duration `yaml:"timeout"`
++}
++
++// ============================================================================
++// Shared Configuration (both modes)
++// ============================================================================
++
++// DNSConfig defines the DNS server settings (overwatch mode).
+ type DNSConfig struct {
+-	ListenAddress     string `yaml:"listen_address"`
+-	DefaultTTL        int    `yaml:"default_ttl"`
+-	ReturnLastHealthy bool   `yaml:"return_last_healthy"`
++	ListenAddress     string   `yaml:"listen_address"`
++	DefaultTTL        int      `yaml:"default_ttl"`
++	ReturnLastHealthy bool     `yaml:"return_last_healthy"`
++	Zones             []string `yaml:"zones"`
+ }
+ 
+ // Region defines a geographic region with its servers and health check configuration.
+@@ -56,7 +273,7 @@ type Server struct {
+ 	Host    string `yaml:"host"`
+ }
+ 
+-// HealthCheck defines health check configuration for a region.
++// HealthCheck defines health check configuration.
+ type HealthCheck struct {
+ 	Type             string        `yaml:"type"`
+ 	Interval         time.Duration `yaml:"interval"`
+@@ -87,7 +304,7 @@ type MetricsConfig struct {
+ 	Address string `yaml:"address"`
+ }
+ 
+-// APIConfig defines the HTTP API server settings.
++// APIConfig defines the HTTP API server settings (overwatch mode).
+ type APIConfig struct {
+ 	Enabled           bool     `yaml:"enabled"`
+ 	Address           string   `yaml:"address"`
+@@ -95,220 +312,46 @@ type APIConfig struct {
+ 	TrustProxyHeaders bool     `yaml:"trust_proxy_headers"`
+ }
+ 
+-// ClusterConfig defines distributed cluster settings (ADR-012, ADR-014).
+-type ClusterConfig struct {
+-	// Mode specifies the runtime mode: "standalone" or "cluster".
+-	// Can be overridden by --mode flag. Default: "standalone"
+-	Mode RuntimeMode `yaml:"mode"`
+-
+-	// NodeName is a unique identifier for this node. Defaults to hostname.
+-	NodeName string `yaml:"node_name"`
+-
+-	// BindAddress is the address for Raft and gossip communication.
+-	// Format: "ip:port" (e.g., "10.0.1.10:7946")
+-	BindAddress string `yaml:"bind_address"`
+-
+-	// AdvertiseAddress is the address other nodes use to reach this node.
+-	// Defaults to BindAddress if not set.
+-	AdvertiseAddress string `yaml:"advertise_address"`
+-
+-	// Bootstrap indicates this node should initialize a new cluster.
+-	// Set on exactly one node during initial cluster formation.
+-	// Can be overridden by --bootstrap flag.
+-	Bootstrap bool `yaml:"bootstrap"`
+-
+-	// Join specifies addresses of existing cluster nodes to join.
+-	// Can be overridden by --join flag.
+-	Join []string `yaml:"join"`
+-
+-	// Raft contains Raft consensus settings.
+-	Raft RaftConfig `yaml:"raft"`
+-
+-	// Gossip contains memberlist gossip settings.
+-	Gossip GossipConfig `yaml:"gossip"`
+-
+-	// PredictiveHealth contains predictive health monitoring settings.
+-	PredictiveHealth PredictiveHealthConfig `yaml:"predictive_health"`
+-
+-	// AnycastVIP is the virtual IP advertised by all cluster nodes.
+-	// Only the Raft leader responds to DNS queries on this VIP.
+-	AnycastVIP string `yaml:"anycast_vip"`
+-
+-	// Overwatch contains configuration for the leader's health validation.
+-	Overwatch OverwatchConfig `yaml:"overwatch"`
+-}
+-
+-// OverwatchConfig defines settings for the leader's validation of agent health claims.
+-type OverwatchConfig struct {
+-	// ExternalCheckInterval is the frequency of leader-initiated external checks.
+-	// Default: 10s
+-	ExternalCheckInterval time.Duration `yaml:"external_check_interval"`
+-
+-	// VetoMode controls how disagreements between agent and external checks are resolved.
+-	// Options: "strict", "balanced", "permissive"
+-	// Default: "balanced"
+-	VetoMode string `yaml:"veto_mode"`
+-
+-	// VetoThreshold is the number of consecutive external check failures
+-	// before the overwatch will veto an agent's healthy claim.
+-	// Default: 3
+-	VetoThreshold int `yaml:"veto_threshold"`
+-}
+-
+ // PredictiveHealthConfig defines predictive health monitoring settings.
+-// When enabled, the agent monitors local system metrics and signals
+-// when thresholds are exceeded to enable proactive traffic bleeding.
+ type PredictiveHealthConfig struct {
+-	// Enabled controls whether predictive health monitoring is active.
+-	// Default: false
+-	Enabled bool `yaml:"enabled"`
+-
+-	// CPU contains CPU utilization monitoring settings.
+-	CPU PredictiveMetricConfig `yaml:"cpu"`
+-
+-	// Memory contains memory utilization monitoring settings.
+-	Memory PredictiveMetricConfig `yaml:"memory"`
+-
+-	// ErrorRate contains health check error rate monitoring settings.
+-	ErrorRate PredictiveErrorRateConfig `yaml:"error_rate"`
++	Enabled       bool                      `yaml:"enabled"`
++	CPU           PredictiveMetricConfig    `yaml:"cpu"`
++	Memory        PredictiveMetricConfig    `yaml:"memory"`
++	ErrorRate     PredictiveErrorRateConfig `yaml:"error_rate"`
++	CheckInterval time.Duration             `yaml:"check_interval"`
+ }
+ 
+ // PredictiveMetricConfig defines threshold settings for CPU or memory metrics.
+ type PredictiveMetricConfig struct {
+-	// Threshold is the percentage (0-100) at which to trigger bleeding.
+-	// Default: 90 for CPU, 85 for memory
+-	Threshold float64 `yaml:"threshold"`
+-
+-	// BleedDuration is the time over which to gradually reduce traffic.
+-	// Default: 30s
++	Threshold     float64       `yaml:"threshold"`
+ 	BleedDuration time.Duration `yaml:"bleed_duration"`
+ }
+ 
+ // PredictiveErrorRateConfig defines threshold settings for error rate monitoring.
+ type PredictiveErrorRateConfig struct {
+-	// Threshold is the error count per minute at which to trigger bleeding.
+-	// Default: 10
+-	Threshold float64 `yaml:"threshold"`
+-
+-	// Window is the time window over which to measure error rate.
+-	// Default: 60s
+-	Window time.Duration `yaml:"window"`
+-
+-	// BleedDuration is the time over which to gradually reduce traffic.
+-	// Default: 60s
++	Threshold     float64       `yaml:"threshold"`
++	Window        time.Duration `yaml:"window"`
+ 	BleedDuration time.Duration `yaml:"bleed_duration"`
+ }
+ 
+-// RaftConfig defines Raft consensus settings.
+-type RaftConfig struct {
+-	// DataDir is the directory for Raft state and logs.
+-	// Default: "/var/lib/opengslb/raft"
+-	DataDir string `yaml:"data_dir"`
+-
+-	// HeartbeatTimeout is the time between heartbeats.
+-	// Default: 1s
+-	HeartbeatTimeout time.Duration `yaml:"heartbeat_timeout"`
+-
+-	// ElectionTimeout is the time before a new election starts.
+-	// Default: 1s
+-	ElectionTimeout time.Duration `yaml:"election_timeout"`
+-
+-	// SnapshotInterval is the minimum time between snapshots.
+-	// Default: 120s
+-	SnapshotInterval time.Duration `yaml:"snapshot_interval"`
+-
+-	// SnapshotThreshold is the number of log entries before snapshot.
+-	// Default: 8192
+-	SnapshotThreshold uint64 `yaml:"snapshot_threshold"`
+-}
+-
+-// GossipConfig defines memberlist gossip settings.
+-type GossipConfig struct {
+-	// Enabled controls whether gossip is enabled in cluster mode.
+-	// Default: true (when in cluster mode)
+-	Enabled bool `yaml:"enabled"`
+-
+-	// BindPort is the port for gossip communication.
+-	// If not set, uses the port from ClusterConfig.BindAddress.
+-	// Default: 7946
+-	BindPort int `yaml:"bind_port"`
+-
+-	// AdvertisePort is the port advertised to other nodes.
+-	// Defaults to BindPort if not set.
+-	AdvertisePort int `yaml:"advertise_port"`
+-
+-	// EncryptionKey is an optional 32-byte base64-encoded encryption key.
+-	// Generate with: head -c 32 /dev/urandom | base64
+-	EncryptionKey string `yaml:"encryption_key"`
+-
+-	// ProbeInterval is the interval between failure probes.
+-	// Lower values detect failures faster but increase network traffic.
+-	// Default: 1s
+-	ProbeInterval time.Duration `yaml:"probe_interval"`
+-
+-	// ProbeTimeout is the timeout for a single probe.
+-	// Default: 500ms
+-	ProbeTimeout time.Duration `yaml:"probe_timeout"`
+-
+-	// GossipInterval is the interval between gossip messages.
+-	// Lower values propagate updates faster but increase network traffic.
+-	// Default: 200ms
+-	GossipInterval time.Duration `yaml:"gossip_interval"`
+-
+-	// PushPullInterval is the interval for full state synchronization.
+-	// Default: 30s
+-	PushPullInterval time.Duration `yaml:"push_pull_interval"`
+-
+-	// RetransmitMult controls message retransmission.
+-	// Higher values improve reliability but increase bandwidth.
+-	// Default: 4
+-	RetransmitMult int `yaml:"retransmit_mult"`
+-}
+-
+-// IsClusterMode returns true if the configuration is for cluster mode.
+-func (c *ClusterConfig) IsClusterMode() bool {
+-	return c.Mode == ModeCluster
+-}
++// ============================================================================
++// Helper Methods
++// ============================================================================
+ 
+-// IsStandaloneMode returns true if the configuration is for standalone mode.
+-func (c *ClusterConfig) IsStandaloneMode() bool {
+-	return c.Mode == ModeStandalone || c.Mode == ""
++// IsAgentMode returns true if the configuration is for agent mode.
++func (c *Config) IsAgentMode() bool {
++	return c.Mode == ModeAgent
+ }
+ 
+-// IsGossipEnabled returns true if gossip should be enabled.
+-// Gossip is enabled by default in cluster mode unless explicitly disabled.
+-func (c *ClusterConfig) IsGossipEnabled() bool {
+-	if c.IsStandaloneMode() {
+-		return false
+-	}
+-	// In cluster mode, gossip is enabled by default
+-	// It can be explicitly disabled by setting gossip.enabled: false
+-	return c.Gossip.Enabled || c.Gossip.BindPort > 0 || c.Gossip.EncryptionKey != ""
++// IsOverwatchMode returns true if the configuration is for overwatch mode.
++func (c *Config) IsOverwatchMode() bool {
++	return c.Mode == ModeOverwatch || c.Mode == ""
+ }
+ 
+-// GetGossipBindPort returns the gossip bind port, with defaults applied.
+-func (c *ClusterConfig) GetGossipBindPort() int {
+-	if c.Gossip.BindPort > 0 {
+-		return c.Gossip.BindPort
++// GetEffectiveMode returns the runtime mode, defaulting to overwatch.
++func (c *Config) GetEffectiveMode() RuntimeMode {
++	if c.Mode == "" {
++		return ModeOverwatch
+ 	}
+-
+-	// Try to derive from BindAddress
+-	if c.BindAddress != "" {
+-		_, portStr, err := net.SplitHostPort(c.BindAddress)
+-		if err == nil {
+-			if port, err := strconv.Atoi(portStr); err == nil {
+-				return port + 100
+-			}
+-		}
+-	}
+-
+-	return 7946 // Default memberlist port
+-}
+-
+-// GetGossipAdvertisePort returns the gossip advertise port, with defaults applied.
+-func (c *ClusterConfig) GetGossipAdvertisePort() int {
+-	if c.Gossip.AdvertisePort > 0 {
+-		return c.Gossip.AdvertisePort
+-	}
+-	return c.GetGossipBindPort()
+-}
++	return c.Mode
++}
+\ No newline at end of file
+diff --git a/pkg/config/validator.go b/pkg/config/validator.go
+index 8235904..0940b15 100644
+--- a/pkg/config/validator.go
++++ b/pkg/config/validator.go
+@@ -7,565 +7,338 @@
+ package config
+ 
+ import (
+-	"errors"
++	"encoding/base64"
+ 	"fmt"
+ 	"net"
+ 	"strings"
+ 	"time"
+ )
+ 
+-// ValidationError contains details about a configuration validation failure.
+-type ValidationError struct {
+-	Field   string
+-	Value   any
+-	Message string
+-}
+-
+-func (e *ValidationError) Error() string {
+-	return fmt.Sprintf("validation failed for %s: %s (got: %v)", e.Field, e.Message, e.Value)
+-}
++// Validate checks the configuration for errors.
++func (c *Config) Validate() error {
++	// Mode validation handled separately by main.go after flag override
++	// Here we validate the content assuming mode is set
+ 
+-// Validate checks the configuration for errors and returns a combined error if any are found.
+-func Validate(cfg *Config) error {
+-	var errs []error
++	// Validate shared sections
++	if err := c.validateLogging(); err != nil {
++		return fmt.Errorf("logging: %w", err)
++	}
+ 
+-	errs = append(errs, validateDNS(&cfg.DNS)...)
+-	errs = append(errs, validateRegions(cfg.Regions)...)
+-	errs = append(errs, validateDomains(cfg.Domains, cfg.Regions)...)
+-	errs = append(errs, validateLogging(&cfg.Logging)...)
+-	errs = append(errs, validateAPI(&cfg.API)...)
+-	errs = append(errs, validateCluster(&cfg.Cluster)...)
++	if err := c.validateMetrics(); err != nil {
++		return fmt.Errorf("metrics: %w", err)
++	}
+ 
+-	if len(errs) > 0 {
+-		return errors.Join(errs...)
++	// Mode-specific validation
++	switch c.Mode {
++	case ModeAgent:
++		if err := c.validateAgentMode(); err != nil {
++			return fmt.Errorf("agent: %w", err)
++		}
++	case ModeOverwatch:
++		if err := c.validateOverwatchMode(); err != nil {
++			return err
++		}
++	case "":
++		// Mode not set in config file - will be defaulted later
++		// Still validate overwatch-mode sections if present
++		if len(c.Regions) > 0 || len(c.Domains) > 0 {
++			if err := c.validateOverwatchMode(); err != nil {
++				return err
++			}
++		}
++	default:
++		return fmt.Errorf("invalid mode %q: must be 'agent' or 'overwatch'", c.Mode)
+ 	}
++
+ 	return nil
+ }
+ 
+-func validateDNS(dns *DNSConfig) []error {
+-	var errs []error
+-
+-	if dns.ListenAddress == "" {
+-		errs = append(errs, &ValidationError{
+-			Field:   "dns.listen_address",
+-			Value:   dns.ListenAddress,
+-			Message: "cannot be empty",
+-		})
+-	} else {
+-		host, port, err := net.SplitHostPort(dns.ListenAddress)
+-		if err != nil {
+-			errs = append(errs, &ValidationError{
+-				Field:   "dns.listen_address",
+-				Value:   dns.ListenAddress,
+-				Message: fmt.Sprintf("invalid address format: %v", err),
+-			})
+-		} else if host != "" {
+-			if ip := net.ParseIP(host); ip == nil {
+-				errs = append(errs, &ValidationError{
+-					Field:   "dns.listen_address",
+-					Value:   dns.ListenAddress,
+-					Message: "invalid IP address",
+-				})
+-			}
+-		}
+-		_ = port
++// validateLogging validates logging configuration.
++func (c *Config) validateLogging() error {
++	validLevels := map[string]bool{
++		"debug": true, "info": true, "warn": true, "error": true, "":true,
++	}
++	if !validLevels[strings.ToLower(c.Logging.Level)] {
++		return fmt.Errorf("invalid level %q: must be debug, info, warn, or error", c.Logging.Level)
+ 	}
+ 
+-	if dns.DefaultTTL < 1 || dns.DefaultTTL > 86400 {
+-		errs = append(errs, &ValidationError{
+-			Field:   "dns.default_ttl",
+-			Value:   dns.DefaultTTL,
+-			Message: "must be between 1 and 86400 seconds",
+-		})
++	validFormats := map[string]bool{
++		"text": true, "json": true, "": true,
++	}
++	if !validFormats[strings.ToLower(c.Logging.Format)] {
++		return fmt.Errorf("invalid format %q: must be text or json", c.Logging.Format)
+ 	}
+ 
+-	return errs
++	return nil
+ }
+ 
+-func validateRegions(regions []Region) []error {
+-	var errs []error
++// validateMetrics validates metrics configuration.
++func (c *Config) validateMetrics() error {
++	if c.Metrics.Enabled && c.Metrics.Address != "" {
++		if _, _, err := net.SplitHostPort(c.Metrics.Address); err != nil {
++			// Try adding default host
++			if _, _, err := net.SplitHostPort("0.0.0.0" + c.Metrics.Address); err != nil {
++				return fmt.Errorf("invalid address %q: %w", c.Metrics.Address, err)
++			}
++		}
++	}
++	return nil
++}
+ 
+-	if len(regions) == 0 {
+-		errs = append(errs, &ValidationError{
+-			Field:   "regions",
+-			Value:   nil,
+-			Message: "at least one region must be defined",
+-		})
+-		return errs
++// validateAgentMode validates agent-specific configuration.
++func (c *Config) validateAgentMode() error {
++	// Identity validation
++	if c.Agent.Identity.ServiceToken == "" {
++		return fmt.Errorf("identity.service_token is required")
++	}
++	if len(c.Agent.Identity.ServiceToken) < 16 {
++		return fmt.Errorf("identity.service_token must be at least 16 characters")
+ 	}
+ 
+-	seen := make(map[string]bool)
+-	for i := range regions {
+-		r := &regions[i]
+-		prefix := fmt.Sprintf("regions[%d]", i)
++	// Backends validation
++	if len(c.Agent.Backends) == 0 {
++		return fmt.Errorf("at least one backend is required")
++	}
++	for i, backend := range c.Agent.Backends {
++		if err := validateAgentBackend(backend, i); err != nil {
++			return err
++		}
++	}
+ 
+-		if r.Name == "" {
+-			errs = append(errs, &ValidationError{
+-				Field:   prefix + ".name",
+-				Value:   r.Name,
+-				Message: "cannot be empty",
+-			})
+-		} else if seen[r.Name] {
+-			errs = append(errs, &ValidationError{
+-				Field:   prefix + ".name",
+-				Value:   r.Name,
+-				Message: "duplicate region name",
+-			})
+-		} else {
+-			seen[r.Name] = true
++	// Gossip validation (mandatory encryption)
++	if err := validateGossipEncryptionKey(c.Agent.Gossip.EncryptionKey); err != nil {
++		return fmt.Errorf("gossip: %w", err)
++	}
++	if len(c.Agent.Gossip.OverwatchNodes) == 0 {
++		return fmt.Errorf("gossip.overwatch_nodes must have at least one address")
++	}
++	for i, node := range c.Agent.Gossip.OverwatchNodes {
++		if _, _, err := net.SplitHostPort(node); err != nil {
++			return fmt.Errorf("gossip.overwatch_nodes[%d] %q: invalid address: %w", i, node, err)
+ 		}
++	}
+ 
+-		errs = append(errs, validateServers(r.Servers, prefix)...)
+-		errs = append(errs, validateHealthCheck(&r.HealthCheck, prefix)...)
++	// Heartbeat validation
++	if c.Agent.Heartbeat.Interval > 0 && c.Agent.Heartbeat.Interval < time.Second {
++		return fmt.Errorf("heartbeat.interval must be at least 1s")
+ 	}
+ 
+-	return errs
++	return nil
+ }
+ 
+-func validateServers(servers []Server, prefix string) []error {
+-	var errs []error
+-
+-	if len(servers) == 0 {
+-		errs = append(errs, &ValidationError{
+-			Field:   prefix + ".servers",
+-			Value:   nil,
+-			Message: "at least one server must be defined",
+-		})
+-		return errs
+-	}
+-
+-	for i, s := range servers {
+-		sPrefix := fmt.Sprintf("%s.servers[%d]", prefix, i)
+-
+-		if s.Address == "" {
+-			errs = append(errs, &ValidationError{
+-				Field:   sPrefix + ".address",
+-				Value:   s.Address,
+-				Message: "cannot be empty",
+-			})
+-		} else if ip := net.ParseIP(s.Address); ip == nil {
+-			errs = append(errs, &ValidationError{
+-				Field:   sPrefix + ".address",
+-				Value:   s.Address,
+-				Message: "invalid IP address",
+-			})
+-		}
++// validateAgentBackend validates a single agent backend configuration.
++func validateAgentBackend(b AgentBackend, index int) error {
++	prefix := fmt.Sprintf("backends[%d]", index)
+ 
+-		if s.Port < 1 || s.Port > 65535 {
+-			errs = append(errs, &ValidationError{
+-				Field:   sPrefix + ".port",
+-				Value:   s.Port,
+-				Message: "must be between 1 and 65535",
+-			})
++	if b.Service == "" {
++		return fmt.Errorf("%s.service is required", prefix)
++	}
++	if b.Address == "" {
++		return fmt.Errorf("%s.address is required", prefix)
++	}
++	if net.ParseIP(b.Address) == nil {
++		// Try to resolve hostname
++		if _, err := net.LookupHost(b.Address); err != nil {
++			return fmt.Errorf("%s.address %q: invalid IP or hostname", prefix, b.Address)
+ 		}
++	}
++	if b.Port <= 0 || b.Port > 65535 {
++		return fmt.Errorf("%s.port must be between 1 and 65535", prefix)
++	}
++	if b.Weight < 0 {
++		return fmt.Errorf("%s.weight must be non-negative", prefix)
++	}
+ 
+-		if s.Weight < 1 || s.Weight > 1000 {
+-			errs = append(errs, &ValidationError{
+-				Field:   sPrefix + ".weight",
+-				Value:   s.Weight,
+-				Message: "must be between 1 and 1000",
+-			})
+-		}
++	// Health check validation
++	hc := b.HealthCheck
++	validTypes := map[string]bool{"http": true, "https": true, "tcp": true, "": true}
++	if !validTypes[strings.ToLower(hc.Type)] {
++		return fmt.Errorf("%s.health_check.type %q: must be http, https, or tcp", prefix, hc.Type)
++	}
++	if hc.Interval > 0 && hc.Interval < time.Second {
++		return fmt.Errorf("%s.health_check.interval must be at least 1s", prefix)
++	}
++	if hc.Timeout > 0 && hc.Timeout < 100*time.Millisecond {
++		return fmt.Errorf("%s.health_check.timeout must be at least 100ms", prefix)
+ 	}
+ 
+-	return errs
++	return nil
+ }
+ 
+-func validateHealthCheck(hc *HealthCheck, prefix string) []error {
+-	var errs []error
+-	hcPrefix := prefix + ".health_check"
++// validateOverwatchMode validates overwatch-specific configuration.
++func (c *Config) validateOverwatchMode() error {
++	// Gossip validation (mandatory encryption)
++	if err := validateGossipEncryptionKey(c.Overwatch.Gossip.EncryptionKey); err != nil {
++		return fmt.Errorf("overwatch.gossip: %w", err)
++	}
+ 
+-	validTypes := map[string]bool{"http": true, "https": true, "tcp": true}
+-	if !validTypes[hc.Type] {
+-		errs = append(errs, &ValidationError{
+-			Field:   hcPrefix + ".type",
+-			Value:   hc.Type,
+-			Message: "must be one of: http, https, tcp",
+-		})
++	// DNSSEC validation
++	if !c.Overwatch.DNSSEC.Enabled {
++		expectedAck := "I understand that disabling DNSSEC removes cryptographic authentication of DNS responses and allows DNS spoofing attacks against my zones"
++		if c.Overwatch.DNSSEC.SecurityAcknowledgment != expectedAck {
++			return fmt.Errorf("dnssec: to disable DNSSEC, security_acknowledgment must be set to: %q", expectedAck)
++		}
+ 	}
+ 
+-	if hc.Interval < 1_000_000_000 {
+-		errs = append(errs, &ValidationError{
+-			Field:   hcPrefix + ".interval",
+-			Value:   hc.Interval,
+-			Message: "must be at least 1 second",
+-		})
++	// DNS validation
++	if err := c.validateDNS(); err != nil {
++		return fmt.Errorf("dns: %w", err)
+ 	}
+ 
+-	if hc.Timeout < 100_000_000 {
+-		errs = append(errs, &ValidationError{
+-			Field:   hcPrefix + ".timeout",
+-			Value:   hc.Timeout,
+-			Message: "must be at least 100ms",
+-		})
++	// Regions validation
++	if err := c.validateRegions(); err != nil {
++		return err
+ 	}
+ 
+-	if hc.Timeout >= hc.Interval {
+-		errs = append(errs, &ValidationError{
+-			Field:   hcPrefix + ".timeout",
+-			Value:   hc.Timeout,
+-			Message: "must be less than interval",
+-		})
++	// Domains validation
++	if err := c.validateDomains(); err != nil {
++		return err
+ 	}
+ 
+-	if (hc.Type == "http" || hc.Type == "https") && !strings.HasPrefix(hc.Path, "/") {
+-		errs = append(errs, &ValidationError{
+-			Field:   hcPrefix + ".path",
+-			Value:   hc.Path,
+-			Message: "must start with /",
+-		})
++	// API validation
++	if err := c.validateAPI(); err != nil {
++		return fmt.Errorf("api: %w", err)
+ 	}
+ 
+-	if hc.FailureThreshold < 1 || hc.FailureThreshold > 10 {
+-		errs = append(errs, &ValidationError{
+-			Field:   hcPrefix + ".failure_threshold",
+-			Value:   hc.FailureThreshold,
+-			Message: "must be between 1 and 10",
+-		})
++	return nil
++}
++
++// validateGossipEncryptionKey validates the gossip encryption key.
++// ADR-015: Encryption is MANDATORY - no opt-out.
++func validateGossipEncryptionKey(key string) error {
++	if key == "" {
++		return fmt.Errorf("encryption_key is required (generate with: openssl rand -base64 32)")
+ 	}
+ 
+-	if hc.SuccessThreshold < 1 || hc.SuccessThreshold > 10 {
+-		errs = append(errs, &ValidationError{
+-			Field:   hcPrefix + ".success_threshold",
+-			Value:   hc.SuccessThreshold,
+-			Message: "must be between 1 and 10",
+-		})
++	decoded, err := base64.StdEncoding.DecodeString(key)
++	if err != nil {
++		return fmt.Errorf("encryption_key must be valid base64: %w", err)
+ 	}
+ 
+-	return errs
+-}
++	if len(decoded) != 32 {
++		return fmt.Errorf("encryption_key must be exactly 32 bytes (got %d); generate with: openssl rand -base64 32", len(decoded))
++	}
+ 
+-func validateDomains(domains []Domain, regions []Region) []error {
+-	var errs []error
++	return nil
++}
+ 
+-	if len(domains) == 0 {
+-		errs = append(errs, &ValidationError{
+-			Field:   "domains",
+-			Value:   nil,
+-			Message: "at least one domain must be defined",
+-		})
+-		return errs
++// validateDNS validates DNS configuration.
++func (c *Config) validateDNS() error {
++	if c.DNS.ListenAddress != "" {
++		if _, _, err := net.SplitHostPort(c.DNS.ListenAddress); err != nil {
++			return fmt.Errorf("invalid listen_address %q: %w", c.DNS.ListenAddress, err)
++		}
+ 	}
+ 
+-	regionNames := make(map[string]bool)
+-	for _, r := range regions {
+-		regionNames[r.Name] = true
++	if c.DNS.DefaultTTL < 0 {
++		return fmt.Errorf("default_ttl must be non-negative")
+ 	}
+ 
+-	validAlgorithms := map[string]bool{
+-		"round-robin": true,
+-		"weighted":    true,
+-		"geolocation": true,
+-		"latency":     true,
+-		"failover":    true,
+-	}
++	return nil
++}
+ 
+-	seen := make(map[string]bool)
+-	for i, d := range domains {
+-		prefix := fmt.Sprintf("domains[%d]", i)
++// validateRegions validates region configurations.
++func (c *Config) validateRegions() error {
++	regionNames := make(map[string]bool)
+ 
+-		if d.Name == "" {
+-			errs = append(errs, &ValidationError{
+-				Field:   prefix + ".name",
+-				Value:   d.Name,
+-				Message: "cannot be empty",
+-			})
+-		} else if seen[d.Name] {
+-			errs = append(errs, &ValidationError{
+-				Field:   prefix + ".name",
+-				Value:   d.Name,
+-				Message: "duplicate domain name",
+-			})
+-		} else {
+-			seen[d.Name] = true
+-		}
++	for i, region := range c.Regions {
++		prefix := fmt.Sprintf("regions[%d]", i)
+ 
+-		if !validAlgorithms[d.RoutingAlgorithm] {
+-			errs = append(errs, &ValidationError{
+-				Field:   prefix + ".routing_algorithm",
+-				Value:   d.RoutingAlgorithm,
+-				Message: "must be one of: round-robin, weighted, geolocation, latency, failover",
+-			})
++		if region.Name == "" {
++			return fmt.Errorf("%s.name is required", prefix)
++		}
++		if regionNames[region.Name] {
++			return fmt.Errorf("%s: duplicate region name %q", prefix, region.Name)
+ 		}
++		regionNames[region.Name] = true
+ 
+-		if len(d.Regions) == 0 {
+-			errs = append(errs, &ValidationError{
+-				Field:   prefix + ".regions",
+-				Value:   nil,
+-				Message: "at least one region must be specified",
+-			})
++		if len(region.Servers) == 0 {
++			return fmt.Errorf("%s: at least one server required", prefix)
+ 		}
+ 
+-		for j, rName := range d.Regions {
+-			if !regionNames[rName] {
+-				errs = append(errs, &ValidationError{
+-					Field:   fmt.Sprintf("%s.regions[%d]", prefix, j),
+-					Value:   rName,
+-					Message: "references undefined region",
+-				})
++		for j, server := range region.Servers {
++			serverPrefix := fmt.Sprintf("%s.servers[%d]", prefix, j)
++			if server.Address == "" {
++				return fmt.Errorf("%s.address is required", serverPrefix)
++			}
++			if server.Port <= 0 || server.Port > 65535 {
++				return fmt.Errorf("%s.port must be between 1 and 65535", serverPrefix)
+ 			}
+ 		}
+ 
+-		if d.TTL < 1 || d.TTL > 86400 {
+-			errs = append(errs, &ValidationError{
+-				Field:   prefix + ".ttl",
+-				Value:   d.TTL,
+-				Message: "must be between 1 and 86400 seconds",
+-			})
++		// Health check validation
++		hc := region.HealthCheck
++		validTypes := map[string]bool{"http": true, "https": true, "tcp": true, "": true}
++		if !validTypes[strings.ToLower(hc.Type)] {
++			return fmt.Errorf("%s.health_check.type %q: must be http, https, or tcp", prefix, hc.Type)
+ 		}
+ 	}
+ 
+-	return errs
++	return nil
+ }
+ 
+-func validateLogging(logging *LoggingConfig) []error {
+-	var errs []error
+-
+-	validLevels := map[string]bool{
+-		"debug": true,
+-		"info":  true,
+-		"warn":  true,
+-		"error": true,
+-	}
+-	if !validLevels[logging.Level] {
+-		errs = append(errs, &ValidationError{
+-			Field:   "logging.level",
+-			Value:   logging.Level,
+-			Message: "must be one of: debug, info, warn, error",
+-		})
++// validateDomains validates domain configurations.
++func (c *Config) validateDomains() error {
++	// Build region name set for validation
++	regionNames := make(map[string]bool)
++	for _, region := range c.Regions {
++		regionNames[region.Name] = true
+ 	}
+ 
+-	validFormats := map[string]bool{"json": true, "text": true}
+-	if !validFormats[logging.Format] {
+-		errs = append(errs, &ValidationError{
+-			Field:   "logging.format",
+-			Value:   logging.Format,
+-			Message: "must be one of: json, text",
+-		})
+-	}
++	domainNames := make(map[string]bool)
+ 
+-	return errs
+-}
++	for i, domain := range c.Domains {
++		prefix := fmt.Sprintf("domains[%d]", i)
+ 
+-func validateAPI(api *APIConfig) []error {
+-	var errs []error
+-
+-	if !api.Enabled {
+-		return errs
+-	}
+-
+-	if api.Address == "" {
+-		errs = append(errs, &ValidationError{
+-			Field:   "api.address",
+-			Value:   api.Address,
+-			Message: "cannot be empty when API is enabled",
+-		})
+-	} else {
+-		host, port, err := net.SplitHostPort(api.Address)
+-		if err != nil {
+-			errs = append(errs, &ValidationError{
+-				Field:   "api.address",
+-				Value:   api.Address,
+-				Message: fmt.Sprintf("invalid address format: %v", err),
+-			})
+-		} else if host != "" {
+-			if ip := net.ParseIP(host); ip == nil {
+-				errs = append(errs, &ValidationError{
+-					Field:   "api.address",
+-					Value:   api.Address,
+-					Message: "invalid IP address",
+-				})
+-			}
++		if domain.Name == "" {
++			return fmt.Errorf("%s.name is required", prefix)
+ 		}
+-		_ = port
+-	}
+-
+-	for i, cidr := range api.AllowedNetworks {
+-		testCIDR := cidr
+-		if !strings.Contains(cidr, "/") {
+-			if strings.Contains(cidr, ":") {
+-				testCIDR = cidr + "/128"
+-			} else {
+-				testCIDR = cidr + "/32"
+-			}
++		if domainNames[domain.Name] {
++			return fmt.Errorf("%s: duplicate domain name %q", prefix, domain.Name)
+ 		}
++		domainNames[domain.Name] = true
+ 
+-		_, _, err := net.ParseCIDR(testCIDR)
+-		if err != nil {
+-			errs = append(errs, &ValidationError{
+-				Field:   fmt.Sprintf("api.allowed_networks[%d]", i),
+-				Value:   cidr,
+-				Message: fmt.Sprintf("invalid CIDR notation: %v", err),
+-			})
++		// Validate routing algorithm
++		validAlgorithms := map[string]bool{
++			"round-robin": true, "weighted": true, "failover": true,
++			"geolocation": true, "latency": true, "": true,
+ 		}
+-	}
+-
+-	return errs
+-}
+-
+-func validateCluster(cluster *ClusterConfig) []error {
+-	var errs []error
+-
+-	// Validate mode value
+-	validModes := map[RuntimeMode]bool{
+-		ModeStandalone: true,
+-		ModeCluster:    true,
+-		"":             true, // Empty defaults to standalone
+-	}
+-	if !validModes[cluster.Mode] {
+-		errs = append(errs, &ValidationError{
+-			Field:   "cluster.mode",
+-			Value:   cluster.Mode,
+-			Message: "must be one of: standalone, cluster",
+-		})
+-	}
+-
+-	// Standalone mode: minimal validation
+-	if cluster.IsStandaloneMode() {
+-		return errs
+-	}
+-
+-	// Cluster mode validation
+-	if cluster.BindAddress == "" {
+-		errs = append(errs, &ValidationError{
+-			Field:   "cluster.bind_address",
+-			Value:   cluster.BindAddress,
+-			Message: "required in cluster mode",
+-		})
+-	} else {
+-		// Validate bind_address format
+-		host, _, err := net.SplitHostPort(cluster.BindAddress)
+-		if err != nil {
+-			errs = append(errs, &ValidationError{
+-				Field:   "cluster.bind_address",
+-				Value:   cluster.BindAddress,
+-				Message: fmt.Sprintf("invalid address format: %v", err),
+-			})
+-		} else if host != "" {
+-			if ip := net.ParseIP(host); ip == nil {
+-				errs = append(errs, &ValidationError{
+-					Field:   "cluster.bind_address",
+-					Value:   cluster.BindAddress,
+-					Message: "invalid IP address",
+-				})
+-			}
++		if !validAlgorithms[strings.ToLower(domain.RoutingAlgorithm)] {
++			return fmt.Errorf("%s.routing_algorithm %q: must be round-robin, weighted, failover, geolocation, or latency",
++				prefix, domain.RoutingAlgorithm)
+ 		}
+-	}
+ 
+-	// Validate advertise_address if set
+-	if cluster.AdvertiseAddress != "" {
+-		host, _, err := net.SplitHostPort(cluster.AdvertiseAddress)
+-		if err != nil {
+-			errs = append(errs, &ValidationError{
+-				Field:   "cluster.advertise_address",
+-				Value:   cluster.AdvertiseAddress,
+-				Message: fmt.Sprintf("invalid address format: %v", err),
+-			})
+-		} else if host != "" {
+-			if ip := net.ParseIP(host); ip == nil {
+-				errs = append(errs, &ValidationError{
+-					Field:   "cluster.advertise_address",
+-					Value:   cluster.AdvertiseAddress,
+-					Message: "invalid IP address",
+-				})
++		// Validate regions exist
++		if len(domain.Regions) == 0 {
++			return fmt.Errorf("%s: at least one region required", prefix)
++		}
++		for _, regionName := range domain.Regions {
++			if !regionNames[regionName] {
++				return fmt.Errorf("%s: region %q not found", prefix, regionName)
+ 			}
+ 		}
+ 	}
+ 
+-	// Validate anycast_vip if set
+-	if cluster.AnycastVIP != "" {
+-		if ip := net.ParseIP(cluster.AnycastVIP); ip == nil {
+-			errs = append(errs, &ValidationError{
+-				Field:   "cluster.anycast_vip",
+-				Value:   cluster.AnycastVIP,
+-				Message: "invalid IP address",
+-			})
+-		}
+-	}
++	return nil
++}
+ 
+-	// Validate Raft settings
+-	if cluster.Raft.HeartbeatTimeout < 100*1_000_000 { // 100ms minimum
+-		errs = append(errs, &ValidationError{
+-			Field:   "cluster.raft.heartbeat_timeout",
+-			Value:   cluster.Raft.HeartbeatTimeout,
+-			Message: "must be at least 100ms",
+-		})
++// validateAPI validates API configuration.
++func (c *Config) validateAPI() error {
++	if !c.API.Enabled {
++		return nil
+ 	}
+ 
+-	if cluster.Raft.ElectionTimeout < cluster.Raft.HeartbeatTimeout {
+-		errs = append(errs, &ValidationError{
+-			Field:   "cluster.raft.election_timeout",
+-			Value:   cluster.Raft.ElectionTimeout,
+-			Message: "must be greater than or equal to heartbeat_timeout",
+-		})
++	if c.API.Address != "" {
++		if _, _, err := net.SplitHostPort(c.API.Address); err != nil {
++			return fmt.Errorf("invalid address %q: %w", c.API.Address, err)
++		}
+ 	}
+ 
+-	// Validate predictive health settings if enabled
+-	if cluster.PredictiveHealth.Enabled {
+-		errs = append(errs, validatePredictiveHealth(&cluster.PredictiveHealth)...)
++	for i, network := range c.API.AllowedNetworks {
++		if _, _, err := net.ParseCIDR(network); err != nil {
++			return fmt.Errorf("allowed_networks[%d] %q: invalid CIDR: %w", i, network, err)
++		}
+ 	}
+ 
+-	return errs
+-}
+-
+-func validatePredictiveHealth(ph *PredictiveHealthConfig) []error {
+-	var errs []error
+-	prefix := "cluster.predictive_health"
+-
+-	// Validate CPU threshold
+-	if ph.CPU.Threshold < 0 || ph.CPU.Threshold > 100 {
+-		errs = append(errs, &ValidationError{
+-			Field:   prefix + ".cpu.threshold",
+-			Value:   ph.CPU.Threshold,
+-			Message: "must be between 0 and 100",
+-		})
+-	}
+-	if ph.CPU.BleedDuration < time.Second {
+-		errs = append(errs, &ValidationError{
+-			Field:   prefix + ".cpu.bleed_duration",
+-			Value:   ph.CPU.BleedDuration,
+-			Message: "must be at least 1 second",
+-		})
+-	}
+-
+-	// Validate memory threshold
+-	if ph.Memory.Threshold < 0 || ph.Memory.Threshold > 100 {
+-		errs = append(errs, &ValidationError{
+-			Field:   prefix + ".memory.threshold",
+-			Value:   ph.Memory.Threshold,
+-			Message: "must be between 0 and 100",
+-		})
+-	}
+-	if ph.Memory.BleedDuration < time.Second {
+-		errs = append(errs, &ValidationError{
+-			Field:   prefix + ".memory.bleed_duration",
+-			Value:   ph.Memory.BleedDuration,
+-			Message: "must be at least 1 second",
+-		})
+-	}
+-
+-	// Validate error rate threshold
+-	if ph.ErrorRate.Threshold < 0 {
+-		errs = append(errs, &ValidationError{
+-			Field:   prefix + ".error_rate.threshold",
+-			Value:   ph.ErrorRate.Threshold,
+-			Message: "must be non-negative",
+-		})
+-	}
+-	if ph.ErrorRate.Window < time.Second {
+-		errs = append(errs, &ValidationError{
+-			Field:   prefix + ".error_rate.window",
+-			Value:   ph.ErrorRate.Window,
+-			Message: "must be at least 1 second",
+-		})
+-	}
+-	if ph.ErrorRate.BleedDuration < time.Second {
+-		errs = append(errs, &ValidationError{
+-			Field:   prefix + ".error_rate.bleed_duration",
+-			Value:   ph.ErrorRate.BleedDuration,
+-			Message: "must be at least 1 second",
+-		})
+-	}
+-
+-	return errs
+-}
++	return nil
++}
+\ No newline at end of file
+diff --git a/pkg/store/factory.go b/pkg/store/factory.go
+index 3b9e6c4..5de1c1e 100644
+--- a/pkg/store/factory.go
++++ b/pkg/store/factory.go
+@@ -8,43 +8,54 @@ package store
+ 
+ import (
+ 	"fmt"
+-	"path/filepath"
+-
+-	"github.com/loganrossus/OpenGSLB/pkg/cluster"
++	"log/slog"
+ )
+ 
+-// StoreType identifies the type of store to use.
++// StoreType defines the type of KV store to use.
+ type StoreType string
+ 
+ const (
+-	StoreTypeBbolt StoreType = "bbolt"
+-	StoreTypeRaft  StoreType = "raft"
++	// TypeBBolt uses the embedded bbolt database.
++	// This is the only store type in ADR-015 architecture.
++	TypeBBolt StoreType = "bbolt"
+ )
+ 
+-// Config holds configuration for the store factory.
++// Config holds configuration for creating a store.
+ type Config struct {
+-	Type     StoreType
+-	DataDir  string
+-	RaftNode *cluster.RaftNode
++	// Type specifies the store implementation.
++	// Only "bbolt" is supported in ADR-015 architecture.
++	Type StoreType
++
++	// Path is the filesystem path for the database file.
++	// Required for bbolt.
++	Path string
++
++	// Logger is used for store operations logging.
++	Logger *slog.Logger
+ }
+ 
+-// NewStore creates a new store based on the configuration.
+-func NewStore(cfg Config) (Store, error) {
+-	switch cfg.Type {
+-	case StoreTypeBbolt:
+-		if cfg.DataDir == "" {
+-			return nil, fmt.Errorf("DataDir is required for bbolt store")
+-		}
+-		dbPath := filepath.Join(cfg.DataDir, "kv.db")
+-		return NewBboltStore(dbPath)
++// New creates a new Store based on the configuration.
++// ADR-015: Only bbolt is supported. Raft-replicated store was removed.
++func New(cfg Config) (Store, error) {
++	if cfg.Logger == nil {
++		cfg.Logger = slog.Default()
++	}
+ 
+-	case StoreTypeRaft:
+-		if cfg.RaftNode == nil {
+-			return nil, fmt.Errorf("RaftNode is required for raft store")
++	switch cfg.Type {
++	case TypeBBolt, "": // Default to bbolt
++		if cfg.Path == "" {
++			return nil, fmt.Errorf("path is required for bbolt store")
+ 		}
+-		return NewRaftStore(cfg.RaftNode), nil
+-
++		return NewBBoltStore(cfg.Path)
+ 	default:
+-		return nil, fmt.Errorf("unknown store type: %s", cfg.Type)
++		return nil, fmt.Errorf("unsupported store type: %s (only 'bbolt' is supported)", cfg.Type)
+ 	}
+ }
++
++// NewDefault creates a bbolt store at the default path.
++func NewDefault(path string) (Store, error) {
++	return New(Config{
++		Type: TypeBBolt,
++		Path: path,
++	})
++}
+\ No newline at end of file
+diff --git a/pkg/store/raft.go b/pkg/store/raft.go
+deleted file mode 100644
+index c6d86b6..0000000
+--- a/pkg/store/raft.go
++++ /dev/null
+@@ -1,146 +0,0 @@
+-// Copyright (C) 2025 Logan Ross
+-//
+-// This file is part of OpenGSLB – https://opengslb.org
+-//
+-// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
+-
+-package store
+-
+-import (
+-	"context"
+-	"sync"
+-
+-	"github.com/loganrossus/OpenGSLB/pkg/cluster"
+-)
+-
+-// RaftStore implements Store using the Raft cluster.
+-type RaftStore struct {
+-	node     *cluster.RaftNode
+-	watchers map[string][]chan WatchEvent
+-	mu       sync.RWMutex
+-	closed   bool
+-}
+-
+-// NewRaftStore creates a new RaftStore.
+-func NewRaftStore(node *cluster.RaftNode) *RaftStore {
+-	store := &RaftStore{
+-		node:     node,
+-		watchers: make(map[string][]chan WatchEvent),
+-	}
+-
+-	// Subscribe to FSM updates
+-	node.FSM().AddWatcher(store.handleFSMEvent)
+-	return store
+-}
+-
+-// Get retrieves the value for the given key.
+-// Note: This performs a local read from the FSM. Consistency depends on Raft state.
+-// For strong consistency, one might want to use Barrier(), but straightforward Get is usually acceptable for extensive reads.
+-func (s *RaftStore) Get(ctx context.Context, key string) ([]byte, error) {
+-	val, exists := s.node.FSM().Get(key)
+-	if !exists {
+-		return nil, ErrKeyNotFound
+-	}
+-	return val, nil
+-}
+-
+-// Set sets the value for the given key.
+-func (s *RaftStore) Set(ctx context.Context, key string, value []byte) error {
+-	return s.node.ApplyCommand(ctx, cluster.CommandSet, key, value)
+-}
+-
+-// Delete removes the given key.
+-func (s *RaftStore) Delete(ctx context.Context, key string) error {
+-	return s.node.ApplyCommand(ctx, cluster.CommandDelete, key, nil)
+-}
+-
+-// List returns all key-value pairs where the key starts with the given prefix.
+-func (s *RaftStore) List(ctx context.Context, prefix string) ([]KVPair, error) {
+-	data := s.node.FSM().List(prefix)
+-	pairs := make([]KVPair, 0, len(data))
+-	for k, v := range data {
+-		pairs = append(pairs, KVPair{
+-			Key:   k,
+-			Value: v,
+-		})
+-	}
+-	return pairs, nil
+-}
+-
+-// Watch monitors keys with the given prefix for changes.
+-func (s *RaftStore) Watch(ctx context.Context, prefix string) (<-chan WatchEvent, error) {
+-	s.mu.Lock()
+-	defer s.mu.Unlock()
+-
+-	if s.closed {
+-		return nil, ErrClosed
+-	}
+-
+-	ch := make(chan WatchEvent, 10)
+-	s.watchers[prefix] = append(s.watchers[prefix], ch)
+-
+-	go func() {
+-		<-ctx.Done()
+-		s.removeWatcher(prefix, ch)
+-	}()
+-
+-	return ch, nil
+-}
+-
+-func (s *RaftStore) removeWatcher(prefix string, ch chan WatchEvent) {
+-	s.mu.Lock()
+-	defer s.mu.Unlock()
+-
+-	channels := s.watchers[prefix]
+-	for i, c := range channels {
+-		if c == ch {
+-			s.watchers[prefix] = append(channels[:i], channels[i+1:]...)
+-			close(ch)
+-			break
+-		}
+-	}
+-	if len(s.watchers[prefix]) == 0 {
+-		delete(s.watchers, prefix)
+-	}
+-}
+-
+-// handleFSMEvent is the callback from the Raft FSM.
+-func (s *RaftStore) handleFSMEvent(key string, value []byte, isDelete bool) {
+-	s.mu.RLock()
+-	defer s.mu.RUnlock()
+-
+-	eventType := EventPut
+-	if isDelete {
+-		eventType = EventDelete
+-	}
+-
+-	for prefix, channels := range s.watchers {
+-		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+-			event := WatchEvent{
+-				Type:  eventType,
+-				Key:   key,
+-				Value: value,
+-			}
+-			for _, ch := range channels {
+-				select {
+-				case ch <- event:
+-				default:
+-				}
+-			}
+-		}
+-	}
+-}
+-
+-// Close closes the store.
+-func (s *RaftStore) Close() error {
+-	s.mu.Lock()
+-	s.closed = true
+-	for _, channels := range s.watchers {
+-		for _, ch := range channels {
+-			close(ch)
+-		}
+-	}
+-	s.watchers = nil
+-	s.mu.Unlock()
+-	return nil
+-}

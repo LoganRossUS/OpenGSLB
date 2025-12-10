@@ -7,230 +7,175 @@
 package agent
 
 import (
-	"context"
 	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/loganrossus/OpenGSLB/pkg/cluster"
-	"github.com/loganrossus/OpenGSLB/pkg/config"
-	"github.com/loganrossus/OpenGSLB/pkg/metrics"
+	// ADR-015: Removed pkg/cluster import - cluster package deleted
 )
 
-// Signal types for predictive health.
-const (
-	// SignalBleed indicates the node should have traffic gradually reduced.
-	SignalBleed = "bleed"
+// PredictiveState represents the current predictive health state.
+type PredictiveState struct {
+	Bleeding    bool      `json:"bleeding"`
+	BleedReason string    `json:"bleed_reason,omitempty"`
+	BleedingAt  time.Time `json:"bleeding_at,omitempty"`
+	CPUPercent  float64   `json:"cpu_percent"`
+	MemPercent  float64   `json:"mem_percent"`
+	ErrorRate   float64   `json:"error_rate"`
+	LastCheck   time.Time `json:"last_check"`
+}
 
-	// SignalClear indicates the node has recovered and can resume normal traffic.
-	SignalClear = "clear"
-)
+// PredictiveConfig holds configuration for predictive health monitoring.
+type PredictiveConfig struct {
+	Enabled            bool          `yaml:"enabled"`
+	CPUThreshold       float64       `yaml:"cpu_threshold"`
+	MemoryThreshold    float64       `yaml:"memory_threshold"`
+	ErrorRateThreshold float64       `yaml:"error_rate_threshold"`
+	CheckInterval      time.Duration `yaml:"check_interval"`
+}
 
-// Reason codes for signals.
-const (
-	ReasonCPUHigh       = "cpu_high"
-	ReasonMemoryHigh    = "memory_high"
-	ReasonErrorRateHigh = "error_rate_high"
-	ReasonRecovered     = "recovered"
-)
-
-// Predictor evaluates metrics against thresholds and generates predictive signals.
-// It implements the "predictive from the inside" philosophy by monitoring local
-// system resources and signaling when thresholds are exceeded.
+// Predictor monitors local system metrics and predicts failures.
 type Predictor struct {
-	config  config.PredictiveHealthConfig
-	nodeID  string
-	monitor *Monitor
-	logger  *slog.Logger
-
-	// Current state
-	mu          sync.RWMutex
-	bleeding    bool
-	bleedReason string
-	bleedValue  float64
-
-	// Callback for signal changes
-	onSignal func(*cluster.PredictiveSignal)
-
-	// Evaluation interval
-	interval time.Duration
+	config   PredictiveConfig
+	logger   *slog.Logger
+	monitor  SystemMonitor
+	state    PredictiveState
+	mu       sync.RWMutex
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	callback func(PredictiveState)
 }
 
-// NewPredictor creates a new Predictor for threshold evaluation.
-func NewPredictor(cfg config.PredictiveHealthConfig, nodeID string, monitor *Monitor, logger *slog.Logger) *Predictor {
-	if logger == nil {
-		logger = slog.Default()
-	}
+// SystemMonitor provides system metrics.
+type SystemMonitor interface {
+	CPUPercent() (float64, error)
+	MemoryPercent() (float64, error)
+	ErrorRate() (float64, error)
+}
 
+// NewPredictor creates a new predictive health monitor.
+func NewPredictor(cfg PredictiveConfig, monitor SystemMonitor, logger *slog.Logger) *Predictor {
 	return &Predictor{
-		config:   cfg,
-		nodeID:   nodeID,
-		monitor:  monitor,
-		logger:   logger,
-		interval: 5 * time.Second, // Default evaluation interval
+		config:  cfg,
+		logger:  logger,
+		monitor: monitor,
+		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
 	}
 }
 
-// OnSignal sets the callback function to invoke when a signal is generated.
-// This is typically wired to gossip.BroadcastPredictive.
-func (p *Predictor) OnSignal(fn func(*cluster.PredictiveSignal)) {
-	p.onSignal = fn
-}
-
-// SetInterval sets the evaluation interval.
-func (p *Predictor) SetInterval(d time.Duration) {
-	if d > 0 {
-		p.interval = d
-	}
-}
-
-// Start begins the evaluation loop. It runs until the context is canceled.
-func (p *Predictor) Start(ctx context.Context) error {
+// Start begins predictive monitoring.
+func (p *Predictor) Start() {
 	if !p.config.Enabled {
 		p.logger.Info("predictive health monitoring disabled")
-		return nil
+		close(p.doneCh)
+		return
 	}
 
-	p.logger.Info("starting predictive health monitoring",
-		"cpu_threshold", p.config.CPU.Threshold,
-		"memory_threshold", p.config.Memory.Threshold,
-		"error_rate_threshold", p.config.ErrorRate.Threshold,
-	)
+	go p.monitorLoop()
+}
 
-	ticker := time.NewTicker(p.interval)
+// Stop stops predictive monitoring.
+func (p *Predictor) Stop() {
+	close(p.stopCh)
+	<-p.doneCh
+}
+
+// SetCallback sets the function to call when state changes.
+func (p *Predictor) SetCallback(cb func(PredictiveState)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.callback = cb
+}
+
+// GetState returns the current predictive state.
+func (p *Predictor) GetState() PredictiveState {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.state
+}
+
+// IsBleeding returns true if the system is in a bleeding state.
+func (p *Predictor) IsBleeding() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.state.Bleeding
+}
+
+func (p *Predictor) monitorLoop() {
+	defer close(p.doneCh)
+
+	ticker := time.NewTicker(p.config.CheckInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ctx.Done():
-			p.logger.Info("stopping predictive health monitoring")
-			return ctx.Err()
+		case <-p.stopCh:
+			return
 		case <-ticker.C:
-			signal, err := p.Evaluate()
-			if err != nil {
-				p.logger.Error("failed to evaluate metrics", "error", err)
-				continue
-			}
-
-			if signal != nil && p.onSignal != nil {
-				p.onSignal(signal)
-			}
-
-			// Update Prometheus metrics
-			p.updateMetrics()
+			p.checkMetrics()
 		}
 	}
 }
 
-// Evaluate checks current metrics against thresholds and returns a signal if warranted.
-// Returns nil if no signal change is needed.
-func (p *Predictor) Evaluate() (*cluster.PredictiveSignal, error) {
-	metrics, err := p.monitor.Collect()
-	if err != nil {
-		return nil, err
-	}
+func (p *Predictor) checkMetrics() {
+	cpu, cpuErr := p.monitor.CPUPercent()
+	mem, memErr := p.monitor.MemoryPercent()
+	errRate, errRateErr := p.monitor.ErrorRate()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// Update metrics even if some failed
+	if cpuErr == nil {
+		p.state.CPUPercent = cpu
+	}
+	if memErr == nil {
+		p.state.MemPercent = mem
+	}
+	if errRateErr == nil {
+		p.state.ErrorRate = errRate
+	}
+	p.state.LastCheck = time.Now()
+
 	// Check thresholds
-	cpuExceeded := metrics.CPUPercent > p.config.CPU.Threshold
-	memExceeded := metrics.MemoryPercent > p.config.Memory.Threshold
-	errorExceeded := metrics.ErrorRate > p.config.ErrorRate.Threshold
+	wasBleeding := p.state.Bleeding
+	bleedReason := ""
 
-	anyExceeded := cpuExceeded || memExceeded || errorExceeded
-
-	// Determine if state has changed
-	if anyExceeded && !p.bleeding {
-		// Transitioned to bleeding state
-		p.bleeding = true
-		reason, value, threshold := p.determineReason(metrics, cpuExceeded, memExceeded, errorExceeded)
-		p.bleedReason = reason
-		p.bleedValue = value
-
-		p.logger.Warn("predictive health threshold exceeded, signaling bleed",
-			"reason", reason,
-			"value", value,
-			"threshold", threshold,
-		)
-
-		return &cluster.PredictiveSignal{
-			NodeID:    p.nodeID,
-			Signal:    SignalBleed,
-			Reason:    reason,
-			Value:     value,
-			Threshold: threshold,
-		}, nil
-	} else if !anyExceeded && p.bleeding {
-		// Recovered from bleeding state
-		p.bleeding = false
-		previousReason := p.bleedReason
-		p.bleedReason = ""
-		p.bleedValue = 0
-
-		p.logger.Info("predictive health recovered, clearing signal",
-			"previous_reason", previousReason,
-		)
-
-		return &cluster.PredictiveSignal{
-			NodeID:    p.nodeID,
-			Signal:    SignalClear,
-			Reason:    ReasonRecovered,
-			Value:     0,
-			Threshold: 0,
-		}, nil
+	if cpuErr == nil && cpu >= p.config.CPUThreshold {
+		bleedReason = "cpu_threshold_exceeded"
+	} else if memErr == nil && mem >= p.config.MemoryThreshold {
+		bleedReason = "memory_threshold_exceeded"
+	} else if errRateErr == nil && errRate >= p.config.ErrorRateThreshold {
+		bleedReason = "error_rate_threshold_exceeded"
 	}
 
-	// No state change
-	return nil, nil
-}
-
-// determineReason returns the reason, current value, and threshold for a bleed signal.
-// Priority: CPU > Memory > ErrorRate (first exceeded wins)
-func (p *Predictor) determineReason(metrics *Metrics, cpu, mem, errorRate bool) (string, float64, float64) {
-	if cpu {
-		return ReasonCPUHigh, metrics.CPUPercent, p.config.CPU.Threshold
-	}
-	if mem {
-		return ReasonMemoryHigh, metrics.MemoryPercent, p.config.Memory.Threshold
-	}
-	if errorRate {
-		return ReasonErrorRateHigh, metrics.ErrorRate, p.config.ErrorRate.Threshold
-	}
-	return "", 0, 0
-}
-
-// IsBleeding returns true if the predictor is currently signaling a bleed.
-func (p *Predictor) IsBleeding() bool {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.bleeding
-}
-
-// BleedReason returns the current bleed reason, or empty string if not bleeding.
-func (p *Predictor) BleedReason() string {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.bleedReason
-}
-
-// GetMetrics returns the current metrics and state for monitoring purposes.
-func (p *Predictor) GetMetrics() (*Metrics, bool, string) {
-	metrics, err := p.monitor.Collect()
-	if err != nil {
-		return nil, false, ""
+	if bleedReason != "" {
+		if !p.state.Bleeding {
+			p.state.Bleeding = true
+			p.state.BleedReason = bleedReason
+			p.state.BleedingAt = time.Now()
+			p.logger.Warn("predictive bleed triggered",
+				"reason", bleedReason,
+				"cpu", cpu,
+				"memory", mem,
+				"error_rate", errRate)
+		}
+	} else {
+		if p.state.Bleeding {
+			p.logger.Info("predictive bleed cleared",
+				"was_reason", p.state.BleedReason,
+				"cpu", cpu,
+				"memory", mem,
+				"error_rate", errRate)
+		}
+		p.state.Bleeding = false
+		p.state.BleedReason = ""
+		p.state.BleedingAt = time.Time{}
 	}
 
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return metrics, p.bleeding, p.bleedReason
-}
-
-// updateMetrics updates Prometheus metrics with current values.
-func (p *Predictor) updateMetrics() {
-	metricsData, bleeding, _ := p.GetMetrics()
-	if metricsData != nil {
-		// Using the pkg/metrics helper
-		metrics.SetPredictiveMetrics(metricsData.CPUPercent, metricsData.MemoryPercent, metricsData.ErrorRate, bleeding)
+	// Notify callback if state changed
+	if wasBleeding != p.state.Bleeding && p.callback != nil {
+		stateCopy := p.state
+		go p.callback(stateCopy)
 	}
 }
