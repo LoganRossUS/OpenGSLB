@@ -10,15 +10,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net"
-	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/hashicorp/memberlist"
-	"github.com/loganrossus/OpenGSLB/pkg/agent"
 	"github.com/loganrossus/OpenGSLB/pkg/api"
-	"github.com/loganrossus/OpenGSLB/pkg/cluster"
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/dns"
 	"github.com/loganrossus/OpenGSLB/pkg/health"
@@ -28,24 +23,25 @@ import (
 )
 
 // Application manages the lifecycle of all OpenGSLB components.
+// ADR-015: Simplified architecture - no Raft, no cluster coordination.
 type Application struct {
-	config        *config.Config
-	configMu      sync.RWMutex
+	config   *config.Config
+	configMu sync.RWMutex
+	logger   *slog.Logger
+
+	// Overwatch mode components
 	dnsServer     *dns.Server
 	dnsHandler    *dns.Handler
 	dnsRegistry   *dns.Registry
 	healthManager *health.Manager
 	metricsServer *metrics.Server
 	apiServer     *api.Server
-	logger        *slog.Logger
 
-	// Cluster mode components
-	// Cluster mode components
-	raftNode      *cluster.RaftNode
-	gossipManager *cluster.GossipManager
-	monitor       *agent.Monitor
-	predictor     *agent.Predictor
-	overwatch     *cluster.Overwatch
+	// Agent mode components (Story 2 will add these)
+	// agentManager *agent.Manager
+
+	// Gossip - used in both modes but differently (Story 2/3 will add)
+	// gossipManager *gossip.Manager
 
 	// shutdownCh is closed when the application is shutting down.
 	shutdownCh chan struct{}
@@ -65,301 +61,93 @@ func NewApplication(cfg *config.Config, logger *slog.Logger) *Application {
 
 // Initialize sets up all components using the loaded configuration.
 func (a *Application) Initialize() error {
-	a.logger.Info("initializing application", "mode", a.config.Cluster.Mode)
+	a.logger.Info("initializing application", "mode", a.config.GetEffectiveMode())
 
 	metrics.SetAppInfo(version.Version)
 
+	// Mode-specific initialization
+	switch a.config.GetEffectiveMode() {
+	case config.ModeAgent:
+		if err := a.initializeAgentMode(); err != nil {
+			return fmt.Errorf("failed to initialize agent mode: %w", err)
+		}
+	case config.ModeOverwatch:
+		if err := a.initializeOverwatchMode(); err != nil {
+			return fmt.Errorf("failed to initialize overwatch mode: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown mode: %s", a.config.Mode)
+	}
+
+	return nil
+}
+
+// initializeAgentMode sets up agent-specific components.
+// ADR-015: Agent monitors local backends, gossips to overwatch nodes.
+func (a *Application) initializeAgentMode() error {
+	a.logger.Info("initializing agent mode",
+		"region", a.config.Agent.Identity.Region,
+		"backends", len(a.config.Agent.Backends),
+	)
+
+	// Story 2 will implement:
+	// - Multi-backend health checking
+	// - Heartbeat mechanism
+	// - Gossip to overwatch nodes
+	// - Predictive health monitoring
+
+	// For now, just initialize metrics
+	if err := a.initializeMetricsServer(); err != nil {
+		return fmt.Errorf("failed to initialize metrics server: %w", err)
+	}
+
+	a.logger.Info("agent mode initialized (stub - Story 2 will complete)")
+	return nil
+}
+
+// initializeOverwatchMode sets up overwatch-specific components.
+// ADR-015: Overwatch serves DNS, validates health, receives agent gossip.
+func (a *Application) initializeOverwatchMode() error {
+	a.logger.Info("initializing overwatch mode",
+		"node_id", a.config.Overwatch.Identity.NodeID,
+		"region", a.config.Overwatch.Identity.Region,
+	)
+
+	// Set config metrics
 	serverCount := 0
 	for _, region := range a.config.Regions {
 		serverCount += len(region.Servers)
 	}
 	metrics.SetConfigMetrics(len(a.config.Domains), serverCount, float64(time.Now().Unix()))
 
-	// Mode-specific initialization
-	if a.config.Cluster.IsClusterMode() {
-		if err := a.initializeClusterMode(); err != nil {
-			return fmt.Errorf("failed to initialize cluster mode: %w", err)
-		}
-		// Set cluster mode metric
-		metrics.SetClusterMode(true)
-	} else {
-		a.logger.Info("running in standalone mode")
-		// Set standalone mode metric
-		metrics.SetClusterMode(false)
-	}
-
+	// Initialize health manager (for external validation)
 	if err := a.initializeHealthManager(); err != nil {
 		return fmt.Errorf("failed to initialize health manager: %w", err)
 	}
 
+	// Initialize DNS server
 	if err := a.initializeDNSServer(); err != nil {
 		return fmt.Errorf("failed to initialize DNS server: %w", err)
 	}
 
+	// Initialize metrics server
 	if err := a.initializeMetricsServer(); err != nil {
 		return fmt.Errorf("failed to initialize metrics server: %w", err)
 	}
 
+	// Initialize API server
 	if err := a.initializeAPIServer(); err != nil {
 		return fmt.Errorf("failed to initialize API server: %w", err)
 	}
 
+	// Story 3 will add:
+	// - Gossip receiver for agent messages
+	// - Backend registry from agent registrations
+	// - External validation of agent health claims
+	// - Override API
+
+	a.logger.Info("overwatch mode initialized")
 	return nil
-}
-
-// initializeClusterMode sets up cluster-specific components.
-func (a *Application) initializeClusterMode() error {
-	a.logger.Info("initializing cluster mode components",
-		"node_name", a.config.Cluster.NodeName,
-		"bind_address", a.config.Cluster.BindAddress,
-		"bootstrap", a.config.Cluster.Bootstrap,
-	)
-
-	// Determine data directory for Raft
-	dataDir := a.config.Cluster.Raft.DataDir
-	if dataDir == "" {
-		dataDir = filepath.Join(".", "data", a.config.Cluster.NodeName)
-	}
-
-	// Create Raft node configuration
-	raftCfg := cluster.DefaultConfig()
-	raftCfg.NodeID = a.config.Cluster.NodeName
-	raftCfg.NodeName = a.config.Cluster.NodeName
-	raftCfg.BindAddress = a.config.Cluster.BindAddress
-	raftCfg.AdvertiseAddress = a.config.Cluster.AdvertiseAddress
-	raftCfg.DataDir = dataDir
-	raftCfg.Bootstrap = a.config.Cluster.Bootstrap
-	raftCfg.Join = a.config.Cluster.Join
-
-	// Apply timeouts from config if set
-	if a.config.Cluster.Raft.HeartbeatTimeout > 0 {
-		raftCfg.HeartbeatTimeout = a.config.Cluster.Raft.HeartbeatTimeout
-	}
-	if a.config.Cluster.Raft.ElectionTimeout > 0 {
-		raftCfg.ElectionTimeout = a.config.Cluster.Raft.ElectionTimeout
-	}
-
-	// Create Raft node
-	raftNode, err := cluster.NewRaftNode(raftCfg, a.logger.With("component", "raft"))
-	if err != nil {
-		return fmt.Errorf("failed to create raft node: %w", err)
-	}
-	a.raftNode = raftNode
-
-	// Set node info metric
-	metrics.SetClusterNodeInfo(a.config.Cluster.NodeName, a.config.Cluster.BindAddress)
-
-	// Register leader observer for metrics and DNS server activation
-	a.raftNode.RegisterLeaderObserver(func(isLeader bool) {
-		a.onLeadershipChange(isLeader)
-	})
-
-	// Initialize gossip if enabled
-	if err := a.initializeGossip(); err != nil {
-		return fmt.Errorf("failed to initialize gossip: %w", err)
-	}
-
-	// Initialize predictive health monitoring (Story 5)
-	if err := a.initializePredictiveHealth(); err != nil {
-		return fmt.Errorf("failed to initialize predictive health: %w", err)
-	}
-
-	// Initialize Overwatch (Story 6)
-	overwatch := cluster.NewOverwatch(
-		a.config.Cluster.Overwatch,
-		a.config.Regions,
-		a.gossipManager,
-		a.raftNode,
-		a.logger.With("component", "overwatch"),
-	)
-	if err := overwatch.Start(context.Background()); err != nil {
-		return fmt.Errorf("failed to start overwatch: %w", err)
-	}
-	a.overwatch = overwatch
-
-	a.logger.Info("cluster mode components initialized")
-	return nil
-}
-
-// initializeGossip sets up the gossip protocol for health event propagation.
-func (a *Application) initializeGossip() error {
-	// Parse bind address to get IP
-	bindIP, _, err := net.SplitHostPort(a.config.Cluster.BindAddress)
-	if err != nil {
-		// If no port, assume it's just an IP
-		bindIP = a.config.Cluster.BindAddress
-	}
-
-	// Parse advertise address
-	advertiseIP := bindIP
-	if a.config.Cluster.AdvertiseAddress != "" {
-		advertiseIP, _, err = net.SplitHostPort(a.config.Cluster.AdvertiseAddress)
-		if err != nil {
-			advertiseIP = a.config.Cluster.AdvertiseAddress
-		}
-	}
-
-	// Create gossip configuration
-	gossipCfg := cluster.DefaultGossipConfig()
-	gossipCfg.NodeID = a.config.Cluster.NodeName
-	gossipCfg.NodeName = a.config.Cluster.NodeName
-	gossipCfg.BindAddr = bindIP
-	gossipCfg.BindPort = a.config.Cluster.GetGossipBindPort()
-	gossipCfg.AdvertiseAddr = advertiseIP
-	gossipCfg.AdvertisePort = a.config.Cluster.GetGossipAdvertisePort()
-	gossipCfg.EncryptionKey = a.config.Cluster.Gossip.EncryptionKey
-
-	// Apply timing configuration
-	if a.config.Cluster.Gossip.ProbeInterval > 0 {
-		gossipCfg.ProbeInterval = a.config.Cluster.Gossip.ProbeInterval
-	}
-	if a.config.Cluster.Gossip.ProbeTimeout > 0 {
-		gossipCfg.ProbeTimeout = a.config.Cluster.Gossip.ProbeTimeout
-	}
-	if a.config.Cluster.Gossip.GossipInterval > 0 {
-		gossipCfg.GossipInterval = a.config.Cluster.Gossip.GossipInterval
-	}
-	if a.config.Cluster.Gossip.PushPullInterval > 0 {
-		gossipCfg.PushPullInterval = a.config.Cluster.Gossip.PushPullInterval
-	}
-
-	// Build seed list from join addresses
-	// Convert API addresses to gossip addresses (same IP, gossip port)
-	for _, joinAddr := range a.config.Cluster.Join {
-		host, _, err := net.SplitHostPort(joinAddr)
-		if err != nil {
-			host = joinAddr
-		}
-		gossipCfg.Seeds = append(gossipCfg.Seeds,
-			fmt.Sprintf("%s:%d", host, gossipCfg.BindPort))
-	}
-
-	// Create gossip manager
-	gossipManager, err := cluster.NewGossipManager(gossipCfg, a.logger.With("component", "gossip"))
-	if err != nil {
-		return fmt.Errorf("failed to create gossip manager: %w", err)
-	}
-	a.gossipManager = gossipManager
-
-	// Set up gossip event handlers
-	a.setupGossipHandlers()
-
-	a.logger.Info("gossip manager initialized",
-		"bind_addr", gossipCfg.BindAddr,
-		"bind_port", gossipCfg.BindPort,
-		"seeds", gossipCfg.Seeds,
-	)
-
-	return nil
-}
-
-// setupGossipHandlers configures callbacks for gossip events.
-func (a *Application) setupGossipHandlers() {
-	if a.gossipManager == nil {
-		return
-	}
-
-	// Handle health updates from other nodes
-	a.gossipManager.OnHealthUpdate(func(update *cluster.HealthUpdate, fromNode string) {
-		a.logger.Debug("received health update via gossip",
-			"server", update.ServerAddr,
-			"region", update.Region,
-			"healthy", update.Healthy,
-			"from", fromNode,
-		)
-		metrics.RecordGossipHealthUpdateReceived()
-		metrics.RecordGossipMessageReceived("health_update")
-
-		// Calculate propagation latency if we have a reasonable reference
-		// (In production, this would use synchronized time or vector clocks)
-	})
-
-	// Handle predictive signals
-	a.gossipManager.OnPredictive(func(signal *cluster.PredictiveSignal, fromNode string) {
-		a.logger.Info("received predictive signal via gossip",
-			"node", signal.NodeID,
-			"signal", signal.Signal,
-			"reason", signal.Reason,
-			"value", signal.Value,
-			"threshold", signal.Threshold,
-			"from", fromNode,
-		)
-		metrics.RecordGossipPredictiveSignal(signal.Signal)
-		metrics.RecordGossipMessageReceived("predictive")
-
-		// TODO: Implement predictive signal handling
-		// - Adjust routing weights
-		// - Trigger preemptive failover if critical
-	})
-
-	// Handle override commands
-	a.gossipManager.OnOverride(func(override *cluster.OverrideCommand, fromNode string) {
-		a.logger.Info("received override command via gossip",
-			"target_node", override.TargetNode,
-			"server", override.ServerAddr,
-			"action", override.Action,
-			"reason", override.Reason,
-			"from", fromNode,
-		)
-		metrics.RecordGossipOverride(override.Action)
-		metrics.RecordGossipMessageReceived("override")
-
-		// TODO: Implement override command handling
-		// - Force health status if target_node is us
-		// - Store in KV for persistence
-	})
-
-	// Handle node membership changes
-	a.gossipManager.OnNodeJoin(func(node *memberlist.Node) {
-		a.logger.Info("gossip: node joined",
-			"name", node.Name,
-			"address", node.Address(),
-		)
-		metrics.RecordGossipNodeJoin()
-		a.updateGossipMetrics()
-	})
-
-	a.gossipManager.OnNodeLeave(func(node *memberlist.Node) {
-		a.logger.Info("gossip: node left",
-			"name", node.Name,
-			"address", node.Address(),
-		)
-		metrics.RecordGossipNodeLeave()
-		a.updateGossipMetrics()
-	})
-}
-
-// updateGossipMetrics updates Prometheus metrics for gossip state.
-func (a *Application) updateGossipMetrics() {
-	if a.gossipManager == nil {
-		return
-	}
-
-	members := a.gossipManager.Members()
-	healthyCount := 0
-	for _, m := range members {
-		if m.State == "alive" {
-			healthyCount++
-		}
-	}
-	metrics.SetGossipMembers(len(members), healthyCount)
-}
-
-// onLeadershipChange is called when this node's leadership status changes.
-// It updates metrics and logs the transition.
-func (a *Application) onLeadershipChange(isLeader bool) {
-	a.logger.Info("leadership changed", "is_leader", isLeader)
-
-	// Update metrics
-	metrics.SetClusterLeader(isLeader)
-	if isLeader {
-		metrics.SetClusterState("leader")
-		a.logger.Info("this node is now the cluster leader - DNS queries will be served")
-	} else {
-		metrics.SetClusterState("follower")
-		a.logger.Info("this node is now a follower - DNS queries will be refused")
-	}
-	metrics.RecordLeaderChange()
 }
 
 // initializeHealthManager creates and configures the health manager.
@@ -388,64 +176,10 @@ func (a *Application) initializeHealthManager() error {
 		return err
 	}
 
-	// Register callback for status changes
-	a.healthManager.OnStatusChange(func(address string, status health.Status) {
-		a.broadcastHealthUpdate(address, status)
-
-		// Record error for predictive health monitoring if check failed
-		if status != health.StatusHealthy && a.monitor != nil {
-			a.monitor.RecordError()
-		}
-	})
-
 	a.logger.Info("health manager initialized",
 		"servers", a.healthManager.ServerCount(),
 	)
 	return nil
-}
-
-// broadcastHealthUpdate sends a health status change to the gossip cluster.
-func (a *Application) broadcastHealthUpdate(address string, status health.Status) {
-	if a.gossipManager == nil || !a.gossipManager.IsRunning() {
-		return
-	}
-
-	// Find the region for this server
-	region := a.getServerRegion(address)
-
-	update := &cluster.HealthUpdate{
-		ServerAddr: address,
-		Region:     region,
-		Healthy:    status == health.StatusHealthy,
-		CheckType:  "local", // Indicates this is from local health checks
-	}
-
-	if err := a.gossipManager.BroadcastHealthUpdate(update); err != nil {
-		a.logger.Warn("failed to broadcast health update",
-			"address", address,
-			"error", err,
-		)
-		metrics.RecordGossipSendFailure()
-	} else {
-		metrics.RecordGossipHealthUpdateBroadcast()
-		metrics.RecordGossipMessageSent("health_update")
-	}
-}
-
-// getServerRegion finds the region name for a server address.
-func (a *Application) getServerRegion(address string) string {
-	a.configMu.RLock()
-	defer a.configMu.RUnlock()
-
-	for _, region := range a.config.Regions {
-		for _, server := range region.Servers {
-			serverAddr := fmt.Sprintf("%s:%d", server.Address, server.Port)
-			if serverAddr == address {
-				return region.Name
-			}
-		}
-	}
-	return ""
 }
 
 // registerHealthCheckServers registers all configured servers with the health manager.
@@ -503,25 +237,11 @@ func (a *Application) initializeDNSServer() error {
 		}
 	}
 
-	// Create leader checker - in cluster mode, use raftNode; in standalone, use nil (defaults to always leader)
-	var leaderChecker dns.LeaderChecker
-	if a.config.Cluster.IsClusterMode() && a.raftNode != nil {
-		leaderChecker = a.raftNode
-	}
-
-	// Use VetoHealthProvider if Overwatch is enabled (cluster mode)
-	var healthProvider dns.HealthStatusProvider = a.healthManager
-	if a.overwatch != nil {
-		healthProvider = &vetoHealthProvider{
-			base:      a.healthManager,
-			overwatch: a.overwatch,
-		}
-	}
-
+	// ADR-015: No leader checker needed - all Overwatch nodes serve DNS independently
 	handler := dns.NewHandler(dns.HandlerConfig{
 		Registry:       registry,
-		HealthProvider: healthProvider,
-		LeaderChecker:  leaderChecker,
+		HealthProvider: a.healthManager,
+		LeaderChecker:  nil, // Standalone mode - always serve
 		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
 		Logger:         a.logger,
 	})
@@ -536,7 +256,6 @@ func (a *Application) initializeDNSServer() error {
 	a.logger.Info("DNS server initialized",
 		"address", a.config.DNS.ListenAddress,
 		"domains", registry.Count(),
-		"cluster_mode", a.config.Cluster.IsClusterMode(),
 	)
 	return nil
 }
@@ -585,17 +304,7 @@ func (a *Application) initializeAPIServer() error {
 		return fmt.Errorf("failed to create API server: %w", err)
 	}
 
-	// Set up cluster handlers if in cluster mode
-	if a.config.Cluster.IsClusterMode() && a.raftNode != nil {
-		clusterHandlers := api.NewClusterHandlers(
-			a.raftNode,
-			string(a.config.Cluster.Mode),
-			a.logger.With("component", "cluster-api"),
-		)
-		server.SetClusterHandlers(clusterHandlers)
-		a.logger.Debug("cluster API handlers configured")
-	}
-
+	// ADR-015: No cluster handlers - removed
 	a.apiServer = server
 
 	a.logger.Info("API server initialized",
@@ -605,106 +314,57 @@ func (a *Application) initializeAPIServer() error {
 	return nil
 }
 
-// initializePredictiveHealth sets up the predictive health monitoring agent.
-func (a *Application) initializePredictiveHealth() error {
-	a.configMu.RLock()
-	cfg := a.config.Cluster.PredictiveHealth
-	nodeID := a.config.Cluster.NodeName
-	a.configMu.RUnlock()
+// Start begins all application components.
+func (a *Application) Start(ctx context.Context) error {
+	a.logger.Info("starting application", "mode", a.config.GetEffectiveMode())
 
-	if !cfg.Enabled {
-		a.logger.Info("predictive health monitoring disabled")
-		return nil
+	switch a.config.GetEffectiveMode() {
+	case config.ModeAgent:
+		return a.startAgentMode(ctx)
+	case config.ModeOverwatch:
+		return a.startOverwatchMode(ctx)
+	default:
+		return fmt.Errorf("unknown mode: %s", a.config.Mode)
 	}
+}
 
-	a.logger.Info("initializing predictive health monitoring")
+// startAgentMode starts agent-specific components.
+func (a *Application) startAgentMode(ctx context.Context) error {
+	// Story 2 will implement:
+	// - Start gossip to overwatch nodes
+	// - Start health checks for local backends
+	// - Start heartbeat sender
+	// - Start predictive health monitoring
 
-	// Create monitor
-	a.monitor = agent.NewMonitor(a.logger, cfg.ErrorRate.Window)
-
-	// Create predictor
-	a.predictor = agent.NewPredictor(cfg, nodeID, a.monitor, a.logger)
-
-	// Wire up predictor to broadcast signals via gossip
-	if a.gossipManager != nil {
-		a.predictor.OnSignal(func(signal *cluster.PredictiveSignal) {
-			a.logger.Info("broadcasting predictive health signal",
-				"signal", signal.Signal,
-				"reason", signal.Reason,
-			)
-			if err := a.gossipManager.BroadcastPredictive(signal); err != nil {
-				a.logger.Error("failed to broadcast predictive signal", "error", err)
+	if a.metricsServer != nil {
+		go func() {
+			if err := a.metricsServer.Start(ctx); err != nil {
+				a.logger.Error("metrics server error", "error", err)
 			}
-		})
+		}()
 	}
 
+	a.logger.Info("agent mode started (stub - Story 2 will complete)")
+
+	// Block until context is canceled
+	<-ctx.Done()
 	return nil
 }
 
-// Start begins all application components.
-func (a *Application) Start(ctx context.Context) error {
-	a.logger.Info("starting application", "mode", a.config.Cluster.Mode)
-
-	// In cluster mode, start Raft first
-	if a.config.Cluster.IsClusterMode() && a.raftNode != nil {
-		if err := a.raftNode.Start(ctx); err != nil {
-			return fmt.Errorf("failed to start Raft node: %w", err)
-		}
-		a.logger.Info("Raft node started")
-
-		// Wait for leader election
-		leaderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		if err := a.raftNode.WaitForLeader(leaderCtx); err != nil {
-			a.logger.Warn("timeout waiting for leader election", "error", err)
-		} else {
-			leader, _ := a.raftNode.Leader()
-			a.logger.Info("leader elected", "leader_id", leader.NodeID)
-
-			// Explicitly sync leadership metric in case event was missed or handled before metrics were ready
-			if leader.NodeID == a.config.Cluster.NodeName {
-				a.onLeadershipChange(true)
-			}
-		}
-	}
-
-	// Start gossip after Raft (so we have node identity established)
-	if a.gossipManager != nil {
-		if err := a.gossipManager.Start(context.Background()); err != nil { // Changed ctx to context.Background() as per instruction
-			return fmt.Errorf("failed to start gossip manager: %w", err)
-		}
-		a.logger.Info("gossip manager started",
-			"members", a.gossipManager.NumMembers(),
-		)
-		a.updateGossipMetrics()
-	}
-
-	if a.monitor != nil {
-		a.logger.Info("agent monitor initialized")
-	}
-
-	if a.predictor != nil {
-		go func() {
-			if err := a.predictor.Start(ctx); err != nil {
-				a.logger.Error("predictive health monitoring stopped with error", "error", err)
-			}
-		}()
-		a.logger.Info("agent predictor started")
-	}
-
+// startOverwatchMode starts overwatch-specific components.
+func (a *Application) startOverwatchMode(ctx context.Context) error {
+	// Start health manager
 	if err := a.healthManager.Start(); err != nil {
 		return fmt.Errorf("failed to start health manager: %w", err)
 	}
 	a.logger.Info("health manager started")
 
+	// Start metrics server
 	if a.metricsServer != nil {
 		go func() {
-			// Retry loop for metrics server
 			for i := 0; i < 30; i++ {
 				if err := a.metricsServer.Start(ctx); err != nil {
-					// Log as warning during retries
 					a.logger.Warn("metrics server failed to start, retrying", "error", err, "attempt", i+1)
-					// If error is "addr in use", wait and retry
 					select {
 					case <-ctx.Done():
 						return
@@ -712,13 +372,13 @@ func (a *Application) Start(ctx context.Context) error {
 						continue
 					}
 				}
-				// If Start returns nil (clean shutdown) or context canceled, we exit
 				return
 			}
 			a.logger.Error("metrics server failed to start after 30 attempts")
 		}()
 	}
 
+	// Start API server
 	if a.apiServer != nil {
 		go func() {
 			if err := a.apiServer.Start(ctx); err != nil {
@@ -727,13 +387,12 @@ func (a *Application) Start(ctx context.Context) error {
 		}()
 	}
 
-	// Start DNS server
-	// In cluster mode, the server always runs but the handler checks leadership
-	// before processing queries. Non-leaders return REFUSED.
-	a.logger.Info("starting DNS server",
-		"address", a.config.DNS.ListenAddress,
-		"leader_check", a.config.Cluster.IsClusterMode(),
-	)
+	// Story 3 will add:
+	// - Start gossip receiver
+	// - Start external validation loop
+
+	// Start DNS server (blocks until shutdown)
+	a.logger.Info("starting DNS server", "address", a.config.DNS.ListenAddress)
 	if err := a.dnsServer.Start(ctx); err != nil {
 		return fmt.Errorf("DNS server error: %w", err)
 	}
@@ -747,23 +406,32 @@ func (a *Application) Shutdown(ctx context.Context) error {
 
 	var shutdownErr error
 
-	// Stop gossip first (quick, allows graceful leave)
-	if a.gossipManager != nil {
-		a.logger.Debug("stopping gossip manager")
-		if err := a.gossipManager.Stop(ctx); err != nil {
-			a.logger.Error("error stopping gossip manager", "error", err)
+	// Mode-specific shutdown
+	switch a.config.GetEffectiveMode() {
+	case config.ModeAgent:
+		// Story 2 will add agent-specific shutdown
+	case config.ModeOverwatch:
+		if err := a.shutdownOverwatchMode(ctx); err != nil {
 			shutdownErr = err
 		}
 	}
 
-	// Stop Raft node if in cluster mode
-	if a.raftNode != nil {
-		a.logger.Debug("stopping Raft node")
-		if err := a.raftNode.Stop(ctx); err != nil {
-			a.logger.Error("error stopping Raft node", "error", err)
-			shutdownErr = err
-		}
+	// Common shutdown
+	if a.metricsServer != nil {
+		a.logger.Debug("stopping metrics server")
+		// Metrics server doesn't have explicit shutdown
 	}
+
+	a.logger.Info("application shutdown complete")
+	return shutdownErr
+}
+
+// shutdownOverwatchMode stops overwatch-specific components.
+func (a *Application) shutdownOverwatchMode(ctx context.Context) error {
+	var shutdownErr error
+
+	// Story 3 will add:
+	// - Stop gossip receiver
 
 	if a.apiServer != nil {
 		a.logger.Debug("stopping API server")
@@ -783,39 +451,9 @@ func (a *Application) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	select {
-	case <-ctx.Done():
-		a.logger.Warn("shutdown deadline exceeded")
-		return ctx.Err()
-	case <-time.After(100 * time.Millisecond):
-	}
+	// DNS server shuts down when context is canceled
 
-	a.logger.Info("application shutdown complete")
 	return shutdownErr
-}
-
-// IsLeader returns true if this node is the Raft leader.
-// In standalone mode, always returns true.
-func (a *Application) IsLeader() bool {
-	if a.config.Cluster.IsStandaloneMode() {
-		return true
-	}
-	if a.raftNode == nil {
-		return true
-	}
-	return a.raftNode.IsLeader()
-}
-
-// GetRaftNode returns the Raft node for cluster operations.
-// Returns nil in standalone mode.
-func (a *Application) GetRaftNode() *cluster.RaftNode {
-	return a.raftNode
-}
-
-// GetGossipManager returns the gossip manager for cluster communication.
-// Returns nil in standalone mode.
-func (a *Application) GetGossipManager() *cluster.GossipManager {
-	return a.gossipManager
 }
 
 // Reload applies a new configuration without restarting.
@@ -834,18 +472,16 @@ func (a *Application) Reload(newCfg *config.Config) error {
 	if oldCfg.DNS.ListenAddress != newCfg.DNS.ListenAddress {
 		a.logger.Warn("DNS listen address change requires restart")
 	}
-	if oldCfg.Cluster.Mode != newCfg.Cluster.Mode {
-		a.logger.Warn("cluster mode change requires restart")
-	}
 
-	if err := a.reloadDNSRegistry(newCfg); err != nil {
-		metrics.RecordReload(false)
-		return fmt.Errorf("failed to reload DNS registry: %w", err)
-	}
-
-	if err := a.reloadHealthManager(newCfg); err != nil {
-		metrics.RecordReload(false)
-		return fmt.Errorf("failed to reload health manager: %w", err)
+	// Mode-specific reload
+	switch a.config.GetEffectiveMode() {
+	case config.ModeAgent:
+		// Story 2 will add agent-specific reload
+	case config.ModeOverwatch:
+		if err := a.reloadOverwatchMode(newCfg); err != nil {
+			metrics.RecordReload(false)
+			return err
+		}
 	}
 
 	a.config = newCfg
@@ -853,22 +489,17 @@ func (a *Application) Reload(newCfg *config.Config) error {
 	return nil
 }
 
-// vetoHealthProvider wraps a base provider and checks Overwatch for vetoes.
-type vetoHealthProvider struct {
-	base      dns.HealthStatusProvider
-	overwatch *cluster.Overwatch
-}
-
-func (v *vetoHealthProvider) IsHealthy(address string, port int) bool {
-	// 1. Check Overwatch Veto (External Veto Logic)
-	// address in Overwatch is "ip:port"
-	fullAddr := fmt.Sprintf("%s:%d", address, port)
-	if !v.overwatch.IsServeable(fullAddr) {
-		return false // Vetoed!
+// reloadOverwatchMode reloads overwatch-specific configuration.
+func (a *Application) reloadOverwatchMode(newCfg *config.Config) error {
+	if err := a.reloadDNSRegistry(newCfg); err != nil {
+		return fmt.Errorf("failed to reload DNS registry: %w", err)
 	}
 
-	// 2. Delegate to base provider (Local Agent Health)
-	return v.base.IsHealthy(address, port)
+	if err := a.reloadHealthManager(newCfg); err != nil {
+		return fmt.Errorf("failed to reload health manager: %w", err)
+	}
+
+	return nil
 }
 
 // reloadDNSRegistry updates the DNS registry with new domain configuration.
