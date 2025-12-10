@@ -1,6 +1,6 @@
 // Copyright (C) 2025 Logan Ross
 //
-// This file is part of OpenGSLB – https://opengslb.org
+// This file is part of OpenGSLB — https://opengslb.org
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
@@ -41,24 +41,6 @@ func (m *mockSystemMonitor) ErrorRate() (float64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.errorRate, m.errErr
-}
-
-func (m *mockSystemMonitor) setCPU(v float64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.cpu = v
-}
-
-func (m *mockSystemMonitor) setMemory(v float64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.memory = v
-}
-
-func (m *mockSystemMonitor) setErrorRate(v float64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.errorRate = v
 }
 
 func TestPredictor_NoBleeding(t *testing.T) {
@@ -160,6 +142,40 @@ func TestPredictor_MemoryBleeding(t *testing.T) {
 	state := predictor.GetState()
 	if state.BleedReason != "memory_threshold_exceeded" {
 		t.Errorf("expected bleed reason 'memory_threshold_exceeded', got %s", state.BleedReason)
+	}
+}
+
+func TestPredictor_ErrorRateBleeding(t *testing.T) {
+	monitor := &mockSystemMonitor{
+		cpu:       50.0,
+		memory:    60.0,
+		errorRate: 10.0, // Above threshold
+	}
+
+	cfg := PredictiveConfig{
+		Enabled:            true,
+		CPUThreshold:       85.0,
+		MemoryThreshold:    90.0,
+		ErrorRateThreshold: 5.0,
+		CheckInterval:      50 * time.Millisecond,
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	predictor := NewPredictor(cfg, monitor, logger)
+
+	predictor.Start()
+	defer predictor.Stop()
+
+	// Wait for a check cycle
+	time.Sleep(100 * time.Millisecond)
+
+	if !predictor.IsBleeding() {
+		t.Error("expected bleeding with error rate above threshold")
+	}
+
+	state := predictor.GetState()
+	if state.BleedReason != "error_rate_threshold_exceeded" {
+		t.Errorf("expected bleed reason 'error_rate_threshold_exceeded', got %s", state.BleedReason)
 	}
 }
 

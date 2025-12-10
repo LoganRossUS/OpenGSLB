@@ -74,7 +74,7 @@ type Store interface {
 	List(ctx context.Context, prefix string) ([]KVPair, error)
 
 	// Watch monitors keys with the given prefix for changes.
-	// Returns a channel that receives events until context is cancelled.
+	// Returns a channel that receives events until context is canceled.
 	Watch(ctx context.Context, prefix string) (<-chan WatchEvent, error)
 
 	// Close closes the store and releases resources.
