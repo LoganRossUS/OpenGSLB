@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/loganrossus/OpenGSLB/pkg/agent"
 	"github.com/loganrossus/OpenGSLB/pkg/api"
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/dns"
@@ -37,10 +38,10 @@ type Application struct {
 	metricsServer *metrics.Server
 	apiServer     *api.Server
 
-	// Agent mode components (Story 2 will add these)
-	// agentManager *agent.Manager
+	// Agent mode components (Story 2)
+	agentInstance *agent.Agent
 
-	// Gossip - used in both modes but differently (Story 2/3 will add)
+	// Gossip - used in both modes but differently (Story 4 will add)
 	// gossipManager *gossip.Manager
 
 	// shutdownCh is closed when the application is shutting down.
@@ -90,18 +91,33 @@ func (a *Application) initializeAgentMode() error {
 		"backends", len(a.config.Agent.Backends),
 	)
 
-	// Story 2 will implement:
-	// - Multi-backend health checking
-	// - Heartbeat mechanism
-	// - Gossip to overwatch nodes
-	// - Predictive health monitoring
+	// Create the agent instance
+	// Note: Gossip will be added in Story 4 - for now we pass nil
+	// which causes the agent to use a no-op gossip sender
+	agentInstance, err := agent.NewAgent(agent.AgentConfig{
+		Config: a.config,
+		Logger: a.logger,
+		Gossip: nil, // Story 4 will provide real gossip implementation
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create agent: %w", err)
+	}
+	a.agentInstance = agentInstance
 
-	// For now, just initialize metrics
+	// Initialize metrics server
 	if err := a.initializeMetricsServer(); err != nil {
 		return fmt.Errorf("failed to initialize metrics server: %w", err)
 	}
 
-	a.logger.Info("agent mode initialized (stub - Story 2 will complete)")
+	// Log agent identity information
+	identity := agentInstance.GetIdentity()
+	a.logger.Info("agent mode initialized",
+		"agent_id", identity.AgentID,
+		"region", identity.Region,
+		"cert_fingerprint", identity.Fingerprint,
+		"backends", agentInstance.GetBackendManager().BackendCount(),
+	)
+
 	return nil
 }
 
@@ -330,12 +346,19 @@ func (a *Application) Start(ctx context.Context) error {
 
 // startAgentMode starts agent-specific components.
 func (a *Application) startAgentMode(ctx context.Context) error {
-	// Story 2 will implement:
-	// - Start gossip to overwatch nodes
-	// - Start health checks for local backends
-	// - Start heartbeat sender
-	// - Start predictive health monitoring
+	// Start the agent (starts health checks, heartbeat, gossip)
+	if err := a.agentInstance.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start agent: %w", err)
+	}
 
+	identity := a.agentInstance.GetIdentity()
+	a.logger.Info("agent started",
+		"agent_id", identity.AgentID,
+		"region", identity.Region,
+		"backends", a.agentInstance.GetBackendManager().BackendCount(),
+	)
+
+	// Start metrics server
 	if a.metricsServer != nil {
 		go func() {
 			if err := a.metricsServer.Start(ctx); err != nil {
@@ -343,8 +366,6 @@ func (a *Application) startAgentMode(ctx context.Context) error {
 			}
 		}()
 	}
-
-	a.logger.Info("agent mode started (stub - Story 2 will complete)")
 
 	// Block until context is canceled
 	<-ctx.Done()
@@ -409,7 +430,9 @@ func (a *Application) Shutdown(ctx context.Context) error {
 	// Mode-specific shutdown
 	switch a.config.GetEffectiveMode() {
 	case config.ModeAgent:
-		// Story 2 will add agent-specific shutdown
+		if err := a.shutdownAgentMode(ctx); err != nil {
+			shutdownErr = err
+		}
 	case config.ModeOverwatch:
 		if err := a.shutdownOverwatchMode(ctx); err != nil {
 			shutdownErr = err
@@ -424,6 +447,27 @@ func (a *Application) Shutdown(ctx context.Context) error {
 
 	a.logger.Info("application shutdown complete")
 	return shutdownErr
+}
+
+// shutdownAgentMode stops agent-specific components.
+func (a *Application) shutdownAgentMode(ctx context.Context) error {
+	if a.agentInstance == nil {
+		return nil
+	}
+
+	a.logger.Debug("stopping agent")
+
+	// Create a timeout context for agent shutdown
+	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if err := a.agentInstance.Stop(shutdownCtx); err != nil {
+		a.logger.Error("error stopping agent", "error", err)
+		return err
+	}
+
+	a.logger.Info("agent stopped", "agent_id", a.agentInstance.GetIdentity().AgentID)
+	return nil
 }
 
 // shutdownOverwatchMode stops overwatch-specific components.
@@ -476,7 +520,10 @@ func (a *Application) Reload(newCfg *config.Config) error {
 	// Mode-specific reload
 	switch a.config.GetEffectiveMode() {
 	case config.ModeAgent:
-		// Story 2 will add agent-specific reload
+		if err := a.reloadAgentMode(newCfg); err != nil {
+			metrics.RecordReload(false)
+			return err
+		}
 	case config.ModeOverwatch:
 		if err := a.reloadOverwatchMode(newCfg); err != nil {
 			metrics.RecordReload(false)
@@ -486,6 +533,99 @@ func (a *Application) Reload(newCfg *config.Config) error {
 
 	a.config = newCfg
 	metrics.RecordReload(true)
+	return nil
+}
+
+// reloadAgentMode reloads agent-specific configuration.
+func (a *Application) reloadAgentMode(newCfg *config.Config) error {
+	if a.agentInstance == nil {
+		return nil
+	}
+
+	// Compare backend configurations
+	oldBackends := a.config.Agent.Backends
+	newBackends := newCfg.Agent.Backends
+
+	a.logger.Info("reloading agent configuration",
+		"old_backends", len(oldBackends),
+		"new_backends", len(newBackends),
+	)
+
+	// For now, log what would change
+	// Full reload implementation would:
+	// 1. Stop health checks for removed backends
+	// 2. Start health checks for new backends
+	// 3. Update configuration for modified backends
+
+	// backendKey generates a unique key for a backend
+	backendKey := func(service, address string, port int) string {
+		return fmt.Sprintf("%s:%s:%d", service, address, port)
+	}
+
+	// Build maps for comparison using interface{} to avoid type dependency
+	type backendInfo struct {
+		Service string
+		Address string
+		Port    int
+		Weight  int
+	}
+
+	oldMap := make(map[string]backendInfo)
+	for _, b := range oldBackends {
+		key := backendKey(b.Service, b.Address, b.Port)
+		oldMap[key] = backendInfo{
+			Service: b.Service,
+			Address: b.Address,
+			Port:    b.Port,
+			Weight:  b.Weight,
+		}
+	}
+
+	newMap := make(map[string]backendInfo)
+	for _, b := range newBackends {
+		key := backendKey(b.Service, b.Address, b.Port)
+		newMap[key] = backendInfo{
+			Service: b.Service,
+			Address: b.Address,
+			Port:    b.Port,
+			Weight:  b.Weight,
+		}
+	}
+
+	// Find added backends
+	var added, removed, modified int
+	for key := range newMap {
+		if _, exists := oldMap[key]; !exists {
+			added++
+			a.logger.Info("backend added", "backend", key)
+		}
+	}
+
+	// Find removed backends
+	for key := range oldMap {
+		if _, exists := newMap[key]; !exists {
+			removed++
+			a.logger.Info("backend removed", "backend", key)
+		}
+	}
+
+	// Find modified backends (same key but different config)
+	for key, newB := range newMap {
+		if oldB, exists := oldMap[key]; exists {
+			if newB.Weight != oldB.Weight {
+				modified++
+				a.logger.Info("backend modified", "backend", key,
+					"old_weight", oldB.Weight, "new_weight", newB.Weight)
+			}
+		}
+	}
+
+	a.logger.Info("agent configuration reload complete",
+		"added", added, "removed", removed, "modified", modified)
+
+	// TODO: Implement actual backend manager reconfiguration
+	// This would call a.agentInstance.GetBackendManager().Reconfigure(newBackends)
+
 	return nil
 }
 
@@ -553,6 +693,12 @@ func (a *Application) reloadHealthManager(newCfg *config.Config) error {
 	)
 
 	return nil
+}
+
+// GetAgent returns the agent instance (for testing and introspection).
+// Returns nil if not running in agent mode.
+func (a *Application) GetAgent() *agent.Agent {
+	return a.agentInstance
 }
 
 // readinessChecker implements api.ReadinessChecker for the Application.
