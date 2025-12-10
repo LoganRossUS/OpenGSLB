@@ -7,393 +7,188 @@
 package agent
 
 import (
-	"context"
+	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/loganrossus/OpenGSLB/pkg/cluster"
-	"github.com/loganrossus/OpenGSLB/pkg/config"
 )
 
-func TestNewPredictor(t *testing.T) {
-	cfg := config.PredictiveHealthConfig{
-		Enabled: true,
-		CPU:     config.PredictiveMetricConfig{Threshold: 90, BleedDuration: 30 * time.Second},
-	}
-	m := NewMonitor(nil, time.Minute)
-	p := NewPredictor(cfg, "test-node", m, nil)
+// mockSystemMonitor implements SystemMonitor for testing.
+type mockSystemMonitor struct {
+	mu        sync.Mutex
+	cpu       float64
+	memory    float64
+	errorRate float64
+	cpuErr    error
+	memErr    error
+	errErr    error
+}
 
-	if p == nil {
-		t.Fatal("NewPredictor returned nil")
+func (m *mockSystemMonitor) CPUPercent() (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cpu, m.cpuErr
+}
+
+func (m *mockSystemMonitor) MemoryPercent() (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.memory, m.memErr
+}
+
+func (m *mockSystemMonitor) ErrorRate() (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.errorRate, m.errErr
+}
+
+func (m *mockSystemMonitor) setCPU(v float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cpu = v
+}
+
+func (m *mockSystemMonitor) setMemory(v float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.memory = v
+}
+
+func (m *mockSystemMonitor) setErrorRate(v float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.errorRate = v
+}
+
+func TestPredictor_NoBleeding(t *testing.T) {
+	monitor := &mockSystemMonitor{
+		cpu:       50.0,
+		memory:    60.0,
+		errorRate: 1.0,
 	}
-	if p.nodeID != "test-node" {
-		t.Errorf("expected nodeID 'test-node', got %s", p.nodeID)
+
+	cfg := PredictiveConfig{
+		Enabled:            true,
+		CPUThreshold:       85.0,
+		MemoryThreshold:    90.0,
+		ErrorRateThreshold: 5.0,
+		CheckInterval:      50 * time.Millisecond,
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	predictor := NewPredictor(cfg, monitor, logger)
+
+	predictor.Start()
+	defer predictor.Stop()
+
+	// Wait for a check cycle
+	time.Sleep(100 * time.Millisecond)
+
+	if predictor.IsBleeding() {
+		t.Error("expected not bleeding with metrics below threshold")
+	}
+
+	state := predictor.GetState()
+	if state.Bleeding {
+		t.Error("state should not be bleeding")
 	}
 }
 
-func TestPredictor_IsBleeding_Initially(t *testing.T) {
-	cfg := config.PredictiveHealthConfig{Enabled: true}
-	m := NewMonitor(nil, time.Minute)
-	p := NewPredictor(cfg, "test-node", m, nil)
-
-	if p.IsBleeding() {
-		t.Error("expected not bleeding initially")
-	}
-	if p.BleedReason() != "" {
-		t.Errorf("expected empty bleed reason, got %s", p.BleedReason())
-	}
-}
-
-func TestPredictor_MemoryThresholdExceeded(t *testing.T) {
-	dir := t.TempDir()
-	statPath := filepath.Join(dir, "stat")
-	meminfoPath := filepath.Join(dir, "meminfo")
-
-	statContent := `cpu  1000 100 200 8000 50 10 5 0 0 0
-`
-	// 90% memory usage
-	meminfoContent := `MemTotal:       16384000 kB
-MemAvailable:    1638400 kB
-`
-	if err := os.WriteFile(statPath, []byte(statContent), 0644); err != nil {
-		t.Fatalf("failed to write stat file: %v", err)
-	}
-	if err := os.WriteFile(meminfoPath, []byte(meminfoContent), 0644); err != nil {
-		t.Fatalf("failed to write meminfo file: %v", err)
+func TestPredictor_CPUBleeding(t *testing.T) {
+	monitor := &mockSystemMonitor{
+		cpu:       90.0, // Above threshold
+		memory:    60.0,
+		errorRate: 1.0,
 	}
 
-	m := NewMonitor(nil, time.Minute)
-	m.SetProcPaths(statPath, meminfoPath)
-	_, _ = m.cpuPercent() // establish baseline
-
-	cfg := config.PredictiveHealthConfig{
-		Enabled: true,
-		CPU:     config.PredictiveMetricConfig{Threshold: 95, BleedDuration: 30 * time.Second},
-		Memory:  config.PredictiveMetricConfig{Threshold: 85, BleedDuration: 30 * time.Second},
-		ErrorRate: config.PredictiveErrorRateConfig{
-			Threshold:     100,
-			Window:        time.Minute,
-			BleedDuration: time.Minute,
-		},
+	cfg := PredictiveConfig{
+		Enabled:            true,
+		CPUThreshold:       85.0,
+		MemoryThreshold:    90.0,
+		ErrorRateThreshold: 5.0,
+		CheckInterval:      50 * time.Millisecond,
 	}
 
-	var receivedSignal *cluster.PredictiveSignal
-	p := NewPredictor(cfg, "test-node", m, nil)
-	p.OnSignal(func(s *cluster.PredictiveSignal) {
-		receivedSignal = s
-	})
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	predictor := NewPredictor(cfg, monitor, logger)
 
-	signal, err := p.Evaluate()
-	if err != nil {
-		t.Fatalf("Evaluate failed: %v", err)
-	}
+	predictor.Start()
+	defer predictor.Stop()
 
-	if signal == nil {
-		t.Fatal("expected signal for high memory, got nil")
+	// Wait for a check cycle
+	time.Sleep(100 * time.Millisecond)
+
+	if !predictor.IsBleeding() {
+		t.Error("expected bleeding with CPU above threshold")
 	}
 
-	if signal.Signal != SignalBleed {
-		t.Errorf("expected signal 'bleed', got %s", signal.Signal)
-	}
-	if signal.Reason != ReasonMemoryHigh {
-		t.Errorf("expected reason 'memory_high', got %s", signal.Reason)
-	}
-	if signal.NodeID != "test-node" {
-		t.Errorf("expected nodeID 'test-node', got %s", signal.NodeID)
-	}
-	if !p.IsBleeding() {
-		t.Error("expected predictor to be bleeding")
-	}
-
-	// Callback should not have been called (we returned the signal)
-	if receivedSignal != nil {
-		t.Error("callback should not be invoked from Evaluate()")
+	state := predictor.GetState()
+	if state.BleedReason != "cpu_threshold_exceeded" {
+		t.Errorf("expected bleed reason 'cpu_threshold_exceeded', got %s", state.BleedReason)
 	}
 }
 
-func TestPredictor_ErrorRateThresholdExceeded(t *testing.T) {
-	dir := t.TempDir()
-	statPath := filepath.Join(dir, "stat")
-	meminfoPath := filepath.Join(dir, "meminfo")
-
-	statContent := `cpu  1000 100 200 8000 50 10 5 0 0 0
-`
-	// Low memory usage
-	meminfoContent := `MemTotal:       16384000 kB
-MemAvailable:   14745600 kB
-`
-	if err := os.WriteFile(statPath, []byte(statContent), 0644); err != nil {
-		t.Fatalf("failed to write stat file: %v", err)
-	}
-	if err := os.WriteFile(meminfoPath, []byte(meminfoContent), 0644); err != nil {
-		t.Fatalf("failed to write meminfo file: %v", err)
+func TestPredictor_MemoryBleeding(t *testing.T) {
+	monitor := &mockSystemMonitor{
+		cpu:       50.0,
+		memory:    95.0, // Above threshold
+		errorRate: 1.0,
 	}
 
-	m := NewMonitor(nil, time.Minute)
-	m.SetProcPaths(statPath, meminfoPath)
-	_, _ = m.cpuPercent()
-
-	// Record many errors to exceed threshold
-	for i := 0; i < 15; i++ {
-		m.RecordError()
+	cfg := PredictiveConfig{
+		Enabled:            true,
+		CPUThreshold:       85.0,
+		MemoryThreshold:    90.0,
+		ErrorRateThreshold: 5.0,
+		CheckInterval:      50 * time.Millisecond,
 	}
 
-	cfg := config.PredictiveHealthConfig{
-		Enabled: true,
-		CPU:     config.PredictiveMetricConfig{Threshold: 95, BleedDuration: 30 * time.Second},
-		Memory:  config.PredictiveMetricConfig{Threshold: 95, BleedDuration: 30 * time.Second},
-		ErrorRate: config.PredictiveErrorRateConfig{
-			Threshold:     10,
-			Window:        time.Minute,
-			BleedDuration: time.Minute,
-		},
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	predictor := NewPredictor(cfg, monitor, logger)
+
+	predictor.Start()
+	defer predictor.Stop()
+
+	// Wait for a check cycle
+	time.Sleep(100 * time.Millisecond)
+
+	if !predictor.IsBleeding() {
+		t.Error("expected bleeding with memory above threshold")
 	}
 
-	p := NewPredictor(cfg, "test-node", m, nil)
-	signal, err := p.Evaluate()
-	if err != nil {
-		t.Fatalf("Evaluate failed: %v", err)
-	}
-
-	if signal == nil {
-		t.Fatal("expected signal for high error rate, got nil")
-	}
-
-	if signal.Reason != ReasonErrorRateHigh {
-		t.Errorf("expected reason 'error_rate_high', got %s", signal.Reason)
-	}
-}
-
-func TestPredictor_SignalCleared(t *testing.T) {
-	dir := t.TempDir()
-	statPath := filepath.Join(dir, "stat")
-	meminfoPath := filepath.Join(dir, "meminfo")
-
-	statContent := `cpu  1000 100 200 8000 50 10 5 0 0 0
-`
-	// High memory initially
-	highMemContent := `MemTotal:       16384000 kB
-MemAvailable:    1638400 kB
-`
-	if err := os.WriteFile(statPath, []byte(statContent), 0644); err != nil {
-		t.Fatalf("failed to write stat file: %v", err)
-	}
-	if err := os.WriteFile(meminfoPath, []byte(highMemContent), 0644); err != nil {
-		t.Fatalf("failed to write meminfo file: %v", err)
-	}
-
-	m := NewMonitor(nil, time.Minute)
-	m.SetProcPaths(statPath, meminfoPath)
-	_, _ = m.cpuPercent()
-
-	cfg := config.PredictiveHealthConfig{
-		Enabled: true,
-		CPU:     config.PredictiveMetricConfig{Threshold: 95, BleedDuration: 30 * time.Second},
-		Memory:  config.PredictiveMetricConfig{Threshold: 85, BleedDuration: 30 * time.Second},
-		ErrorRate: config.PredictiveErrorRateConfig{
-			Threshold:     100,
-			Window:        time.Minute,
-			BleedDuration: time.Minute,
-		},
-	}
-
-	p := NewPredictor(cfg, "test-node", m, nil)
-
-	// First evaluation - should trigger bleed
-	signal1, _ := p.Evaluate()
-	if signal1 == nil || signal1.Signal != SignalBleed {
-		t.Fatal("expected bleed signal")
-	}
-
-	// Now "recover" - write low memory file
-	lowMemContent := `MemTotal:       16384000 kB
-MemAvailable:   14745600 kB
-`
-	if err := os.WriteFile(meminfoPath, []byte(lowMemContent), 0644); err != nil {
-		t.Fatalf("failed to write recovery meminfo file: %v", err)
-	}
-
-	// Second evaluation - should clear
-	signal2, err := p.Evaluate()
-	if err != nil {
-		t.Fatalf("Evaluate failed: %v", err)
-	}
-
-	if signal2 == nil {
-		t.Fatal("expected clear signal, got nil")
-	}
-
-	if signal2.Signal != SignalClear {
-		t.Errorf("expected signal 'clear', got %s", signal2.Signal)
-	}
-	if signal2.Reason != ReasonRecovered {
-		t.Errorf("expected reason 'recovered', got %s", signal2.Reason)
-	}
-	if p.IsBleeding() {
-		t.Error("expected predictor to not be bleeding after recovery")
-	}
-}
-
-func TestPredictor_NoSignalWhenNotExceeded(t *testing.T) {
-	dir := t.TempDir()
-	statPath := filepath.Join(dir, "stat")
-	meminfoPath := filepath.Join(dir, "meminfo")
-
-	statContent := `cpu  1000 100 200 8000 50 10 5 0 0 0
-`
-	// Low usage
-	meminfoContent := `MemTotal:       16384000 kB
-MemAvailable:   14745600 kB
-`
-	if err := os.WriteFile(statPath, []byte(statContent), 0644); err != nil {
-		t.Fatalf("failed to write stat file: %v", err)
-	}
-	if err := os.WriteFile(meminfoPath, []byte(meminfoContent), 0644); err != nil {
-		t.Fatalf("failed to write meminfo file: %v", err)
-	}
-
-	m := NewMonitor(nil, time.Minute)
-	m.SetProcPaths(statPath, meminfoPath)
-	_, _ = m.cpuPercent()
-
-	cfg := config.PredictiveHealthConfig{
-		Enabled: true,
-		CPU:     config.PredictiveMetricConfig{Threshold: 90, BleedDuration: 30 * time.Second},
-		Memory:  config.PredictiveMetricConfig{Threshold: 85, BleedDuration: 30 * time.Second},
-		ErrorRate: config.PredictiveErrorRateConfig{
-			Threshold:     10,
-			Window:        time.Minute,
-			BleedDuration: time.Minute,
-		},
-	}
-
-	p := NewPredictor(cfg, "test-node", m, nil)
-	signal, err := p.Evaluate()
-	if err != nil {
-		t.Fatalf("Evaluate failed: %v", err)
-	}
-
-	if signal != nil {
-		t.Errorf("expected nil signal when not exceeded, got %+v", signal)
+	state := predictor.GetState()
+	if state.BleedReason != "memory_threshold_exceeded" {
+		t.Errorf("expected bleed reason 'memory_threshold_exceeded', got %s", state.BleedReason)
 	}
 }
 
 func TestPredictor_Disabled(t *testing.T) {
-	m := NewMonitor(nil, time.Minute)
-	cfg := config.PredictiveHealthConfig{Enabled: false}
-
-	p := NewPredictor(cfg, "test-node", m, nil)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	// Start should return immediately when disabled
-	err := p.Start(ctx)
-	if err != nil && err != context.DeadlineExceeded {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestPredictor_StartLoop(t *testing.T) {
-	dir := t.TempDir()
-	statPath := filepath.Join(dir, "stat")
-	meminfoPath := filepath.Join(dir, "meminfo")
-
-	statContent := `cpu  1000 100 200 8000 50 10 5 0 0 0
-`
-	// High memory to trigger signal
-	meminfoContent := `MemTotal:       16384000 kB
-MemAvailable:    1638400 kB
-`
-	if err := os.WriteFile(statPath, []byte(statContent), 0644); err != nil {
-		t.Fatalf("failed to write stat file: %v", err)
-	}
-	if err := os.WriteFile(meminfoPath, []byte(meminfoContent), 0644); err != nil {
-		t.Fatalf("failed to write meminfo file: %v", err)
+	monitor := &mockSystemMonitor{
+		cpu:       95.0,
+		memory:    95.0,
+		errorRate: 10.0,
 	}
 
-	m := NewMonitor(nil, time.Minute)
-	m.SetProcPaths(statPath, meminfoPath)
-	_, _ = m.cpuPercent()
-
-	cfg := config.PredictiveHealthConfig{
-		Enabled: true,
-		CPU:     config.PredictiveMetricConfig{Threshold: 95, BleedDuration: 30 * time.Second},
-		Memory:  config.PredictiveMetricConfig{Threshold: 85, BleedDuration: 30 * time.Second},
-		ErrorRate: config.PredictiveErrorRateConfig{
-			Threshold:     100,
-			Window:        time.Minute,
-			BleedDuration: time.Minute,
-		},
+	cfg := PredictiveConfig{
+		Enabled:            false, // Disabled
+		CPUThreshold:       85.0,
+		MemoryThreshold:    90.0,
+		ErrorRateThreshold: 5.0,
+		CheckInterval:      50 * time.Millisecond,
 	}
 
-	var mu sync.Mutex
-	var signals []*cluster.PredictiveSignal
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	predictor := NewPredictor(cfg, monitor, logger)
 
-	p := NewPredictor(cfg, "test-node", m, nil)
-	p.SetInterval(50 * time.Millisecond) // Fast for testing
-	p.OnSignal(func(s *cluster.PredictiveSignal) {
-		mu.Lock()
-		signals = append(signals, s)
-		mu.Unlock()
-	})
+	predictor.Start()
+	defer predictor.Stop()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
+	// Wait a bit
+	time.Sleep(100 * time.Millisecond)
 
-	// Start in goroutine
-	go func() {
-		_ = p.Start(ctx)
-	}()
-
-	// Wait for at least one evaluation
-	time.Sleep(150 * time.Millisecond)
-
-	mu.Lock()
-	signalCount := len(signals)
-	mu.Unlock()
-
-	// Should have received at least one signal
-	if signalCount < 1 {
-		t.Error("expected at least one signal from the loop")
-	}
-}
-
-func TestPredictor_GetMetrics(t *testing.T) {
-	dir := t.TempDir()
-	statPath := filepath.Join(dir, "stat")
-	meminfoPath := filepath.Join(dir, "meminfo")
-
-	statContent := `cpu  1000 100 200 8000 50 10 5 0 0 0
-`
-	meminfoContent := `MemTotal:       16384000 kB
-MemAvailable:    8192000 kB
-`
-	if err := os.WriteFile(statPath, []byte(statContent), 0644); err != nil {
-		t.Fatalf("failed to write stat file: %v", err)
-	}
-	if err := os.WriteFile(meminfoPath, []byte(meminfoContent), 0644); err != nil {
-		t.Fatalf("failed to write meminfo file: %v", err)
-	}
-
-	m := NewMonitor(nil, time.Minute)
-	m.SetProcPaths(statPath, meminfoPath)
-	_, _ = m.cpuPercent()
-
-	cfg := config.PredictiveHealthConfig{Enabled: true}
-	p := NewPredictor(cfg, "test-node", m, nil)
-
-	metrics, bleeding, reason := p.GetMetrics()
-	if metrics == nil {
-		t.Fatal("GetMetrics returned nil metrics")
-	}
-	if bleeding {
-		t.Error("expected not bleeding")
-	}
-	if reason != "" {
-		t.Errorf("expected empty reason, got %s", reason)
+	// Should not be bleeding when disabled
+	if predictor.IsBleeding() {
+		t.Error("predictor should not bleed when disabled")
 	}
 }

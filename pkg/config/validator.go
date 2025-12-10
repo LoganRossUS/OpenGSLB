@@ -56,7 +56,7 @@ func (c *Config) Validate() error {
 // validateLogging validates logging configuration.
 func (c *Config) validateLogging() error {
 	validLevels := map[string]bool{
-		"debug": true, "info": true, "warn": true, "error": true, "":true,
+		"debug": true, "info": true, "warn": true, "error": true, "": true,
 	}
 	if !validLevels[strings.ToLower(c.Logging.Level)] {
 		return fmt.Errorf("invalid level %q: must be debug, info, warn, or error", c.Logging.Level)
