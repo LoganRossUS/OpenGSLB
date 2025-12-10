@@ -170,7 +170,7 @@ dns:
   default_ttl: 30
 
 gossip:
-  encryption_key: "dGhpcy1pcy1hLTMyLWJ5dGUtdGVzdC1rZXkh"
+  encryption_key: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
   bind_address: "127.0.0.1:17946"
 
 regions:
