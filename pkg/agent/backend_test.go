@@ -19,6 +19,7 @@ import (
 
 // mockChecker implements health.Checker for testing.
 type mockChecker struct {
+	_ error // Suppress unused warning if kept for future use
 	mu       sync.Mutex
 	results  map[string]health.Result
 	checkErr error

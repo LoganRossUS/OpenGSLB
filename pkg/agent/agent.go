@@ -175,7 +175,9 @@ func (a *Agent) Start(ctx context.Context) error {
 	// Start gossip if configured
 	if a.gossip != nil {
 		if err := a.gossip.Start(ctx); err != nil {
-			a.backends.Stop()
+			if err := a.backends.Stop(); err != nil {
+				a.logger.Error("error stopping backends", "error", err)
+			}
 			return fmt.Errorf("failed to start gossip: %w", err)
 		}
 	}
@@ -191,8 +193,12 @@ func (a *Agent) Start(ctx context.Context) error {
 			a.gossip,
 		)
 		if err := a.heartbeat.Start(ctx, a.identity.AgentID, a.identity.Region, a.backends.BackendCount()); err != nil {
-			a.gossip.Stop()
-			a.backends.Stop()
+		if err := a.gossip.Stop(); err != nil {
+			a.logger.Error("error stopping gossip", "error", err)
+		}
+		if err := a.backends.Stop(); err != nil {
+			a.logger.Error("error stopping backends", "error", err)
+		}
 			return fmt.Errorf("failed to start heartbeat: %w", err)
 		}
 	}
