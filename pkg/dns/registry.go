@@ -2,45 +2,21 @@
 //
 // This file is part of OpenGSLB – https://opengslb.org
 //
-// OpenGSLB is dual-licensed:
-//
-// 1. GNU Affero General Public License v3.0 (AGPLv3)
-//    Free forever for open-source and internal use. You may copy, modify,
-//    and distribute this software under the terms of the AGPLv3.
-//    → https://www.gnu.org/licenses/agpl-3.0.html
-//
-// 2. Commercial License
-//    Commercial licenses are available for proprietary integration,
-//    closed-source appliances, SaaS offerings, and dedicated support.
-//    Contact: licensing@opengslb.org
-//
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
-// Package dns provides the DNS server implementation for OpenGSLB.
 package dns
 
 import (
+	"fmt"
 	"net"
-	"strings"
 	"sync"
+
+	"github.com/loganrossus/OpenGSLB/pkg/config"
+	"github.com/loganrossus/OpenGSLB/pkg/routing"
 )
 
-// ServerInfo contains information about a backend server.
-type ServerInfo struct {
-	Address net.IP
-	Port    int
-	Weight  int
-	Region  string
-}
-
-// DomainEntry contains configuration for a single domain.
-type DomainEntry struct {
-	Name             string
-	TTL              uint32
-	RoutingAlgorithm string
-	Servers          []ServerInfo
-	Router           Router // Per-domain router instance
-}
+// RouterFactory is a function type that creates routers by algorithm name.
+type RouterFactory func(algorithm string) (routing.Router, error)
 
 // Registry provides thread-safe lookup of domain configurations.
 type Registry struct {
@@ -48,18 +24,74 @@ type Registry struct {
 	domains map[string]*DomainEntry
 }
 
-// NewRegistry creates a new empty domain registry.
+// NewRegistry creates a new empty registry.
 func NewRegistry() *Registry {
 	return &Registry{
 		domains: make(map[string]*DomainEntry),
 	}
 }
 
+// BuildRegistry creates a registry from configuration.
+func BuildRegistry(cfg *config.Config, routerFactory RouterFactory) (*Registry, error) {
+	registry := NewRegistry()
+
+	// Build a map of region name -> servers for quick lookup
+	regionServers := make(map[string][]ServerInfo)
+	for _, region := range cfg.Regions {
+		var servers []ServerInfo
+		for _, server := range region.Servers {
+			ip := net.ParseIP(server.Address)
+			if ip == nil {
+				return nil, fmt.Errorf("invalid IP address for server in region %s: %s", region.Name, server.Address)
+			}
+			servers = append(servers, ServerInfo{
+				Address: ip,
+				Port:    server.Port,
+				Weight:  server.Weight,
+				Region:  region.Name,
+			})
+		}
+		regionServers[region.Name] = servers
+	}
+
+	// Build domain entries
+	for _, domain := range cfg.Domains {
+		router, err := routerFactory(domain.RoutingAlgorithm)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create router for domain %s: %w", domain.Name, err)
+		}
+
+		// Collect servers from all regions for this domain
+		var servers []ServerInfo
+		for _, regionName := range domain.Regions {
+			if regionServerList, ok := regionServers[regionName]; ok {
+				servers = append(servers, regionServerList...)
+			}
+		}
+
+		ttl := uint32(domain.TTL)
+		if ttl == 0 {
+			ttl = uint32(cfg.DNS.DefaultTTL)
+		}
+
+		entry := &DomainEntry{
+			Name:             domain.Name,
+			TTL:              ttl,
+			RoutingAlgorithm: domain.RoutingAlgorithm,
+			Router:           router,
+			Servers:          servers,
+		}
+
+		registry.Register(entry)
+	}
+
+	return registry, nil
+}
+
 // Register adds or updates a domain entry in the registry.
 func (r *Registry) Register(entry *DomainEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
 	name := normalizeDomain(entry.Name)
 	entry.Name = name
 	r.domains[name] = entry
@@ -70,7 +102,6 @@ func (r *Registry) Register(entry *DomainEntry) {
 func (r *Registry) Lookup(name string) *DomainEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
 	return r.domains[normalizeDomain(name)]
 }
 
@@ -78,7 +109,6 @@ func (r *Registry) Lookup(name string) *DomainEntry {
 func (r *Registry) Remove(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
 	delete(r.domains, normalizeDomain(name))
 }
 
@@ -86,7 +116,6 @@ func (r *Registry) Remove(name string) {
 func (r *Registry) Domains() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
 	names := make([]string, 0, len(r.domains))
 	for name := range r.domains {
 		names = append(names, name)
@@ -98,26 +127,18 @@ func (r *Registry) Domains() []string {
 func (r *Registry) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
 	return len(r.domains)
 }
 
-// normalizeDomain ensures domain names are in a consistent format.
-// DNS names are case-insensitive per RFC 1035, so we lowercase for consistent lookup.
-// This is essential for compatibility with resolvers using DNS 0x20 encoding (like Google).
-func normalizeDomain(name string) string {
-	if len(name) == 0 {
-		return name
-	}
-	// Lowercase for case-insensitive matching (RFC 1035)
-	name = strings.ToLower(name)
-	if name[len(name)-1] != '.' {
-		return name + "."
-	}
-	return name
+// Clear removes all domains from the registry.
+func (r *Registry) Clear() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.domains = make(map[string]*DomainEntry)
 }
 
 // ReplaceAll atomically replaces all domain entries in the registry.
+// This is used during configuration hot-reload.
 func (r *Registry) ReplaceAll(entries []*DomainEntry) {
 	newDomains := make(map[string]*DomainEntry, len(entries))
 	for _, entry := range entries {
@@ -125,15 +146,18 @@ func (r *Registry) ReplaceAll(entries []*DomainEntry) {
 		entry.Name = name
 		newDomains[name] = entry
 	}
-
 	r.mu.Lock()
 	r.domains = newDomains
 	r.mu.Unlock()
 }
 
-// Clear removes all domains from the registry.
-func (r *Registry) Clear() {
-	r.mu.Lock()
-	r.domains = make(map[string]*DomainEntry)
-	r.mu.Unlock()
+// normalizeDomain ensures domain names are in a consistent format.
+func normalizeDomain(name string) string {
+	if len(name) == 0 {
+		return name
+	}
+	if name[len(name)-1] != '.' {
+		return name + "."
+	}
+	return name
 }
