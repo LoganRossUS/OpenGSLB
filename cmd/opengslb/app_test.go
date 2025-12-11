@@ -61,6 +61,7 @@ domains:
 `
 
 // loadTestConfig is a helper that writes config content to a temp file and loads it.
+// It also sets a unique data directory for each test to prevent bbolt lock conflicts.
 func loadTestConfig(t *testing.T, content string) *config.Config {
 	t.Helper()
 	tmpDir := t.TempDir()
@@ -74,6 +75,10 @@ func loadTestConfig(t *testing.T, content string) *config.Config {
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
+
+	// Set unique data directory to prevent bbolt lock conflicts in parallel tests
+	cfg.Overwatch.DataDir = tmpDir
+
 	return cfg
 }
 

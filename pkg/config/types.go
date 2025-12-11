@@ -153,6 +153,10 @@ type OverwatchConfig struct {
 
 	// DNSSEC contains DNSSEC signing settings
 	DNSSEC DNSSECConfig `yaml:"dnssec"`
+
+	// DataDir is the directory for persistent data (bbolt database)
+	// Default: /var/lib/opengslb
+	DataDir string `yaml:"data_dir"`
 }
 
 // OverwatchIdentityConfig defines overwatch node identity settings.

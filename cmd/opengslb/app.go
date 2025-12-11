@@ -259,19 +259,23 @@ func (a *Application) registerHealthCheckServers() error {
 // initializeBackendRegistry creates and configures the backend registry for agent registrations.
 func (a *Application) initializeBackendRegistry() error {
 	// Initialize bbolt store for persistence
-	dataDir := "/var/lib/opengslb"
-	if err := os.MkdirAll(dataDir, 0750); err != nil {
-		a.logger.Warn("failed to create data directory, using temp dir", "error", err)
-		dataDir = os.TempDir()
+	dataDir := a.config.Overwatch.DataDir
+	if dataDir == "" {
+		dataDir = "/var/lib/opengslb"
 	}
 
-	storePath := filepath.Join(dataDir, "overwatch.db")
-	bboltStore, err := store.NewBboltStore(storePath)
-	if err != nil {
-		a.logger.Warn("failed to initialize bbolt store, running without persistence", "error", err)
-		// Continue without persistence
+	if err := os.MkdirAll(dataDir, 0750); err != nil {
+		a.logger.Warn("failed to create data directory, running without persistence", "error", err)
+		// Continue without persistence - don't fall back to temp dir to avoid conflicts
 	} else {
-		a.overwatchStore = bboltStore
+		storePath := filepath.Join(dataDir, "overwatch.db")
+		bboltStore, err := store.NewBboltStore(storePath)
+		if err != nil {
+			a.logger.Warn("failed to initialize bbolt store, running without persistence", "error", err)
+			// Continue without persistence
+		} else {
+			a.overwatchStore = bboltStore
+		}
 	}
 
 	// Configure registry with stale thresholds from config
