@@ -98,6 +98,39 @@ var (
 	)
 )
 
+// Geolocation routing metrics (Sprint 6)
+var (
+	// RoutingGeoDecisionsTotal counts geolocation routing decisions by location.
+	RoutingGeoDecisionsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "routing_geo_decisions_total",
+			Help:      "Total geolocation routing decisions by country, continent, and region",
+		},
+		[]string{"domain", "country", "continent", "region"},
+	)
+
+	// RoutingGeoFallbackTotal counts fallbacks in geolocation routing.
+	RoutingGeoFallbackTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "routing_geo_fallback_total",
+			Help:      "Total geolocation routing fallbacks by reason",
+		},
+		[]string{"domain", "reason"},
+	)
+
+	// RoutingGeoCustomHitsTotal counts custom CIDR mapping matches.
+	RoutingGeoCustomHitsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "routing_geo_custom_hits_total",
+			Help:      "Total custom CIDR mapping matches in geolocation routing",
+		},
+		[]string{"domain", "region", "cidr"},
+	)
+)
+
 // Latency routing metrics (Sprint 6)
 var (
 	// RoutingLatencySelectedMs records the smoothed latency of selected server.
@@ -314,6 +347,21 @@ func SetHealthyServers(region string, count int) {
 // RecordRoutingDecision records a routing decision.
 func RecordRoutingDecision(domain, algorithm, server string) {
 	RoutingDecisionsTotal.WithLabelValues(domain, algorithm, server).Inc()
+}
+
+// RecordGeoRoutingDecision records a geolocation routing decision.
+func RecordGeoRoutingDecision(domain, country, continent, region string) {
+	RoutingGeoDecisionsTotal.WithLabelValues(domain, country, continent, region).Inc()
+}
+
+// RecordGeoFallback records a geolocation routing fallback.
+func RecordGeoFallback(domain, reason string) {
+	RoutingGeoFallbackTotal.WithLabelValues(domain, reason).Inc()
+}
+
+// RecordGeoCustomHit records a custom CIDR mapping match in geolocation routing.
+func RecordGeoCustomHit(domain, region, cidr string) {
+	RoutingGeoCustomHitsTotal.WithLabelValues(domain, region, cidr).Inc()
 }
 
 // RecordLatencyRoutingDecision records a latency-based routing decision.

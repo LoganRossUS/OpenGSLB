@@ -8,9 +8,12 @@ package routing
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/loganrossus/OpenGSLB/pkg/metrics"
 )
 
 // LatencyInfo contains latency information for a backend server.
@@ -108,6 +111,9 @@ func (r *LatencyRouter) Route(ctx context.Context, pool ServerPool) (*Server, er
 		return nil, ErrNoHealthyServers
 	}
 
+	// Get domain from context for metrics
+	domain := GetDomain(ctx)
+
 	r.mu.RLock()
 	provider := r.provider
 	maxLatency := time.Duration(r.config.MaxLatencyMs) * time.Millisecond
@@ -117,6 +123,9 @@ func (r *LatencyRouter) Route(ctx context.Context, pool ServerPool) (*Server, er
 	// If no provider, fall back to round-robin
 	if provider == nil {
 		r.logger.Debug("no latency provider configured, using round-robin fallback")
+		if domain != "" {
+			metrics.RecordLatencyFallback(domain, "no_provider")
+		}
 		return r.fallback.Route(ctx, pool)
 	}
 
@@ -129,6 +138,10 @@ func (r *LatencyRouter) Route(ctx context.Context, pool ServerPool) (*Server, er
 				server:  server,
 				latency: info,
 			})
+		} else if domain != "" {
+			// Record servers rejected due to insufficient data
+			serverAddr := fmt.Sprintf("%s:%d", server.Address, server.Port)
+			metrics.RecordLatencyRejection(domain, serverAddr, "no_data")
 		}
 	}
 
@@ -138,6 +151,9 @@ func (r *LatencyRouter) Route(ctx context.Context, pool ServerPool) (*Server, er
 			"total_servers", len(servers),
 			"min_samples_required", minSamples,
 		)
+		if domain != "" {
+			metrics.RecordLatencyFallback(domain, "no_latency_data")
+		}
 		return r.fallback.Route(ctx, pool)
 	}
 
@@ -147,6 +163,10 @@ func (r *LatencyRouter) Route(ctx context.Context, pool ServerPool) (*Server, er
 		for _, sl := range withLatency {
 			if sl.latency.SmoothedLatency <= maxLatency {
 				withinThreshold = append(withinThreshold, sl)
+			} else if domain != "" {
+				// Record servers rejected due to latency threshold
+				serverAddr := fmt.Sprintf("%s:%d", sl.server.Address, sl.server.Port)
+				metrics.RecordLatencyRejection(domain, serverAddr, "above_threshold")
 			}
 		}
 
@@ -172,6 +192,12 @@ func (r *LatencyRouter) Route(ctx context.Context, pool ServerPool) (*Server, er
 		"candidates", len(withinThreshold),
 		"total_servers", len(servers),
 	)
+
+	// Record the selected server latency
+	if domain != "" {
+		serverAddr := fmt.Sprintf("%s:%d", selected.server.Address, selected.server.Port)
+		metrics.RecordLatencyRoutingDecision(domain, serverAddr, float64(selected.latency.SmoothedLatency.Milliseconds()))
+	}
 
 	return selected.server, nil
 }

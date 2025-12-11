@@ -75,6 +75,86 @@ func TestSetConfigMetrics(t *testing.T) {
 	SetConfigMetrics(5, 10, float64(time.Now().Unix()))
 }
 
+// Sprint 6 Metrics Tests
+
+func TestRecordGeoRoutingDecision(t *testing.T) {
+	// Test geolocation routing decision recording
+	RecordGeoRoutingDecision("app.example.com", "US", "NA", "us-east-1")
+	RecordGeoRoutingDecision("app.example.com", "GB", "EU", "eu-west-1")
+	RecordGeoRoutingDecision("app.example.com", "", "", "us-east-1") // default region
+}
+
+func TestRecordGeoFallback(t *testing.T) {
+	RecordGeoFallback("app.example.com", "no_client_ip")
+	RecordGeoFallback("app.example.com", "no_resolver")
+	RecordGeoFallback("app.example.com", "lookup_failed")
+	RecordGeoFallback("app.example.com", "no_servers_in_region")
+	RecordGeoFallback("app.example.com", "no_match")
+}
+
+func TestRecordGeoCustomHit(t *testing.T) {
+	RecordGeoCustomHit("app.example.com", "us-chicago", "10.1.0.0/16")
+	RecordGeoCustomHit("app.example.com", "us-dallas", "10.2.0.0/16")
+}
+
+func TestRecordLatencyRoutingDecision(t *testing.T) {
+	RecordLatencyRoutingDecision("perf.example.com", "10.0.1.10:8080", 45.5)
+	RecordLatencyRoutingDecision("perf.example.com", "10.0.1.11:8080", 52.3)
+}
+
+func TestRecordLatencyRejection(t *testing.T) {
+	RecordLatencyRejection("perf.example.com", "10.0.2.10:8080", "above_threshold")
+	RecordLatencyRejection("perf.example.com", "10.0.3.10:8080", "no_data")
+}
+
+func TestRecordLatencyFallback(t *testing.T) {
+	RecordLatencyFallback("perf.example.com", "no_provider")
+	RecordLatencyFallback("perf.example.com", "no_latency_data")
+}
+
+func TestSetBackendLatency(t *testing.T) {
+	SetBackendLatency("myapp", "10.0.1.10:8080", 45.5, 150)
+	SetBackendLatency("myapp", "10.0.1.11:8080", 52.3, 120)
+}
+
+func TestAgentConnectivityMetrics(t *testing.T) {
+	// Test per-agent connectivity metrics
+	SetAgentConnected("agent-1", "us-east-1", true)
+	SetAgentConnected("agent-2", "eu-west-1", false)
+
+	SetAgentBackendsRegisteredPerAgent("agent-1", 4)
+	SetAgentBackendsRegisteredPerAgent("agent-2", 2)
+
+	RecordAgentStaleEvent("agent-1")
+	RecordAgentStaleEvent("agent-2")
+
+	SetAgentHeartbeatAgePerAgent("agent-1", 5.2)
+	SetAgentHeartbeatAgePerAgent("agent-2", 45.8)
+}
+
+func TestOverrideMetrics(t *testing.T) {
+	// Test override metrics with service granularity
+	SetOverridesActiveByService("myapp", 1)
+	SetOverridesActiveByService("otherapp", 0)
+
+	RecordOverrideChange("myapp", "set")
+	RecordOverrideChange("myapp", "clear")
+}
+
+func TestDNSSECEnhancedMetrics(t *testing.T) {
+	// Test enhanced DNSSEC metrics
+	RecordDNSSECSignature("gslb.example.com")
+	RecordDNSSECSignature("other.example.com")
+
+	SetDNSSECKeyAgeByZone("gslb.example.com", "12345", 86400)
+	SetDNSSECKeyAgeByZone("gslb.example.com", "67890", 43200)
+}
+
+func TestGossipDecryptionFailure(t *testing.T) {
+	RecordGossipDecryptionFailure()
+	RecordGossipDecryptionFailure()
+}
+
 func TestMetricsServer(t *testing.T) {
 	// Use a random available port
 	cfg := ServerConfig{
