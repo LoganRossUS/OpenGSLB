@@ -585,16 +585,7 @@ func (a *Application) initializeAPIServer() error {
 		return fmt.Errorf("failed to create API server: %w", err)
 	}
 
-	// Set up cluster handlers if in cluster mode
-	if a.config.Cluster.IsClusterMode() && a.raftNode != nil {
-		clusterHandlers := api.NewClusterHandlers(
-			a.raftNode,
-			string(a.config.Cluster.Mode),
-			a.logger.With("component", "cluster-api"),
-		)
-		server.SetClusterHandlers(clusterHandlers)
-		a.logger.Debug("cluster API handlers configured")
-	}
+	// ADR-015: Cluster handlers removed - cluster mode no longer exists
 
 	a.apiServer = server
 
