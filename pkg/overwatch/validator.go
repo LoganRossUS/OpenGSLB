@@ -154,6 +154,10 @@ func (v *Validator) validationLoop() {
 }
 
 // validateAllBackends validates all registered backends.
+// Note: Stale backends are NOT skipped. External validation can "recover" a
+// stale backend if the agent is unavailable but the backend service is still healthy.
+// This aligns with ADR-015's health authority hierarchy where Overwatch validation
+// takes precedence over staleness detection.
 func (v *Validator) validateAllBackends() {
 	backends := v.registry.GetAllBackends()
 	if len(backends) == 0 {
@@ -168,11 +172,11 @@ func (v *Validator) validateAllBackends() {
 	var wg sync.WaitGroup
 
 	for _, backend := range backends {
-		// Skip stale backends
-		if backend.EffectiveStatus == StatusStale {
-			continue
-		}
-
+		// Note: We validate ALL backends including stale ones.
+		// This allows external validation to "recover" backends when:
+		// - Agent process crashed but backend service is still running
+		// - Network partition between agent and overwatch
+		// - Agent temporarily unavailable
 		wg.Add(1)
 		sem <- struct{}{}
 

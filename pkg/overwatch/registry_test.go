@@ -307,3 +307,210 @@ func TestRegistry_BackendCount(t *testing.T) {
 		t.Errorf("expected 1 backend after deregister, got %d", registry.BackendCount())
 	}
 }
+
+func TestRegistry_ValidationRecoversStaleBackend(t *testing.T) {
+	// Use a very short stale threshold for testing
+	cfg := RegistryConfig{
+		StaleThreshold: 50 * time.Millisecond,
+		RemoveAfter:    5 * time.Minute,
+	}
+	registry := NewRegistry(cfg, nil)
+
+	// Start registry to enable stale detection background loop
+	_ = registry.Start()
+	defer registry.Stop()
+
+	// Register backend
+	err := registry.Register("agent-1", "us-east", "web", "192.168.1.1", 80, 100, true)
+	if err != nil {
+		t.Fatalf("failed to register backend: %v", err)
+	}
+
+	// Wait for backend to become stale (stale detection runs every 25ms)
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify backend is stale before validation
+	backend, _ := registry.GetBackend("web", "192.168.1.1", 80)
+	if backend.EffectiveStatus != StatusStale {
+		t.Errorf("expected backend to be stale before validation, got %s", backend.EffectiveStatus)
+	}
+
+	// External validation says healthy - should recover stale backend
+	err = registry.UpdateValidation("web", "192.168.1.1", 80, true, "")
+	if err != nil {
+		t.Fatalf("failed to update validation: %v", err)
+	}
+
+	// Verify validation recovered the stale backend
+	backend, _ = registry.GetBackend("web", "192.168.1.1", 80)
+	if backend.EffectiveStatus != StatusHealthy {
+		t.Errorf("expected stale backend to be recovered to healthy by validation, got %s", backend.EffectiveStatus)
+	}
+}
+
+func TestRegistry_StaleWithUnhealthyValidation(t *testing.T) {
+	// Use a very short stale threshold for testing
+	cfg := RegistryConfig{
+		StaleThreshold: 50 * time.Millisecond,
+		RemoveAfter:    5 * time.Minute,
+	}
+	registry := NewRegistry(cfg, nil)
+
+	// Start registry to enable stale detection background loop
+	_ = registry.Start()
+	defer registry.Stop()
+
+	// Register backend
+	err := registry.Register("agent-1", "us-east", "web", "192.168.1.1", 80, 100, true)
+	if err != nil {
+		t.Fatalf("failed to register backend: %v", err)
+	}
+
+	// Wait for backend to become stale
+	time.Sleep(100 * time.Millisecond)
+
+	// External validation says unhealthy
+	err = registry.UpdateValidation("web", "192.168.1.1", 80, false, "connection refused")
+	if err != nil {
+		t.Fatalf("failed to update validation: %v", err)
+	}
+
+	// Verify stale backend with unhealthy validation stays unhealthy
+	backend, _ := registry.GetBackend("web", "192.168.1.1", 80)
+	if backend.EffectiveStatus != StatusUnhealthy {
+		t.Errorf("expected stale backend with unhealthy validation to be unhealthy, got %s", backend.EffectiveStatus)
+	}
+}
+
+func TestRegistry_StaleWithoutValidation(t *testing.T) {
+	// Use a very short stale threshold for testing
+	cfg := RegistryConfig{
+		StaleThreshold: 50 * time.Millisecond,
+		RemoveAfter:    5 * time.Minute,
+	}
+	registry := NewRegistry(cfg, nil)
+
+	// Start registry to enable stale detection background loop
+	_ = registry.Start()
+	defer registry.Stop()
+
+	// Register backend
+	err := registry.Register("agent-1", "us-east", "web", "192.168.1.1", 80, 100, true)
+	if err != nil {
+		t.Fatalf("failed to register backend: %v", err)
+	}
+
+	// Wait for backend to become stale (stale detection runs every 25ms)
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify backend is stale without validation
+	backend, _ := registry.GetBackend("web", "192.168.1.1", 80)
+	if backend.ValidationHealthy != nil {
+		t.Error("validation should not be set")
+	}
+	if backend.EffectiveStatus != StatusStale {
+		t.Errorf("expected stale backend without validation to be stale, got %s", backend.EffectiveStatus)
+	}
+}
+
+func TestRegistry_OverrideWinsOverStale(t *testing.T) {
+	// Use a very short stale threshold for testing
+	cfg := RegistryConfig{
+		StaleThreshold: 50 * time.Millisecond,
+		RemoveAfter:    5 * time.Minute,
+	}
+	registry := NewRegistry(cfg, nil)
+
+	// Start registry to enable stale detection background loop
+	_ = registry.Start()
+	defer registry.Stop()
+
+	// Register backend
+	err := registry.Register("agent-1", "us-east", "web", "192.168.1.1", 80, 100, true)
+	if err != nil {
+		t.Fatalf("failed to register backend: %v", err)
+	}
+
+	// Wait for backend to become stale (stale detection runs every 25ms)
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify backend is stale
+	backend, _ := registry.GetBackend("web", "192.168.1.1", 80)
+	if backend.EffectiveStatus != StatusStale {
+		t.Errorf("expected backend to be stale, got %s", backend.EffectiveStatus)
+	}
+
+	// Set manual override to healthy - should override stale status
+	err = registry.SetOverride("web", "192.168.1.1", 80, true, "maintenance bypass", "admin")
+	if err != nil {
+		t.Fatalf("failed to set override: %v", err)
+	}
+
+	// Verify override wins over stale status
+	backend, _ = registry.GetBackend("web", "192.168.1.1", 80)
+	if backend.EffectiveStatus != StatusHealthy {
+		t.Errorf("expected override to win over stale, got %s", backend.EffectiveStatus)
+	}
+}
+
+func TestRegistry_HealthAuthorityHierarchy(t *testing.T) {
+	// Test the full health authority hierarchy:
+	// 1. Override (highest)
+	// 2. Validation
+	// 3. Staleness
+	// 4. Agent claim (lowest)
+
+	cfg := RegistryConfig{
+		StaleThreshold: 50 * time.Millisecond,
+		RemoveAfter:    5 * time.Minute,
+	}
+	registry := NewRegistry(cfg, nil)
+
+	// Start registry to enable stale detection background loop
+	_ = registry.Start()
+	defer registry.Stop()
+
+	// Register backend with healthy agent claim
+	_ = registry.Register("agent-1", "us-east", "web", "192.168.1.1", 80, 100, true)
+
+	// Step 1: Agent says healthy → effective is healthy
+	backend, _ := registry.GetBackend("web", "192.168.1.1", 80)
+	if backend.EffectiveStatus != StatusHealthy {
+		t.Errorf("step 1: expected healthy from agent claim, got %s", backend.EffectiveStatus)
+	}
+
+	// Step 2: Validation says unhealthy → validation wins over agent
+	_ = registry.UpdateValidation("web", "192.168.1.1", 80, false, "")
+	backend, _ = registry.GetBackend("web", "192.168.1.1", 80)
+	if backend.EffectiveStatus != StatusUnhealthy {
+		t.Errorf("step 2: expected unhealthy from validation (wins over agent), got %s", backend.EffectiveStatus)
+	}
+
+	// Step 3: Override says healthy → override wins over validation
+	_ = registry.SetOverride("web", "192.168.1.1", 80, true, "test", "test")
+	backend, _ = registry.GetBackend("web", "192.168.1.1", 80)
+	if backend.EffectiveStatus != StatusHealthy {
+		t.Errorf("step 3: expected healthy from override (wins over validation), got %s", backend.EffectiveStatus)
+	}
+
+	// Step 4: Clear override, validation still present → back to validation status
+	_ = registry.ClearOverride("web", "192.168.1.1", 80)
+	backend, _ = registry.GetBackend("web", "192.168.1.1", 80)
+	if backend.EffectiveStatus != StatusUnhealthy {
+		t.Errorf("step 4: expected unhealthy from validation after clearing override, got %s", backend.EffectiveStatus)
+	}
+
+	// Step 5: Wait for stale, but validation still present → validation wins over staleness
+	time.Sleep(100 * time.Millisecond)
+	backend, _ = registry.GetBackend("web", "192.168.1.1", 80)
+	if backend.EffectiveStatus != StatusUnhealthy {
+		t.Errorf("step 5: expected unhealthy from validation (wins over staleness), got %s", backend.EffectiveStatus)
+	}
+
+	// Step 6: Update validation to healthy → recovered from stale
+	_ = registry.UpdateValidation("web", "192.168.1.1", 80, true, "")
+	backend, _ = registry.GetBackend("web", "192.168.1.1", 80)
+	if backend.EffectiveStatus != StatusHealthy {
+		t.Errorf("step 6: expected healthy from validation (recovered from stale), got %s", backend.EffectiveStatus)
+	}
+}
