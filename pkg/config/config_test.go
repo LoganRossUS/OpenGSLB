@@ -380,6 +380,10 @@ func TestValidate_AgentGossipEncryptionKeyRequired(t *testing.T) {
 	if !strings.Contains(err.Error(), "encryption_key is required") {
 		t.Errorf("expected encryption key error, got: %v", err)
 	}
+	// Verify helpful message is included
+	if !strings.Contains(err.Error(), "openssl rand -base64 32") {
+		t.Errorf("expected key generation hint, got: %v", err)
+	}
 }
 
 func TestValidate_AgentGossipEncryptionKeyInvalidBase64(t *testing.T) {
@@ -408,6 +412,14 @@ func TestValidate_AgentGossipEncryptionKeyWrongLength(t *testing.T) {
 	if !strings.Contains(err.Error(), "32 bytes") {
 		t.Errorf("expected 32 bytes error, got: %v", err)
 	}
+	// Verify the actual length is reported
+	if !strings.Contains(err.Error(), "got 16") {
+		t.Errorf("expected error to report actual length, got: %v", err)
+	}
+	// Verify helpful message about 256-bit key
+	if !strings.Contains(err.Error(), "256-bit key") {
+		t.Errorf("expected 256-bit key hint, got: %v", err)
+	}
 }
 
 func TestValidate_OverwatchGossipEncryptionKeyRequired(t *testing.T) {
@@ -420,6 +432,10 @@ func TestValidate_OverwatchGossipEncryptionKeyRequired(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "encryption_key is required") {
 		t.Errorf("expected encryption key error, got: %v", err)
+	}
+	// Verify helpful message is included
+	if !strings.Contains(err.Error(), "openssl rand -base64 32") {
+		t.Errorf("expected key generation hint, got: %v", err)
 	}
 }
 
@@ -448,6 +464,14 @@ func TestValidate_OverwatchGossipEncryptionKeyWrongLength(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "32 bytes") {
 		t.Errorf("expected 32 bytes error, got: %v", err)
+	}
+	// Verify the actual length is reported
+	if !strings.Contains(err.Error(), "got 16") {
+		t.Errorf("expected error to report actual length, got: %v", err)
+	}
+	// Verify helpful message about 256-bit key
+	if !strings.Contains(err.Error(), "256-bit key") {
+		t.Errorf("expected 256-bit key hint, got: %v", err)
 	}
 }
 

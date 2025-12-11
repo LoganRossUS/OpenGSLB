@@ -205,9 +205,10 @@ func (c *Config) validateOverwatchMode() error {
 
 // validateGossipEncryptionKey validates the gossip encryption key.
 // ADR-015: Encryption is MANDATORY - no opt-out.
+// AES-256 requires exactly 32 bytes (256 bits).
 func validateGossipEncryptionKey(key string) error {
 	if key == "" {
-		return fmt.Errorf("encryption_key is required (generate with: openssl rand -base64 32)")
+		return fmt.Errorf("encryption_key is required. OpenGSLB requires encrypted gossip communication.\n       Generate a key with: openssl rand -base64 32")
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(key)
@@ -216,7 +217,7 @@ func validateGossipEncryptionKey(key string) error {
 	}
 
 	if len(decoded) != 32 {
-		return fmt.Errorf("encryption_key must be exactly 32 bytes (got %d); generate with: openssl rand -base64 32", len(decoded))
+		return fmt.Errorf("encryption_key must be exactly 32 bytes (got %d).\n       Ensure you're using a 256-bit key. Generate with: openssl rand -base64 32", len(decoded))
 	}
 
 	return nil
