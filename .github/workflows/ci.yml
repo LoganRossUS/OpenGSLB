@@ -13,10 +13,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ['1.23', '1.24']
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -24,7 +21,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: '1.24'
           cache: true
 
       - name: Download dependencies
@@ -37,10 +34,9 @@ jobs:
         run: go vet ./...
 
       - name: Run tests
-        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        run: go test -race -timeout 2m -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage to artifacts
-        if: matrix.go-version == '1.24'
         uses: actions/upload-artifact@v4
         with:
           name: coverage
