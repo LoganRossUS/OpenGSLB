@@ -23,6 +23,7 @@ package integration
 import (
 	"context"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -289,22 +290,9 @@ type mockLatencyProvider struct {
 }
 
 func (m *mockLatencyProvider) GetLatency(address string, port int) routing.LatencyInfo {
-	key := address + ":" + itoa(port)
+	key := address + ":" + strconv.Itoa(port)
 	if info, ok := m.latencies[key]; ok {
 		return info
 	}
 	return routing.LatencyInfo{HasData: false}
-}
-
-// itoa is a simple int to string helper to avoid importing strconv.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	result := ""
-	for n > 0 {
-		result = string('0'+n%10) + result
-		n /= 10
-	}
-	return result
 }
