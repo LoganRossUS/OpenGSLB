@@ -18,6 +18,7 @@ import (
 type APIHandlers struct {
 	registry  *Registry
 	validator *Validator
+	agentAuth *AgentAuth
 }
 
 // NewAPIHandlers creates new Overwatch API handlers.
@@ -26,6 +27,11 @@ func NewAPIHandlers(registry *Registry, validator *Validator) *APIHandlers {
 		registry:  registry,
 		validator: validator,
 	}
+}
+
+// SetAgentAuth sets the agent authenticator for certificate management endpoints.
+func (h *APIHandlers) SetAgentAuth(auth *AgentAuth) {
+	h.agentAuth = auth
 }
 
 // BackendResponse represents a backend in API responses.
@@ -87,6 +93,34 @@ type StatsResponse struct {
 type ErrorResponse struct {
 	Error string `json:"error"`
 	Code  int    `json:"code"`
+}
+
+// AgentCertResponse represents an agent certificate in API responses.
+type AgentCertResponse struct {
+	AgentID        string    `json:"agent_id"`
+	Fingerprint    string    `json:"fingerprint"`
+	Region         string    `json:"region"`
+	FirstSeen      time.Time `json:"first_seen"`
+	LastSeen       time.Time `json:"last_seen"`
+	NotAfter       time.Time `json:"not_after"`
+	Revoked        bool      `json:"revoked"`
+	RevokedAt      time.Time `json:"revoked_at,omitempty"`
+	RevokedReason  string    `json:"revoked_reason,omitempty"`
+	ExpiresInHours int       `json:"expires_in_hours"`
+}
+
+// AgentCertsResponse is the response for GET /api/v1/overwatch/agents.
+type AgentCertsResponse struct {
+	Agents      []AgentCertResponse `json:"agents"`
+	Total       int                 `json:"total"`
+	Revoked     int                 `json:"revoked"`
+	Expiring    int                 `json:"expiring"`
+	GeneratedAt time.Time           `json:"generated_at"`
+}
+
+// RevokeRequest is the request body for POST /api/v1/overwatch/agents/{id}/revoke.
+type RevokeRequest struct {
+	Reason string `json:"reason"`
 }
 
 // HandleBackends handles GET /api/v1/overwatch/backends
@@ -332,12 +366,261 @@ func (h *APIHandlers) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleAgents handles GET /api/v1/overwatch/agents
+// Returns all pinned agent certificates.
+func (h *APIHandlers) HandleAgents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if h.agentAuth == nil {
+		writeError(w, http.StatusServiceUnavailable, "agent auth not configured")
+		return
+	}
+
+	certs, err := h.agentAuth.ListPinnedCertificates(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response := AgentCertsResponse{
+		Agents:      make([]AgentCertResponse, 0, len(certs)),
+		GeneratedAt: time.Now().UTC(),
+	}
+
+	now := time.Now()
+	expiryThreshold := 30 * 24 * time.Hour // 30 days
+
+	for _, cert := range certs {
+		expiresIn := cert.NotAfter.Sub(now)
+		agentResp := AgentCertResponse{
+			AgentID:        cert.AgentID,
+			Fingerprint:    cert.Fingerprint,
+			Region:         cert.Region,
+			FirstSeen:      cert.FirstSeen,
+			LastSeen:       cert.LastSeen,
+			NotAfter:       cert.NotAfter,
+			Revoked:        cert.Revoked,
+			RevokedAt:      cert.RevokedAt,
+			RevokedReason:  cert.RevokedReason,
+			ExpiresInHours: int(expiresIn.Hours()),
+		}
+		response.Agents = append(response.Agents, agentResp)
+		response.Total++
+
+		if cert.Revoked {
+			response.Revoked++
+		} else if expiresIn < expiryThreshold {
+			response.Expiring++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+// HandleAgent handles GET/DELETE /api/v1/overwatch/agents/{agent_id}
+func (h *APIHandlers) HandleAgent(w http.ResponseWriter, r *http.Request) {
+	// Parse agent ID from path
+	agentID := strings.TrimPrefix(r.URL.Path, "/api/v1/overwatch/agents/")
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id is required")
+		return
+	}
+
+	// Remove any trailing path components (e.g., "/revoke")
+	if idx := strings.Index(agentID, "/"); idx != -1 {
+		agentID = agentID[:idx]
+	}
+
+	if h.agentAuth == nil {
+		writeError(w, http.StatusServiceUnavailable, "agent auth not configured")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		h.getAgent(w, r, agentID)
+	case http.MethodDelete:
+		h.deleteAgent(w, r, agentID)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// getAgent returns a specific agent's certificate info.
+func (h *APIHandlers) getAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+	cert, err := h.agentAuth.GetPinnedCertificate(r.Context(), agentID)
+	if err != nil {
+		if err == ErrAgentNotFound {
+			writeError(w, http.StatusNotFound, "agent not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	now := time.Now()
+	expiresIn := cert.NotAfter.Sub(now)
+
+	writeJSON(w, http.StatusOK, AgentCertResponse{
+		AgentID:        cert.AgentID,
+		Fingerprint:    cert.Fingerprint,
+		Region:         cert.Region,
+		FirstSeen:      cert.FirstSeen,
+		LastSeen:       cert.LastSeen,
+		NotAfter:       cert.NotAfter,
+		Revoked:        cert.Revoked,
+		RevokedAt:      cert.RevokedAt,
+		RevokedReason:  cert.RevokedReason,
+		ExpiresInHours: int(expiresIn.Hours()),
+	})
+}
+
+// deleteAgent deletes (unpins) an agent's certificate.
+func (h *APIHandlers) deleteAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+	if err := h.agentAuth.DeletePinnedCertificate(r.Context(), agentID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Agent certificate deleted",
+	})
+}
+
+// HandleAgentRevoke handles POST /api/v1/overwatch/agents/{agent_id}/revoke
+func (h *APIHandlers) HandleAgentRevoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Parse agent ID from path
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/overwatch/agents/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[1] != "revoke" {
+		writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+	agentID := parts[0]
+
+	if h.agentAuth == nil {
+		writeError(w, http.StatusServiceUnavailable, "agent auth not configured")
+		return
+	}
+
+	var req RevokeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Reason == "" {
+		req.Reason = "revoked via API"
+	}
+
+	if err := h.agentAuth.RevokeCertificate(r.Context(), agentID, req.Reason); err != nil {
+		if err == ErrAgentNotFound {
+			writeError(w, http.StatusNotFound, "agent not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Agent certificate revoked",
+	})
+}
+
+// HandleAgentsExpiring handles GET /api/v1/overwatch/agents/expiring
+func (h *APIHandlers) HandleAgentsExpiring(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if h.agentAuth == nil {
+		writeError(w, http.StatusServiceUnavailable, "agent auth not configured")
+		return
+	}
+
+	// Parse threshold from query parameter (default 30 days)
+	thresholdStr := r.URL.Query().Get("threshold_days")
+	thresholdDays := 30
+	if thresholdStr != "" {
+		if d, err := strconv.Atoi(thresholdStr); err == nil && d > 0 {
+			thresholdDays = d
+		}
+	}
+
+	threshold := time.Duration(thresholdDays) * 24 * time.Hour
+	certs, err := h.agentAuth.GetExpiringCertificates(r.Context(), threshold)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response := make([]AgentCertResponse, 0, len(certs))
+	now := time.Now()
+
+	for _, cert := range certs {
+		expiresIn := cert.NotAfter.Sub(now)
+		response = append(response, AgentCertResponse{
+			AgentID:        cert.AgentID,
+			Fingerprint:    cert.Fingerprint,
+			Region:         cert.Region,
+			FirstSeen:      cert.FirstSeen,
+			LastSeen:       cert.LastSeen,
+			NotAfter:       cert.NotAfter,
+			Revoked:        cert.Revoked,
+			ExpiresInHours: int(expiresIn.Hours()),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"expiring":       response,
+		"count":          len(response),
+		"threshold_days": thresholdDays,
+		"generated_at":   time.Now().UTC(),
+	})
+}
+
 // RegisterRoutes registers Overwatch API routes with an HTTP mux.
 func (h *APIHandlers) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/overwatch/backends", h.HandleBackends)
 	mux.HandleFunc("/api/v1/overwatch/backends/", h.HandleBackendOverride)
 	mux.HandleFunc("/api/v1/overwatch/stats", h.HandleStats)
 	mux.HandleFunc("/api/v1/overwatch/validate", h.HandleValidate)
+
+	// Agent certificate management endpoints
+	mux.HandleFunc("/api/v1/overwatch/agents", h.HandleAgents)
+	mux.HandleFunc("/api/v1/overwatch/agents/expiring", h.HandleAgentsExpiring)
+	mux.HandleFunc("/api/v1/overwatch/agents/", h.handleAgentRoute)
+}
+
+// handleAgentRoute routes agent requests based on path.
+func (h *APIHandlers) handleAgentRoute(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/overwatch/agents/")
+
+	// Check for /expiring which is handled separately
+	if path == "expiring" {
+		h.HandleAgentsExpiring(w, r)
+		return
+	}
+
+	// Check for /{agent_id}/revoke
+	if strings.HasSuffix(path, "/revoke") {
+		h.HandleAgentRevoke(w, r)
+		return
+	}
+
+	// Otherwise it's GET/DELETE /{agent_id}
+	h.HandleAgent(w, r)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

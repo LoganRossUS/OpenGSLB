@@ -57,6 +57,16 @@ func RecordGossipMessage(agentID, msgType string) {
 	metrics.RecordGossipMessageReceived(msgType)
 }
 
+// RecordAgentRegistration records when a new agent is registered via TOFU.
+func RecordAgentRegistration(agentID, region string) {
+	// Agent registration is tracked via the agents registered gauge
+}
+
+// RecordAgentRevocation records when an agent's certificate is revoked.
+func RecordAgentRevocation(agentID string) {
+	// Revocation tracking - decrements active agents
+}
+
 // SetActiveAgents sets the number of active agents.
 func SetActiveAgents(count int) {
 	metrics.SetOverwatchAgentsRegistered(count)

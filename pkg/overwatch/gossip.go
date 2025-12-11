@@ -36,6 +36,8 @@ const (
 	MessageRegister GossipMessageType = "register"
 	// MessageDeregister is a backend deregistration message.
 	MessageDeregister GossipMessageType = "deregister"
+	// MessageAgentAuth is an agent authentication/registration message (TOFU).
+	MessageAgentAuth GossipMessageType = "agent_auth"
 )
 
 // HeartbeatPayload is the payload for heartbeat messages.
@@ -70,6 +72,26 @@ type DeregisterPayload struct {
 	Port    int    `json:"port"`
 }
 
+// AgentAuthPayload is the payload for agent authentication messages (TOFU).
+type AgentAuthPayload struct {
+	// CertificatePEM is the agent's PEM-encoded certificate.
+	CertificatePEM []byte `json:"certificate_pem"`
+	// ServiceToken is the pre-shared token for first-time registration.
+	ServiceToken string `json:"service_token,omitempty"`
+	// Fingerprint is the certificate fingerprint for subsequent auth.
+	Fingerprint string `json:"fingerprint"`
+}
+
+// AgentAuthResponse is the response to an agent authentication request.
+type AgentAuthResponse struct {
+	// Success indicates if authentication was successful.
+	Success bool `json:"success"`
+	// Message provides details about the result.
+	Message string `json:"message,omitempty"`
+	// Error provides error details if authentication failed.
+	Error string `json:"error,omitempty"`
+}
+
 // GossipReceiver receives gossip messages from agents.
 // Story 4 will provide the actual implementation using memberlist.
 type GossipReceiver interface {
@@ -100,6 +122,7 @@ type GossipReceiverConfig struct {
 // GossipHandler processes gossip messages and updates the registry.
 type GossipHandler struct {
 	registry *Registry
+	auth     *AgentAuth
 	logger   *slog.Logger
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -114,6 +137,11 @@ func NewGossipHandler(registry *Registry, logger *slog.Logger) *GossipHandler {
 		registry: registry,
 		logger:   logger,
 	}
+}
+
+// SetAuth sets the agent authenticator for TOFU authentication.
+func (h *GossipHandler) SetAuth(auth *AgentAuth) {
+	h.auth = auth
 }
 
 // Start begins processing gossip messages from the receiver.
@@ -153,6 +181,8 @@ func (h *GossipHandler) processMessages(messages <-chan GossipMessage) {
 // handleMessage processes a single gossip message.
 func (h *GossipHandler) handleMessage(msg GossipMessage) {
 	switch msg.Type {
+	case MessageAgentAuth:
+		h.handleAgentAuth(msg)
 	case MessageHeartbeat:
 		h.handleHeartbeat(msg)
 	case MessageRegister:
@@ -165,6 +195,52 @@ func (h *GossipHandler) handleMessage(msg GossipMessage) {
 
 	// Record metrics
 	RecordGossipMessage(msg.AgentID, string(msg.Type))
+}
+
+// handleAgentAuth processes an agent authentication message.
+func (h *GossipHandler) handleAgentAuth(msg GossipMessage) {
+	if h.auth == nil {
+		h.logger.Warn("agent auth not configured, rejecting auth request", "agent_id", msg.AgentID)
+		return
+	}
+
+	payload, ok := msg.Payload.(AgentAuthPayload)
+	if !ok {
+		if m, ok := msg.Payload.(map[string]interface{}); ok {
+			payload = h.parseAgentAuthPayload(m)
+		} else {
+			h.logger.Warn("invalid agent auth payload", "agent_id", msg.AgentID)
+			return
+		}
+	}
+
+	err := h.auth.AuthenticateAgent(h.ctx, msg.AgentID, payload.CertificatePEM, payload.ServiceToken)
+	if err != nil {
+		h.logger.Warn("agent authentication failed",
+			"agent_id", msg.AgentID,
+			"error", err,
+		)
+		return
+	}
+
+	h.logger.Info("agent authenticated successfully", "agent_id", msg.AgentID)
+}
+
+// parseAgentAuthPayload parses an agent auth payload from a map.
+func (h *GossipHandler) parseAgentAuthPayload(m map[string]interface{}) AgentAuthPayload {
+	payload := AgentAuthPayload{}
+
+	if certPEM, ok := m["certificate_pem"].(string); ok {
+		payload.CertificatePEM = []byte(certPEM)
+	}
+	if serviceToken, ok := m["service_token"].(string); ok {
+		payload.ServiceToken = serviceToken
+	}
+	if fingerprint, ok := m["fingerprint"].(string); ok {
+		payload.Fingerprint = fingerprint
+	}
+
+	return payload
 }
 
 // handleHeartbeat processes a heartbeat message.
