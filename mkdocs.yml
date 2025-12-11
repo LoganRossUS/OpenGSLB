@@ -1,0 +1,90 @@
+# MkDocs configuration for OpenGSLB documentation
+# https://www.mkdocs.org/user-guide/configuration/
+
+site_name: OpenGSLB Documentation
+site_description: Open-source Global Server Load Balancer with DNS-based traffic management
+site_author: Logan Ross
+site_url: https://opengslb.readthedocs.io/
+
+repo_name: LoganRossUS/OpenGSLB
+repo_url: https://github.com/LoganRossUS/OpenGSLB
+
+copyright: Copyright &copy; 2025 Logan Ross
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Quick Start: README.md
+      - Configuration: docs/configuration.md
+      - Docker Deployment: docs/docker.md
+  - Architecture:
+      - Decisions: docs/ARCHITECTURE_DECISIONS.md
+      - Agent-Overwatch Model: docs/deployment/agent-overwatch.md
+      - Gossip Protocol: docs/gossip.md
+  - API Reference:
+      - REST API: docs/api.md
+      - Metrics: docs/metrics.md
+  - Operations:
+      - Testing: docs/testing.md
+      - Troubleshooting: docs/troubleshooting.md
+  - Security:
+      - API Hardening: docs/security/api-hardening.md
+  - Development:
+      - Progress: docs/PROGRESS.md
+      - Roadmap: docs/roadmap/future-features.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/LoganRossUS/OpenGSLB

@@ -459,19 +459,17 @@ func (r *Registry) BackendCount() int {
 
 // computeEffectiveStatus computes the effective status based on the hierarchy:
 // 1. Manual override (if set) - takes precedence
-// 2. External validation (if performed) - Overwatch ALWAYS wins
-// 3. Staleness detection
+// 2. External validation (if performed) - Overwatch ALWAYS wins, can recover stale backends
+// 3. Staleness detection (if no validation)
 // 4. Agent health claim (default)
+//
+// Note: Validation is checked BEFORE staleness to allow Overwatch external checks
+// to recover backends when agents are unavailable but the backend service is still running.
 func (r *Registry) computeEffectiveStatus(backend *Backend) {
 	now := time.Now()
+	isStale := now.Sub(backend.AgentLastSeen) > r.config.StaleThreshold
 
-	// Check staleness first
-	if now.Sub(backend.AgentLastSeen) > r.config.StaleThreshold {
-		backend.EffectiveStatus = StatusStale
-		return
-	}
-
-	// Manual override takes precedence
+	// Manual override takes highest precedence
 	if backend.OverrideStatus != nil {
 		if *backend.OverrideStatus {
 			backend.EffectiveStatus = StatusHealthy
@@ -482,12 +480,21 @@ func (r *Registry) computeEffectiveStatus(backend *Backend) {
 	}
 
 	// External validation ALWAYS wins over agent claims (ADR-015 hierarchy)
+	// This also allows validation to "recover" stale backends when agent is
+	// unavailable but the backend service is still healthy
 	if backend.ValidationHealthy != nil {
 		if *backend.ValidationHealthy {
 			backend.EffectiveStatus = StatusHealthy
 		} else {
 			backend.EffectiveStatus = StatusUnhealthy
 		}
+		return
+	}
+
+	// No validation result - check staleness
+	// Only mark stale if we have no external validation to rely on
+	if isStale {
+		backend.EffectiveStatus = StatusStale
 		return
 	}
 
@@ -517,6 +524,9 @@ func (r *Registry) staleDetectionLoop() {
 }
 
 // checkStaleBackends checks for stale backends and removes expired ones.
+// Note: This function uses computeEffectiveStatus to properly respect the health
+// authority hierarchy. A backend with successful external validation can be
+// "recovered" even if the agent heartbeat is stale.
 func (r *Registry) checkStaleBackends() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -527,29 +537,34 @@ func (r *Registry) checkStaleBackends() {
 	for key, backend := range r.backends {
 		timeSinceLastSeen := now.Sub(backend.AgentLastSeen)
 
-		// Check if backend should be removed
+		// Check if backend should be removed (no heartbeat for too long)
+		// Note: Even backends with validation get removed if no heartbeat for RemoveAfter
+		// This prevents orphaned backends from accumulating
 		if timeSinceLastSeen > r.config.RemoveAfter {
 			toRemove = append(toRemove, key)
 			continue
 		}
 
-		// Check if backend should be marked stale
-		if timeSinceLastSeen > r.config.StaleThreshold {
-			if backend.EffectiveStatus != StatusStale {
-				oldStatus := backend.EffectiveStatus
-				backend.EffectiveStatus = StatusStale
+		// Recompute effective status - this respects the health authority hierarchy
+		// and allows external validation to "recover" stale backends
+		oldStatus := backend.EffectiveStatus
+		r.computeEffectiveStatus(backend)
 
-				r.config.Logger.Warn("backend marked stale",
-					"service", backend.Service,
-					"address", backend.Address,
-					"port", backend.Port,
-					"last_seen", backend.AgentLastSeen,
-				)
+		// Log if status changed to stale (no validation to recover it)
+		if backend.EffectiveStatus == StatusStale && oldStatus != StatusStale {
+			r.config.Logger.Warn("backend marked stale",
+				"service", backend.Service,
+				"address", backend.Address,
+				"port", backend.Port,
+				"last_seen", backend.AgentLastSeen,
+			)
 
-				if r.onStatusChange != nil {
-					r.onStatusChange(backend, oldStatus, StatusStale)
-				}
+			if r.onStatusChange != nil {
+				r.onStatusChange(backend, oldStatus, StatusStale)
 			}
+		} else if oldStatus != backend.EffectiveStatus && r.onStatusChange != nil {
+			// Status changed for other reasons (validation result, override, etc.)
+			r.onStatusChange(backend, oldStatus, backend.EffectiveStatus)
 		}
 	}
 
