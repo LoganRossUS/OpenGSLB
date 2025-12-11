@@ -8,43 +8,33 @@ package store
 
 import (
 	"fmt"
-	"path/filepath"
-
-	"github.com/loganrossus/OpenGSLB/pkg/cluster"
 )
 
-// StoreType identifies the type of store to use.
+// StoreType identifies the type of store backend.
 type StoreType string
 
 const (
-	StoreTypeBbolt StoreType = "bbolt"
-	StoreTypeRaft  StoreType = "raft"
+	// StoreBBolt uses embedded bbolt for local persistence.
+	StoreBBolt StoreType = "bbolt"
 )
 
-// Config holds configuration for the store factory.
+// Config holds configuration for creating a store.
 type Config struct {
-	Type     StoreType
-	DataDir  string
-	RaftNode *cluster.RaftNode
+	// Type specifies the store backend type.
+	// ADR-015: Only "bbolt" is supported (Raft store removed).
+	Type StoreType
+
+	// Path is the file path for bbolt database.
+	Path string
 }
 
-// NewStore creates a new store based on the configuration.
-func NewStore(cfg Config) (Store, error) {
+// New creates a new store based on the provided configuration.
+// ADR-015: Only bbolt store is supported. Raft store was removed.
+func New(cfg Config) (Store, error) {
 	switch cfg.Type {
-	case StoreTypeBbolt:
-		if cfg.DataDir == "" {
-			return nil, fmt.Errorf("DataDir is required for bbolt store")
-		}
-		dbPath := filepath.Join(cfg.DataDir, "kv.db")
-		return NewBboltStore(dbPath)
-
-	case StoreTypeRaft:
-		if cfg.RaftNode == nil {
-			return nil, fmt.Errorf("RaftNode is required for raft store")
-		}
-		return NewRaftStore(cfg.RaftNode), nil
-
+	case StoreBBolt, "": // Empty defaults to bbolt
+		return NewBboltStore(cfg.Path)
 	default:
-		return nil, fmt.Errorf("unknown store type: %s", cfg.Type)
+		return nil, fmt.Errorf("unsupported store type: %s (only 'bbolt' is supported)", cfg.Type)
 	}
 }

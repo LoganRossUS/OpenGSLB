@@ -7,565 +7,339 @@
 package config
 
 import (
-	"errors"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"strings"
 	"time"
 )
 
-// ValidationError contains details about a configuration validation failure.
-type ValidationError struct {
-	Field   string
-	Value   any
-	Message string
+// Validate checks the configuration for errors.
+func (c *Config) Validate() error {
+	// Mode validation handled separately by main.go after flag override
+	// Here we validate the content assuming mode is set
+
+	// Validate shared sections
+	if err := c.validateLogging(); err != nil {
+		return fmt.Errorf("logging: %w", err)
+	}
+
+	if err := c.validateMetrics(); err != nil {
+		return fmt.Errorf("metrics: %w", err)
+	}
+
+	// Mode-specific validation
+	switch c.Mode {
+	case ModeAgent:
+		if err := c.validateAgentMode(); err != nil {
+			return fmt.Errorf("agent: %w", err)
+		}
+	case ModeOverwatch:
+		if err := c.validateOverwatchMode(); err != nil {
+			return err
+		}
+	case "":
+		// Mode not set in config file - will be defaulted later
+		// Still validate overwatch-mode sections if present
+		if len(c.Regions) > 0 || len(c.Domains) > 0 {
+			if err := c.validateOverwatchMode(); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("invalid mode %q: must be 'agent' or 'overwatch'", c.Mode)
+	}
+
+	return nil
 }
 
-func (e *ValidationError) Error() string {
-	return fmt.Sprintf("validation failed for %s: %s (got: %v)", e.Field, e.Message, e.Value)
+// validateLogging validates logging configuration.
+func (c *Config) validateLogging() error {
+	validLevels := map[string]bool{
+		"debug": true, "info": true, "warn": true, "error": true, "": true,
+	}
+	if !validLevels[strings.ToLower(c.Logging.Level)] {
+		return fmt.Errorf("invalid level %q: must be debug, info, warn, or error", c.Logging.Level)
+	}
+
+	validFormats := map[string]bool{
+		"text": true, "json": true, "": true,
+	}
+	if !validFormats[strings.ToLower(c.Logging.Format)] {
+		return fmt.Errorf("invalid format %q: must be text or json", c.Logging.Format)
+	}
+
+	return nil
 }
 
-// Validate checks the configuration for errors and returns a combined error if any are found.
-func Validate(cfg *Config) error {
-	var errs []error
-
-	errs = append(errs, validateDNS(&cfg.DNS)...)
-	errs = append(errs, validateRegions(cfg.Regions)...)
-	errs = append(errs, validateDomains(cfg.Domains, cfg.Regions)...)
-	errs = append(errs, validateLogging(&cfg.Logging)...)
-	errs = append(errs, validateAPI(&cfg.API)...)
-	errs = append(errs, validateCluster(&cfg.Cluster)...)
-
-	if len(errs) > 0 {
-		return errors.Join(errs...)
+// validateMetrics validates metrics configuration.
+func (c *Config) validateMetrics() error {
+	if c.Metrics.Enabled && c.Metrics.Address != "" {
+		if _, _, err := net.SplitHostPort(c.Metrics.Address); err != nil {
+			// Try adding default host
+			if _, _, err := net.SplitHostPort("0.0.0.0" + c.Metrics.Address); err != nil {
+				return fmt.Errorf("invalid address %q: %w", c.Metrics.Address, err)
+			}
+		}
 	}
 	return nil
 }
 
-func validateDNS(dns *DNSConfig) []error {
-	var errs []error
+// validateAgentMode validates agent-specific configuration.
+func (c *Config) validateAgentMode() error {
+	// Identity validation
+	if c.Agent.Identity.ServiceToken == "" {
+		return fmt.Errorf("identity.service_token is required")
+	}
+	if len(c.Agent.Identity.ServiceToken) < 16 {
+		return fmt.Errorf("identity.service_token must be at least 16 characters")
+	}
 
-	if dns.ListenAddress == "" {
-		errs = append(errs, &ValidationError{
-			Field:   "dns.listen_address",
-			Value:   dns.ListenAddress,
-			Message: "cannot be empty",
-		})
-	} else {
-		host, port, err := net.SplitHostPort(dns.ListenAddress)
-		if err != nil {
-			errs = append(errs, &ValidationError{
-				Field:   "dns.listen_address",
-				Value:   dns.ListenAddress,
-				Message: fmt.Sprintf("invalid address format: %v", err),
-			})
-		} else if host != "" {
-			if ip := net.ParseIP(host); ip == nil {
-				errs = append(errs, &ValidationError{
-					Field:   "dns.listen_address",
-					Value:   dns.ListenAddress,
-					Message: "invalid IP address",
-				})
-			}
+	// Backends validation
+	if len(c.Agent.Backends) == 0 {
+		return fmt.Errorf("at least one backend is required")
+	}
+	for i, backend := range c.Agent.Backends {
+		if err := validateAgentBackend(backend, i); err != nil {
+			return err
 		}
-		_ = port
 	}
 
-	if dns.DefaultTTL < 1 || dns.DefaultTTL > 86400 {
-		errs = append(errs, &ValidationError{
-			Field:   "dns.default_ttl",
-			Value:   dns.DefaultTTL,
-			Message: "must be between 1 and 86400 seconds",
-		})
+	// Gossip validation (mandatory encryption)
+	if err := validateGossipEncryptionKey(c.Agent.Gossip.EncryptionKey); err != nil {
+		return fmt.Errorf("gossip: %w", err)
+	}
+	if len(c.Agent.Gossip.OverwatchNodes) == 0 {
+		return fmt.Errorf("gossip.overwatch_nodes must have at least one address")
+	}
+	for i, node := range c.Agent.Gossip.OverwatchNodes {
+		if _, _, err := net.SplitHostPort(node); err != nil {
+			return fmt.Errorf("gossip.overwatch_nodes[%d] %q: invalid address: %w", i, node, err)
+		}
 	}
 
-	return errs
+	// Heartbeat validation
+	if c.Agent.Heartbeat.Interval > 0 && c.Agent.Heartbeat.Interval < time.Second {
+		return fmt.Errorf("heartbeat.interval must be at least 1s")
+	}
+
+	return nil
 }
 
-func validateRegions(regions []Region) []error {
-	var errs []error
+// validateAgentBackend validates a single agent backend configuration.
+func validateAgentBackend(b AgentBackend, index int) error {
+	prefix := fmt.Sprintf("backends[%d]", index)
 
-	if len(regions) == 0 {
-		errs = append(errs, &ValidationError{
-			Field:   "regions",
-			Value:   nil,
-			Message: "at least one region must be defined",
-		})
-		return errs
+	if b.Service == "" {
+		return fmt.Errorf("%s.service is required", prefix)
+	}
+	if b.Address == "" {
+		return fmt.Errorf("%s.address is required", prefix)
+	}
+	if net.ParseIP(b.Address) == nil {
+		// Try to resolve hostname
+		if _, err := net.LookupHost(b.Address); err != nil {
+			return fmt.Errorf("%s.address %q: invalid IP or hostname", prefix, b.Address)
+		}
+	}
+	if b.Port <= 0 || b.Port > 65535 {
+		return fmt.Errorf("%s.port must be between 1 and 65535", prefix)
+	}
+	if b.Weight < 0 {
+		return fmt.Errorf("%s.weight must be non-negative", prefix)
 	}
 
-	seen := make(map[string]bool)
-	for i := range regions {
-		r := &regions[i]
+	// Health check validation
+	hc := b.HealthCheck
+	validTypes := map[string]bool{"http": true, "https": true, "tcp": true, "": true}
+	if !validTypes[strings.ToLower(hc.Type)] {
+		return fmt.Errorf("%s.health_check.type %q: must be http, https, or tcp", prefix, hc.Type)
+	}
+	if hc.Interval > 0 && hc.Interval < time.Second {
+		return fmt.Errorf("%s.health_check.interval must be at least 1s", prefix)
+	}
+	if hc.Timeout > 0 && hc.Timeout < 100*time.Millisecond {
+		return fmt.Errorf("%s.health_check.timeout must be at least 100ms", prefix)
+	}
+
+	return nil
+}
+
+// validateOverwatchMode validates overwatch-specific configuration.
+func (c *Config) validateOverwatchMode() error {
+	// Gossip validation (mandatory encryption)
+	if err := validateGossipEncryptionKey(c.Overwatch.Gossip.EncryptionKey); err != nil {
+		return fmt.Errorf("overwatch.gossip: %w", err)
+	}
+
+	// DNSSEC validation
+	if !c.Overwatch.DNSSEC.Enabled {
+		expectedAck := "I understand that disabling DNSSEC removes cryptographic authentication of DNS responses and allows DNS spoofing attacks against my zones"
+		if c.Overwatch.DNSSEC.SecurityAcknowledgment != expectedAck {
+			return fmt.Errorf("dnssec: to disable DNSSEC, security_acknowledgment must be set to: %q", expectedAck)
+		}
+	}
+
+	// DNS validation
+	if err := c.validateDNS(); err != nil {
+		return fmt.Errorf("dns: %w", err)
+	}
+
+	// Regions validation
+	if err := c.validateRegions(); err != nil {
+		return err
+	}
+
+	// Domains validation
+	if err := c.validateDomains(); err != nil {
+		return err
+	}
+
+	// API validation
+	if err := c.validateAPI(); err != nil {
+		return fmt.Errorf("api: %w", err)
+	}
+
+	return nil
+}
+
+// validateGossipEncryptionKey validates the gossip encryption key.
+// ADR-015: Encryption is MANDATORY - no opt-out.
+// AES-256 requires exactly 32 bytes (256 bits).
+func validateGossipEncryptionKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("encryption_key is required. OpenGSLB requires encrypted gossip communication.\n       Generate a key with: openssl rand -base64 32")
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(key)
+	if err != nil {
+		return fmt.Errorf("encryption_key must be valid base64: %w", err)
+	}
+
+	if len(decoded) != 32 {
+		return fmt.Errorf("encryption_key must be exactly 32 bytes (got %d).\n       Ensure you're using a 256-bit key. Generate with: openssl rand -base64 32", len(decoded))
+	}
+
+	return nil
+}
+
+// validateDNS validates DNS configuration.
+func (c *Config) validateDNS() error {
+	if c.DNS.ListenAddress != "" {
+		if _, _, err := net.SplitHostPort(c.DNS.ListenAddress); err != nil {
+			return fmt.Errorf("invalid listen_address %q: %w", c.DNS.ListenAddress, err)
+		}
+	}
+
+	if c.DNS.DefaultTTL < 0 {
+		return fmt.Errorf("default_ttl must be non-negative")
+	}
+
+	return nil
+}
+
+// validateRegions validates region configurations.
+func (c *Config) validateRegions() error {
+	regionNames := make(map[string]bool)
+
+	for i, region := range c.Regions {
 		prefix := fmt.Sprintf("regions[%d]", i)
 
-		if r.Name == "" {
-			errs = append(errs, &ValidationError{
-				Field:   prefix + ".name",
-				Value:   r.Name,
-				Message: "cannot be empty",
-			})
-		} else if seen[r.Name] {
-			errs = append(errs, &ValidationError{
-				Field:   prefix + ".name",
-				Value:   r.Name,
-				Message: "duplicate region name",
-			})
-		} else {
-			seen[r.Name] = true
+		if region.Name == "" {
+			return fmt.Errorf("%s.name is required", prefix)
+		}
+		if regionNames[region.Name] {
+			return fmt.Errorf("%s: duplicate region name %q", prefix, region.Name)
+		}
+		regionNames[region.Name] = true
+
+		if len(region.Servers) == 0 {
+			return fmt.Errorf("%s: at least one server required", prefix)
 		}
 
-		errs = append(errs, validateServers(r.Servers, prefix)...)
-		errs = append(errs, validateHealthCheck(&r.HealthCheck, prefix)...)
+		for j, server := range region.Servers {
+			serverPrefix := fmt.Sprintf("%s.servers[%d]", prefix, j)
+			if server.Address == "" {
+				return fmt.Errorf("%s.address is required", serverPrefix)
+			}
+			if server.Port <= 0 || server.Port > 65535 {
+				return fmt.Errorf("%s.port must be between 1 and 65535", serverPrefix)
+			}
+		}
+
+		// Health check validation
+		hc := region.HealthCheck
+		validTypes := map[string]bool{"http": true, "https": true, "tcp": true, "": true}
+		if !validTypes[strings.ToLower(hc.Type)] {
+			return fmt.Errorf("%s.health_check.type %q: must be http, https, or tcp", prefix, hc.Type)
+		}
 	}
 
-	return errs
+	return nil
 }
 
-func validateServers(servers []Server, prefix string) []error {
-	var errs []error
-
-	if len(servers) == 0 {
-		errs = append(errs, &ValidationError{
-			Field:   prefix + ".servers",
-			Value:   nil,
-			Message: "at least one server must be defined",
-		})
-		return errs
-	}
-
-	for i, s := range servers {
-		sPrefix := fmt.Sprintf("%s.servers[%d]", prefix, i)
-
-		if s.Address == "" {
-			errs = append(errs, &ValidationError{
-				Field:   sPrefix + ".address",
-				Value:   s.Address,
-				Message: "cannot be empty",
-			})
-		} else if ip := net.ParseIP(s.Address); ip == nil {
-			errs = append(errs, &ValidationError{
-				Field:   sPrefix + ".address",
-				Value:   s.Address,
-				Message: "invalid IP address",
-			})
-		}
-
-		if s.Port < 1 || s.Port > 65535 {
-			errs = append(errs, &ValidationError{
-				Field:   sPrefix + ".port",
-				Value:   s.Port,
-				Message: "must be between 1 and 65535",
-			})
-		}
-
-		if s.Weight < 1 || s.Weight > 1000 {
-			errs = append(errs, &ValidationError{
-				Field:   sPrefix + ".weight",
-				Value:   s.Weight,
-				Message: "must be between 1 and 1000",
-			})
-		}
-	}
-
-	return errs
-}
-
-func validateHealthCheck(hc *HealthCheck, prefix string) []error {
-	var errs []error
-	hcPrefix := prefix + ".health_check"
-
-	validTypes := map[string]bool{"http": true, "https": true, "tcp": true}
-	if !validTypes[hc.Type] {
-		errs = append(errs, &ValidationError{
-			Field:   hcPrefix + ".type",
-			Value:   hc.Type,
-			Message: "must be one of: http, https, tcp",
-		})
-	}
-
-	if hc.Interval < 1_000_000_000 {
-		errs = append(errs, &ValidationError{
-			Field:   hcPrefix + ".interval",
-			Value:   hc.Interval,
-			Message: "must be at least 1 second",
-		})
-	}
-
-	if hc.Timeout < 100_000_000 {
-		errs = append(errs, &ValidationError{
-			Field:   hcPrefix + ".timeout",
-			Value:   hc.Timeout,
-			Message: "must be at least 100ms",
-		})
-	}
-
-	if hc.Timeout >= hc.Interval {
-		errs = append(errs, &ValidationError{
-			Field:   hcPrefix + ".timeout",
-			Value:   hc.Timeout,
-			Message: "must be less than interval",
-		})
-	}
-
-	if (hc.Type == "http" || hc.Type == "https") && !strings.HasPrefix(hc.Path, "/") {
-		errs = append(errs, &ValidationError{
-			Field:   hcPrefix + ".path",
-			Value:   hc.Path,
-			Message: "must start with /",
-		})
-	}
-
-	if hc.FailureThreshold < 1 || hc.FailureThreshold > 10 {
-		errs = append(errs, &ValidationError{
-			Field:   hcPrefix + ".failure_threshold",
-			Value:   hc.FailureThreshold,
-			Message: "must be between 1 and 10",
-		})
-	}
-
-	if hc.SuccessThreshold < 1 || hc.SuccessThreshold > 10 {
-		errs = append(errs, &ValidationError{
-			Field:   hcPrefix + ".success_threshold",
-			Value:   hc.SuccessThreshold,
-			Message: "must be between 1 and 10",
-		})
-	}
-
-	return errs
-}
-
-func validateDomains(domains []Domain, regions []Region) []error {
-	var errs []error
-
-	if len(domains) == 0 {
-		errs = append(errs, &ValidationError{
-			Field:   "domains",
-			Value:   nil,
-			Message: "at least one domain must be defined",
-		})
-		return errs
-	}
-
+// validateDomains validates domain configurations.
+func (c *Config) validateDomains() error {
+	// Build region name set for validation
 	regionNames := make(map[string]bool)
-	for _, r := range regions {
-		regionNames[r.Name] = true
+	for _, region := range c.Regions {
+		regionNames[region.Name] = true
 	}
 
-	validAlgorithms := map[string]bool{
-		"round-robin": true,
-		"weighted":    true,
-		"geolocation": true,
-		"latency":     true,
-		"failover":    true,
-	}
+	domainNames := make(map[string]bool)
 
-	seen := make(map[string]bool)
-	for i, d := range domains {
+	for i, domain := range c.Domains {
 		prefix := fmt.Sprintf("domains[%d]", i)
 
-		if d.Name == "" {
-			errs = append(errs, &ValidationError{
-				Field:   prefix + ".name",
-				Value:   d.Name,
-				Message: "cannot be empty",
-			})
-		} else if seen[d.Name] {
-			errs = append(errs, &ValidationError{
-				Field:   prefix + ".name",
-				Value:   d.Name,
-				Message: "duplicate domain name",
-			})
-		} else {
-			seen[d.Name] = true
+		if domain.Name == "" {
+			return fmt.Errorf("%s.name is required", prefix)
+		}
+		if domainNames[domain.Name] {
+			return fmt.Errorf("%s: duplicate domain name %q", prefix, domain.Name)
+		}
+		domainNames[domain.Name] = true
+
+		// Validate routing algorithm
+		validAlgorithms := map[string]bool{
+			"round-robin": true, "weighted": true, "failover": true,
+			"geolocation": true, "latency": true, "": true,
+		}
+		if !validAlgorithms[strings.ToLower(domain.RoutingAlgorithm)] {
+			return fmt.Errorf("%s.routing_algorithm %q: must be round-robin, weighted, failover, geolocation, or latency",
+				prefix, domain.RoutingAlgorithm)
 		}
 
-		if !validAlgorithms[d.RoutingAlgorithm] {
-			errs = append(errs, &ValidationError{
-				Field:   prefix + ".routing_algorithm",
-				Value:   d.RoutingAlgorithm,
-				Message: "must be one of: round-robin, weighted, geolocation, latency, failover",
-			})
+		// Validate regions exist
+		if len(domain.Regions) == 0 {
+			return fmt.Errorf("%s: at least one region required", prefix)
 		}
-
-		if len(d.Regions) == 0 {
-			errs = append(errs, &ValidationError{
-				Field:   prefix + ".regions",
-				Value:   nil,
-				Message: "at least one region must be specified",
-			})
-		}
-
-		for j, rName := range d.Regions {
-			if !regionNames[rName] {
-				errs = append(errs, &ValidationError{
-					Field:   fmt.Sprintf("%s.regions[%d]", prefix, j),
-					Value:   rName,
-					Message: "references undefined region",
-				})
+		for _, regionName := range domain.Regions {
+			if !regionNames[regionName] {
+				return fmt.Errorf("%s: region %q not found", prefix, regionName)
 			}
-		}
-
-		if d.TTL < 1 || d.TTL > 86400 {
-			errs = append(errs, &ValidationError{
-				Field:   prefix + ".ttl",
-				Value:   d.TTL,
-				Message: "must be between 1 and 86400 seconds",
-			})
 		}
 	}
 
-	return errs
+	return nil
 }
 
-func validateLogging(logging *LoggingConfig) []error {
-	var errs []error
-
-	validLevels := map[string]bool{
-		"debug": true,
-		"info":  true,
-		"warn":  true,
-		"error": true,
-	}
-	if !validLevels[logging.Level] {
-		errs = append(errs, &ValidationError{
-			Field:   "logging.level",
-			Value:   logging.Level,
-			Message: "must be one of: debug, info, warn, error",
-		})
+// validateAPI validates API configuration.
+func (c *Config) validateAPI() error {
+	if !c.API.Enabled {
+		return nil
 	}
 
-	validFormats := map[string]bool{"json": true, "text": true}
-	if !validFormats[logging.Format] {
-		errs = append(errs, &ValidationError{
-			Field:   "logging.format",
-			Value:   logging.Format,
-			Message: "must be one of: json, text",
-		})
-	}
-
-	return errs
-}
-
-func validateAPI(api *APIConfig) []error {
-	var errs []error
-
-	if !api.Enabled {
-		return errs
-	}
-
-	if api.Address == "" {
-		errs = append(errs, &ValidationError{
-			Field:   "api.address",
-			Value:   api.Address,
-			Message: "cannot be empty when API is enabled",
-		})
-	} else {
-		host, port, err := net.SplitHostPort(api.Address)
-		if err != nil {
-			errs = append(errs, &ValidationError{
-				Field:   "api.address",
-				Value:   api.Address,
-				Message: fmt.Sprintf("invalid address format: %v", err),
-			})
-		} else if host != "" {
-			if ip := net.ParseIP(host); ip == nil {
-				errs = append(errs, &ValidationError{
-					Field:   "api.address",
-					Value:   api.Address,
-					Message: "invalid IP address",
-				})
-			}
-		}
-		_ = port
-	}
-
-	for i, cidr := range api.AllowedNetworks {
-		testCIDR := cidr
-		if !strings.Contains(cidr, "/") {
-			if strings.Contains(cidr, ":") {
-				testCIDR = cidr + "/128"
-			} else {
-				testCIDR = cidr + "/32"
-			}
-		}
-
-		_, _, err := net.ParseCIDR(testCIDR)
-		if err != nil {
-			errs = append(errs, &ValidationError{
-				Field:   fmt.Sprintf("api.allowed_networks[%d]", i),
-				Value:   cidr,
-				Message: fmt.Sprintf("invalid CIDR notation: %v", err),
-			})
+	if c.API.Address != "" {
+		if _, _, err := net.SplitHostPort(c.API.Address); err != nil {
+			return fmt.Errorf("invalid address %q: %w", c.API.Address, err)
 		}
 	}
 
-	return errs
-}
-
-func validateCluster(cluster *ClusterConfig) []error {
-	var errs []error
-
-	// Validate mode value
-	validModes := map[RuntimeMode]bool{
-		ModeStandalone: true,
-		ModeCluster:    true,
-		"":             true, // Empty defaults to standalone
-	}
-	if !validModes[cluster.Mode] {
-		errs = append(errs, &ValidationError{
-			Field:   "cluster.mode",
-			Value:   cluster.Mode,
-			Message: "must be one of: standalone, cluster",
-		})
-	}
-
-	// Standalone mode: minimal validation
-	if cluster.IsStandaloneMode() {
-		return errs
-	}
-
-	// Cluster mode validation
-	if cluster.BindAddress == "" {
-		errs = append(errs, &ValidationError{
-			Field:   "cluster.bind_address",
-			Value:   cluster.BindAddress,
-			Message: "required in cluster mode",
-		})
-	} else {
-		// Validate bind_address format
-		host, _, err := net.SplitHostPort(cluster.BindAddress)
-		if err != nil {
-			errs = append(errs, &ValidationError{
-				Field:   "cluster.bind_address",
-				Value:   cluster.BindAddress,
-				Message: fmt.Sprintf("invalid address format: %v", err),
-			})
-		} else if host != "" {
-			if ip := net.ParseIP(host); ip == nil {
-				errs = append(errs, &ValidationError{
-					Field:   "cluster.bind_address",
-					Value:   cluster.BindAddress,
-					Message: "invalid IP address",
-				})
-			}
+	for i, network := range c.API.AllowedNetworks {
+		if _, _, err := net.ParseCIDR(network); err != nil {
+			return fmt.Errorf("allowed_networks[%d] %q: invalid CIDR: %w", i, network, err)
 		}
 	}
 
-	// Validate advertise_address if set
-	if cluster.AdvertiseAddress != "" {
-		host, _, err := net.SplitHostPort(cluster.AdvertiseAddress)
-		if err != nil {
-			errs = append(errs, &ValidationError{
-				Field:   "cluster.advertise_address",
-				Value:   cluster.AdvertiseAddress,
-				Message: fmt.Sprintf("invalid address format: %v", err),
-			})
-		} else if host != "" {
-			if ip := net.ParseIP(host); ip == nil {
-				errs = append(errs, &ValidationError{
-					Field:   "cluster.advertise_address",
-					Value:   cluster.AdvertiseAddress,
-					Message: "invalid IP address",
-				})
-			}
-		}
-	}
-
-	// Validate anycast_vip if set
-	if cluster.AnycastVIP != "" {
-		if ip := net.ParseIP(cluster.AnycastVIP); ip == nil {
-			errs = append(errs, &ValidationError{
-				Field:   "cluster.anycast_vip",
-				Value:   cluster.AnycastVIP,
-				Message: "invalid IP address",
-			})
-		}
-	}
-
-	// Validate Raft settings
-	if cluster.Raft.HeartbeatTimeout < 100*1_000_000 { // 100ms minimum
-		errs = append(errs, &ValidationError{
-			Field:   "cluster.raft.heartbeat_timeout",
-			Value:   cluster.Raft.HeartbeatTimeout,
-			Message: "must be at least 100ms",
-		})
-	}
-
-	if cluster.Raft.ElectionTimeout < cluster.Raft.HeartbeatTimeout {
-		errs = append(errs, &ValidationError{
-			Field:   "cluster.raft.election_timeout",
-			Value:   cluster.Raft.ElectionTimeout,
-			Message: "must be greater than or equal to heartbeat_timeout",
-		})
-	}
-
-	// Validate predictive health settings if enabled
-	if cluster.PredictiveHealth.Enabled {
-		errs = append(errs, validatePredictiveHealth(&cluster.PredictiveHealth)...)
-	}
-
-	return errs
-}
-
-func validatePredictiveHealth(ph *PredictiveHealthConfig) []error {
-	var errs []error
-	prefix := "cluster.predictive_health"
-
-	// Validate CPU threshold
-	if ph.CPU.Threshold < 0 || ph.CPU.Threshold > 100 {
-		errs = append(errs, &ValidationError{
-			Field:   prefix + ".cpu.threshold",
-			Value:   ph.CPU.Threshold,
-			Message: "must be between 0 and 100",
-		})
-	}
-	if ph.CPU.BleedDuration < time.Second {
-		errs = append(errs, &ValidationError{
-			Field:   prefix + ".cpu.bleed_duration",
-			Value:   ph.CPU.BleedDuration,
-			Message: "must be at least 1 second",
-		})
-	}
-
-	// Validate memory threshold
-	if ph.Memory.Threshold < 0 || ph.Memory.Threshold > 100 {
-		errs = append(errs, &ValidationError{
-			Field:   prefix + ".memory.threshold",
-			Value:   ph.Memory.Threshold,
-			Message: "must be between 0 and 100",
-		})
-	}
-	if ph.Memory.BleedDuration < time.Second {
-		errs = append(errs, &ValidationError{
-			Field:   prefix + ".memory.bleed_duration",
-			Value:   ph.Memory.BleedDuration,
-			Message: "must be at least 1 second",
-		})
-	}
-
-	// Validate error rate threshold
-	if ph.ErrorRate.Threshold < 0 {
-		errs = append(errs, &ValidationError{
-			Field:   prefix + ".error_rate.threshold",
-			Value:   ph.ErrorRate.Threshold,
-			Message: "must be non-negative",
-		})
-	}
-	if ph.ErrorRate.Window < time.Second {
-		errs = append(errs, &ValidationError{
-			Field:   prefix + ".error_rate.window",
-			Value:   ph.ErrorRate.Window,
-			Message: "must be at least 1 second",
-		})
-	}
-	if ph.ErrorRate.BleedDuration < time.Second {
-		errs = append(errs, &ValidationError{
-			Field:   prefix + ".error_rate.bleed_duration",
-			Value:   ph.ErrorRate.BleedDuration,
-			Message: "must be at least 1 second",
-		})
-	}
-
-	return errs
+	return nil
 }

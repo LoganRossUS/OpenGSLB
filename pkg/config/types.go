@@ -8,37 +8,258 @@
 package config
 
 import (
-	"net"
-	"strconv"
 	"time"
 )
 
-// RuntimeMode defines the operational mode of OpenGSLB.
+// RuntimeMode defines the operational mode of OpenGSLB (ADR-015).
 type RuntimeMode string
 
 const (
-	// ModeStandalone runs OpenGSLB as a single node (default).
-	ModeStandalone RuntimeMode = "standalone"
-	// ModeCluster runs OpenGSLB as part of a distributed cluster.
-	ModeCluster RuntimeMode = "cluster"
+	// ModeAgent runs OpenGSLB as a health-reporting agent on application servers.
+	ModeAgent RuntimeMode = "agent"
+	// ModeOverwatch runs OpenGSLB as a DNS-serving, health-validating authority.
+	ModeOverwatch RuntimeMode = "overwatch"
 )
 
 // Config is the root configuration structure for OpenGSLB.
 type Config struct {
-	DNS     DNSConfig     `yaml:"dns"`
-	Regions []Region      `yaml:"regions"`
-	Domains []Domain      `yaml:"domains"`
+	// Mode specifies the runtime mode: "agent" or "overwatch" (ADR-015)
+	Mode RuntimeMode `yaml:"mode"`
+
+	// Agent configuration (only used when mode=agent)
+	Agent AgentConfig `yaml:"agent"`
+
+	// Overwatch configuration (only used when mode=overwatch)
+	Overwatch OverwatchConfig `yaml:"overwatch"`
+
+	// DNS server settings (overwatch mode only)
+	DNS DNSConfig `yaml:"dns"`
+
+	// Regions define backend server pools (overwatch mode, or agent can reference)
+	Regions []Region `yaml:"regions"`
+
+	// Domains define GSLB-managed zones (overwatch mode only)
+	Domains []Domain `yaml:"domains"`
+
+	// Logging settings (both modes)
 	Logging LoggingConfig `yaml:"logging"`
+
+	// Metrics settings (both modes)
 	Metrics MetricsConfig `yaml:"metrics"`
-	API     APIConfig     `yaml:"api"`
-	Cluster ClusterConfig `yaml:"cluster"`
+
+	// API settings (overwatch mode only)
+	API APIConfig `yaml:"api"`
 }
 
-// DNSConfig defines the DNS server settings.
+// ============================================================================
+// Agent Mode Configuration (ADR-015)
+// ============================================================================
+
+// AgentConfig defines configuration for agent mode.
+type AgentConfig struct {
+	// Identity contains agent identification settings
+	Identity AgentIdentityConfig `yaml:"identity"`
+
+	// Backends are the services this agent monitors
+	Backends []AgentBackend `yaml:"backends"`
+
+	// Predictive contains predictive health monitoring settings
+	Predictive PredictiveHealthConfig `yaml:"predictive"`
+
+	// Gossip contains settings for communicating with Overwatch nodes
+	Gossip AgentGossipConfig `yaml:"gossip"`
+
+	// Heartbeat contains keepalive settings
+	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
+}
+
+// AgentIdentityConfig defines agent identity settings.
+type AgentIdentityConfig struct {
+	// ServiceToken is the pre-shared token for initial authentication
+	ServiceToken string `yaml:"service_token"`
+
+	// Region is the geographic region this agent belongs to
+	Region string `yaml:"region"`
+
+	// CertPath is the path to store/load the agent's certificate
+	// If empty, defaults to /var/lib/opengslb/agent.crt
+	CertPath string `yaml:"cert_path"`
+
+	// KeyPath is the path to store/load the agent's private key
+	// If empty, defaults to /var/lib/opengslb/agent.key
+	KeyPath string `yaml:"key_path"`
+}
+
+// AgentBackend defines a service backend monitored by this agent.
+type AgentBackend struct {
+	// Service is the service name (used for DNS domain mapping)
+	Service string `yaml:"service"`
+
+	// Address is the backend server IP address
+	Address string `yaml:"address"`
+
+	// Port is the backend server port
+	Port int `yaml:"port"`
+
+	// Weight is the routing weight (higher = more traffic)
+	Weight int `yaml:"weight"`
+
+	// HealthCheck defines how to check this backend's health
+	HealthCheck HealthCheck `yaml:"health_check"`
+}
+
+// AgentGossipConfig defines gossip settings for agents.
+type AgentGossipConfig struct {
+	// EncryptionKey is a REQUIRED 32-byte base64-encoded encryption key
+	// Generate with: openssl rand -base64 32
+	EncryptionKey string `yaml:"encryption_key"`
+
+	// OverwatchNodes is a list of Overwatch gossip addresses to connect to
+	// Format: "host:port" (e.g., "overwatch-1.internal:7946")
+	OverwatchNodes []string `yaml:"overwatch_nodes"`
+}
+
+// HeartbeatConfig defines agent heartbeat settings.
+type HeartbeatConfig struct {
+	// Interval is the time between heartbeat messages
+	// Default: 10s
+	Interval time.Duration `yaml:"interval"`
+
+	// MissedThreshold is the number of missed heartbeats before deregistration
+	// Default: 3
+	MissedThreshold int `yaml:"missed_threshold"`
+}
+
+// ============================================================================
+// Overwatch Mode Configuration (ADR-015)
+// ============================================================================
+
+// OverwatchConfig defines configuration for overwatch mode.
+type OverwatchConfig struct {
+	// Identity contains overwatch node identification settings
+	Identity OverwatchIdentityConfig `yaml:"identity"`
+
+	// AgentTokens maps service names to their authentication tokens
+	AgentTokens map[string]string `yaml:"agent_tokens"`
+
+	// Gossip contains settings for receiving agent gossip
+	Gossip OverwatchGossipConfig `yaml:"gossip"`
+
+	// Validation contains external health validation settings
+	Validation ValidationConfig `yaml:"validation"`
+
+	// Stale contains settings for detecting stale backends
+	Stale StaleConfig `yaml:"stale"`
+
+	// DNSSEC contains DNSSEC signing settings
+	DNSSEC DNSSECConfig `yaml:"dnssec"`
+
+	// DataDir is the directory for persistent data (bbolt database)
+	// Default: /var/lib/opengslb
+	DataDir string `yaml:"data_dir"`
+}
+
+// OverwatchIdentityConfig defines overwatch node identity settings.
+type OverwatchIdentityConfig struct {
+	// NodeID is a unique identifier for this overwatch node
+	// Defaults to hostname if not specified
+	NodeID string `yaml:"node_id"`
+
+	// Region is the geographic region this overwatch node serves
+	Region string `yaml:"region"`
+}
+
+// OverwatchGossipConfig defines gossip settings for overwatch nodes.
+type OverwatchGossipConfig struct {
+	// BindAddress is the address to listen for gossip (host:port)
+	// Default: "0.0.0.0:7946"
+	BindAddress string `yaml:"bind_address"`
+
+	// EncryptionKey is a REQUIRED 32-byte base64-encoded encryption key
+	// Must match the key used by agents
+	EncryptionKey string `yaml:"encryption_key"`
+
+	// ProbeInterval is the interval between failure probes
+	// Default: 1s
+	ProbeInterval time.Duration `yaml:"probe_interval"`
+
+	// ProbeTimeout is the timeout for a single probe
+	// Default: 500ms
+	ProbeTimeout time.Duration `yaml:"probe_timeout"`
+
+	// GossipInterval is the interval between gossip messages
+	// Default: 200ms
+	GossipInterval time.Duration `yaml:"gossip_interval"`
+}
+
+// ValidationConfig defines external health validation settings.
+type ValidationConfig struct {
+	// Enabled controls whether external validation is active
+	// Default: true
+	Enabled bool `yaml:"enabled"`
+
+	// CheckInterval is the frequency of validation checks
+	// Default: 30s
+	CheckInterval time.Duration `yaml:"check_interval"`
+
+	// CheckTimeout is the timeout for validation checks
+	// Default: 5s
+	CheckTimeout time.Duration `yaml:"check_timeout"`
+}
+
+// StaleConfig defines settings for detecting stale backends.
+type StaleConfig struct {
+	// Threshold is the time after which a backend with no heartbeat is stale
+	// Default: 30s
+	Threshold time.Duration `yaml:"threshold"`
+
+	// RemoveAfter is the time after which a stale backend is removed
+	// Default: 5m
+	RemoveAfter time.Duration `yaml:"remove_after"`
+}
+
+// DNSSECConfig defines DNSSEC signing settings.
+type DNSSECConfig struct {
+	// Enabled controls whether DNSSEC is active
+	// Default: true (secure by default)
+	Enabled bool `yaml:"enabled"`
+
+	// SecurityAcknowledgment is REQUIRED if Enabled=false
+	// Must contain specific text acknowledging security implications
+	SecurityAcknowledgment string `yaml:"security_acknowledgment"`
+
+	// Algorithm is the DNSSEC signing algorithm
+	// Default: ECDSAP256SHA256
+	Algorithm string `yaml:"algorithm"`
+
+	// KeySync contains settings for syncing keys between Overwatch nodes
+	KeySync DNSSECKeySyncConfig `yaml:"key_sync"`
+}
+
+// DNSSECKeySyncConfig defines DNSSEC key synchronization settings.
+type DNSSECKeySyncConfig struct {
+	// Peers are the API addresses of other Overwatch nodes for key sync
+	Peers []string `yaml:"peers"`
+
+	// PollInterval is the time between key sync polls
+	// Default: 1h
+	PollInterval time.Duration `yaml:"poll_interval"`
+
+	// Timeout is the timeout for key sync requests
+	// Default: 30s
+	Timeout time.Duration `yaml:"timeout"`
+}
+
+// ============================================================================
+// Shared Configuration (both modes)
+// ============================================================================
+
+// DNSConfig defines the DNS server settings (overwatch mode).
 type DNSConfig struct {
-	ListenAddress     string `yaml:"listen_address"`
-	DefaultTTL        int    `yaml:"default_ttl"`
-	ReturnLastHealthy bool   `yaml:"return_last_healthy"`
+	ListenAddress     string   `yaml:"listen_address"`
+	DefaultTTL        int      `yaml:"default_ttl"`
+	ReturnLastHealthy bool     `yaml:"return_last_healthy"`
+	Zones             []string `yaml:"zones"`
 }
 
 // Region defines a geographic region with its servers and health check configuration.
@@ -56,7 +277,7 @@ type Server struct {
 	Host    string `yaml:"host"`
 }
 
-// HealthCheck defines health check configuration for a region.
+// HealthCheck defines health check configuration.
 type HealthCheck struct {
 	Type             string        `yaml:"type"`
 	Interval         time.Duration `yaml:"interval"`
@@ -87,7 +308,7 @@ type MetricsConfig struct {
 	Address string `yaml:"address"`
 }
 
-// APIConfig defines the HTTP API server settings.
+// APIConfig defines the HTTP API server settings (overwatch mode).
 type APIConfig struct {
 	Enabled           bool     `yaml:"enabled"`
 	Address           string   `yaml:"address"`
@@ -95,220 +316,46 @@ type APIConfig struct {
 	TrustProxyHeaders bool     `yaml:"trust_proxy_headers"`
 }
 
-// ClusterConfig defines distributed cluster settings (ADR-012, ADR-014).
-type ClusterConfig struct {
-	// Mode specifies the runtime mode: "standalone" or "cluster".
-	// Can be overridden by --mode flag. Default: "standalone"
-	Mode RuntimeMode `yaml:"mode"`
-
-	// NodeName is a unique identifier for this node. Defaults to hostname.
-	NodeName string `yaml:"node_name"`
-
-	// BindAddress is the address for Raft and gossip communication.
-	// Format: "ip:port" (e.g., "10.0.1.10:7946")
-	BindAddress string `yaml:"bind_address"`
-
-	// AdvertiseAddress is the address other nodes use to reach this node.
-	// Defaults to BindAddress if not set.
-	AdvertiseAddress string `yaml:"advertise_address"`
-
-	// Bootstrap indicates this node should initialize a new cluster.
-	// Set on exactly one node during initial cluster formation.
-	// Can be overridden by --bootstrap flag.
-	Bootstrap bool `yaml:"bootstrap"`
-
-	// Join specifies addresses of existing cluster nodes to join.
-	// Can be overridden by --join flag.
-	Join []string `yaml:"join"`
-
-	// Raft contains Raft consensus settings.
-	Raft RaftConfig `yaml:"raft"`
-
-	// Gossip contains memberlist gossip settings.
-	Gossip GossipConfig `yaml:"gossip"`
-
-	// PredictiveHealth contains predictive health monitoring settings.
-	PredictiveHealth PredictiveHealthConfig `yaml:"predictive_health"`
-
-	// AnycastVIP is the virtual IP advertised by all cluster nodes.
-	// Only the Raft leader responds to DNS queries on this VIP.
-	AnycastVIP string `yaml:"anycast_vip"`
-
-	// Overwatch contains configuration for the leader's health validation.
-	Overwatch OverwatchConfig `yaml:"overwatch"`
-}
-
-// OverwatchConfig defines settings for the leader's validation of agent health claims.
-type OverwatchConfig struct {
-	// ExternalCheckInterval is the frequency of leader-initiated external checks.
-	// Default: 10s
-	ExternalCheckInterval time.Duration `yaml:"external_check_interval"`
-
-	// VetoMode controls how disagreements between agent and external checks are resolved.
-	// Options: "strict", "balanced", "permissive"
-	// Default: "balanced"
-	VetoMode string `yaml:"veto_mode"`
-
-	// VetoThreshold is the number of consecutive external check failures
-	// before the overwatch will veto an agent's healthy claim.
-	// Default: 3
-	VetoThreshold int `yaml:"veto_threshold"`
-}
-
 // PredictiveHealthConfig defines predictive health monitoring settings.
-// When enabled, the agent monitors local system metrics and signals
-// when thresholds are exceeded to enable proactive traffic bleeding.
 type PredictiveHealthConfig struct {
-	// Enabled controls whether predictive health monitoring is active.
-	// Default: false
-	Enabled bool `yaml:"enabled"`
-
-	// CPU contains CPU utilization monitoring settings.
-	CPU PredictiveMetricConfig `yaml:"cpu"`
-
-	// Memory contains memory utilization monitoring settings.
-	Memory PredictiveMetricConfig `yaml:"memory"`
-
-	// ErrorRate contains health check error rate monitoring settings.
-	ErrorRate PredictiveErrorRateConfig `yaml:"error_rate"`
+	Enabled       bool                      `yaml:"enabled"`
+	CPU           PredictiveMetricConfig    `yaml:"cpu"`
+	Memory        PredictiveMetricConfig    `yaml:"memory"`
+	ErrorRate     PredictiveErrorRateConfig `yaml:"error_rate"`
+	CheckInterval time.Duration             `yaml:"check_interval"`
 }
 
 // PredictiveMetricConfig defines threshold settings for CPU or memory metrics.
 type PredictiveMetricConfig struct {
-	// Threshold is the percentage (0-100) at which to trigger bleeding.
-	// Default: 90 for CPU, 85 for memory
-	Threshold float64 `yaml:"threshold"`
-
-	// BleedDuration is the time over which to gradually reduce traffic.
-	// Default: 30s
+	Threshold     float64       `yaml:"threshold"`
 	BleedDuration time.Duration `yaml:"bleed_duration"`
 }
 
 // PredictiveErrorRateConfig defines threshold settings for error rate monitoring.
 type PredictiveErrorRateConfig struct {
-	// Threshold is the error count per minute at which to trigger bleeding.
-	// Default: 10
-	Threshold float64 `yaml:"threshold"`
-
-	// Window is the time window over which to measure error rate.
-	// Default: 60s
-	Window time.Duration `yaml:"window"`
-
-	// BleedDuration is the time over which to gradually reduce traffic.
-	// Default: 60s
+	Threshold     float64       `yaml:"threshold"`
+	Window        time.Duration `yaml:"window"`
 	BleedDuration time.Duration `yaml:"bleed_duration"`
 }
 
-// RaftConfig defines Raft consensus settings.
-type RaftConfig struct {
-	// DataDir is the directory for Raft state and logs.
-	// Default: "/var/lib/opengslb/raft"
-	DataDir string `yaml:"data_dir"`
+// ============================================================================
+// Helper Methods
+// ============================================================================
 
-	// HeartbeatTimeout is the time between heartbeats.
-	// Default: 1s
-	HeartbeatTimeout time.Duration `yaml:"heartbeat_timeout"`
-
-	// ElectionTimeout is the time before a new election starts.
-	// Default: 1s
-	ElectionTimeout time.Duration `yaml:"election_timeout"`
-
-	// SnapshotInterval is the minimum time between snapshots.
-	// Default: 120s
-	SnapshotInterval time.Duration `yaml:"snapshot_interval"`
-
-	// SnapshotThreshold is the number of log entries before snapshot.
-	// Default: 8192
-	SnapshotThreshold uint64 `yaml:"snapshot_threshold"`
+// IsAgentMode returns true if the configuration is for agent mode.
+func (c *Config) IsAgentMode() bool {
+	return c.Mode == ModeAgent
 }
 
-// GossipConfig defines memberlist gossip settings.
-type GossipConfig struct {
-	// Enabled controls whether gossip is enabled in cluster mode.
-	// Default: true (when in cluster mode)
-	Enabled bool `yaml:"enabled"`
-
-	// BindPort is the port for gossip communication.
-	// If not set, uses the port from ClusterConfig.BindAddress.
-	// Default: 7946
-	BindPort int `yaml:"bind_port"`
-
-	// AdvertisePort is the port advertised to other nodes.
-	// Defaults to BindPort if not set.
-	AdvertisePort int `yaml:"advertise_port"`
-
-	// EncryptionKey is an optional 32-byte base64-encoded encryption key.
-	// Generate with: head -c 32 /dev/urandom | base64
-	EncryptionKey string `yaml:"encryption_key"`
-
-	// ProbeInterval is the interval between failure probes.
-	// Lower values detect failures faster but increase network traffic.
-	// Default: 1s
-	ProbeInterval time.Duration `yaml:"probe_interval"`
-
-	// ProbeTimeout is the timeout for a single probe.
-	// Default: 500ms
-	ProbeTimeout time.Duration `yaml:"probe_timeout"`
-
-	// GossipInterval is the interval between gossip messages.
-	// Lower values propagate updates faster but increase network traffic.
-	// Default: 200ms
-	GossipInterval time.Duration `yaml:"gossip_interval"`
-
-	// PushPullInterval is the interval for full state synchronization.
-	// Default: 30s
-	PushPullInterval time.Duration `yaml:"push_pull_interval"`
-
-	// RetransmitMult controls message retransmission.
-	// Higher values improve reliability but increase bandwidth.
-	// Default: 4
-	RetransmitMult int `yaml:"retransmit_mult"`
+// IsOverwatchMode returns true if the configuration is for overwatch mode.
+func (c *Config) IsOverwatchMode() bool {
+	return c.Mode == ModeOverwatch || c.Mode == ""
 }
 
-// IsClusterMode returns true if the configuration is for cluster mode.
-func (c *ClusterConfig) IsClusterMode() bool {
-	return c.Mode == ModeCluster
-}
-
-// IsStandaloneMode returns true if the configuration is for standalone mode.
-func (c *ClusterConfig) IsStandaloneMode() bool {
-	return c.Mode == ModeStandalone || c.Mode == ""
-}
-
-// IsGossipEnabled returns true if gossip should be enabled.
-// Gossip is enabled by default in cluster mode unless explicitly disabled.
-func (c *ClusterConfig) IsGossipEnabled() bool {
-	if c.IsStandaloneMode() {
-		return false
+// GetEffectiveMode returns the runtime mode, defaulting to overwatch.
+func (c *Config) GetEffectiveMode() RuntimeMode {
+	if c.Mode == "" {
+		return ModeOverwatch
 	}
-	// In cluster mode, gossip is enabled by default
-	// It can be explicitly disabled by setting gossip.enabled: false
-	return c.Gossip.Enabled || c.Gossip.BindPort > 0 || c.Gossip.EncryptionKey != ""
-}
-
-// GetGossipBindPort returns the gossip bind port, with defaults applied.
-func (c *ClusterConfig) GetGossipBindPort() int {
-	if c.Gossip.BindPort > 0 {
-		return c.Gossip.BindPort
-	}
-
-	// Try to derive from BindAddress
-	if c.BindAddress != "" {
-		_, portStr, err := net.SplitHostPort(c.BindAddress)
-		if err == nil {
-			if port, err := strconv.Atoi(portStr); err == nil {
-				return port + 100
-			}
-		}
-	}
-
-	return 7946 // Default memberlist port
-}
-
-// GetGossipAdvertisePort returns the gossip advertise port, with defaults applied.
-func (c *ClusterConfig) GetGossipAdvertisePort() int {
-	if c.Gossip.AdvertisePort > 0 {
-		return c.Gossip.AdvertisePort
-	}
-	return c.GetGossipBindPort()
+	return c.Mode
 }

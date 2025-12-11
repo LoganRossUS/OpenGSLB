@@ -1,270 +1,305 @@
 # Gossip Protocol
 
-OpenGSLB uses the gossip protocol for fast propagation of health events across cluster nodes. This document describes the gossip architecture, message types, and configuration.
+OpenGSLB uses the gossip protocol for communication between Agents and Overwatch nodes. This document describes the gossip architecture, message types, and configuration.
 
 ## Overview
 
 The gossip protocol is built on [hashicorp/memberlist](https://github.com/hashicorp/memberlist), providing:
 
-- **Fast event propagation**: Health updates reach all nodes within 500ms
-- **Membership detection**: Automatic detection of node joins and leaves
-- **Encryption support**: Optional AES-256 encryption for gossip traffic
-- **Failure detection**: SWIM-based protocol detects node failures quickly
+- **Fast event propagation**: Health updates reach Overwatch within 500ms
+- **Encrypted communication**: Required AES-256 encryption for gossip traffic
+- **Failure detection**: SWIM-based protocol detects agent failures quickly
+- **Heartbeat mechanism**: Agents send periodic heartbeats to maintain registration
 
-## Architecture
+## Architecture (ADR-015)
 
 ```
-\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510
-\u2502                        Gossip Cluster                           \u2502
-\u2502                                                                 \u2502
-\u2502  \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510      \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510      \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510     \u2502
-\u2502  \u2502   Node 1    \u2502\u25c4\u2500\u2500\u2500\u2500\u25ba\u2502   Node 2    \u2502\u25c4\u2500\u2500\u2500\u2500\u25ba\u2502   Node 3    \u2502     \u2502
-\u2502  \u2502  (Leader)   \u2502      \u2502  (Follower) \u2502      \u2502  (Follower) \u2502     \u2502
-\u2502  \u2502             \u2502      \u2502             \u2502      \u2502             \u2502      \u2502
-\u2502  \u2502 Health Mgr  \u2502      \u2502 Health Mgr  \u2502      \u2502 Health Mgr  \u2502     \u2502
-\u2502  \u2502     \u2502       \u2502      \u2502     \u2502       \u2502      \u2502     \u2502       \u2502     \u2502
-\u2502  \u2502     \u25bc       \u2502      \u2502     \u25bc       \u2502      \u2502     \u25bc       \u2502     \u2502
-\u2502  \u2502  Gossip \u25c4\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u25ba Gossip \u25c4\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u25ba Gossip   \u2502     \u2502
-\u2502  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518      \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518      \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518     \u2502
-\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518
+                    ┌─────────────────────────────────────────────────────────┐
+                    │              Overwatch Nodes (DNS Authority)             │
+                    │                                                          │
+                    │   ┌──────────────┐         ┌──────────────┐             │
+                    │   │ Overwatch-1  │         │ Overwatch-2  │             │
+                    │   │              │         │              │             │
+                    │   │ ┌──────────┐ │         │ ┌──────────┐ │             │
+                    │   │ │  Gossip  │ │         │ │  Gossip  │ │             │
+                    │   │ │ Receiver │ │         │ │ Receiver │ │             │
+                    │   │ └────▲─────┘ │         │ └────▲─────┘ │             │
+                    │   └──────┼───────┘         └──────┼───────┘             │
+                    │          │                        │                      │
+                    └──────────┼────────────────────────┼──────────────────────┘
+                               │                        │
+         ┌─────────────────────┼────────────────────────┼─────────────────────┐
+         │                     │                        │                      │
+         │            Gossip Messages (Encrypted)                             │
+         │                     │                        │                      │
+         │    ┌────────────────┼────────────────────────┼────────────────┐    │
+         │    │                │                        │                │    │
+         │    ▼                ▼                        ▼                ▼    │
+    ┌─────────────┐    ┌─────────────┐          ┌─────────────┐   ┌─────────────┐
+    │  Agent-1    │    │  Agent-2    │          │  Agent-3    │   │  Agent-4    │
+    │ (App Server)│    │ (App Server)│          │ (App Server)│   │ (App Server)│
+    │             │    │             │          │             │   │             │
+    │ ┌─────────┐ │    │ ┌─────────┐ │          │ ┌─────────┐ │   │ ┌─────────┐ │
+    │ │ Health  │ │    │ │ Health  │ │          │ │ Health  │ │   │ │ Health  │ │
+    │ │ Monitor │ │    │ │ Monitor │ │          │ │ Monitor │ │   │ │ Monitor │ │
+    │ └─────────┘ │    │ └─────────┘ │          │ └─────────┘ │   │ └─────────┘ │
+    └─────────────┘    └─────────────┘          └─────────────┘   └─────────────┘
+         │                   │                        │                  │
+         ▼                   ▼                        ▼                  ▼
+    [Backend Svc]      [Backend Svc]            [Backend Svc]      [Backend Svc]
 ```
 
-### Relationship with Raft
+### Communication Flow
 
-- **Raft**: Used for leader election and replicated state (KV store)
-- **Gossip**: Used for fast, eventually-consistent health event propagation
+1. **Agents** run on application servers alongside backends
+2. **Agents** monitor local backend health
+3. **Agents** send heartbeat messages to Overwatch nodes via gossip
+4. **Overwatch** receives heartbeats and maintains backend registry
+5. **Overwatch** optionally validates health claims independently
 
-Gossip complements Raft by providing:
-- Sub-second health event propagation (vs. Raft's consistency guarantees)
-- Reduced load on the Raft leader
-- Continued health awareness even during leader elections
+There is **no Agent-to-Agent communication**. Each Agent connects directly to Overwatch nodes.
 
 ## Message Types
 
-### Health Update (`health_update`)
+### Heartbeat (`heartbeat`)
 
-Sent when a server's health status changes.
+Sent periodically by agents to register backends and report health status.
 
 ```json
 {
-  "type": "health_update",
-  "node_id": "gslb-node-1",
+  "type": "heartbeat",
+  "agent_id": "agent-abc123",
   "timestamp": "2025-04-08T10:30:00Z",
   "payload": {
-    "server_addr": "10.0.1.10:80",
+    "agent_id": "agent-abc123",
     "region": "us-east-1",
-    "healthy": false,
-    "latency": 45000000,
-    "error": "connection refused",
-    "check_type": "http"
-  }
-}
-```
-
-### Predictive Signal (`predictive`)
-
-Sent when an agent predicts an impending failure ("predictive from the inside").
-
-```json
-{
-  "type": "predictive",
-  "node_id": "gslb-node-1",
-  "timestamp": "2025-04-08T10:30:00Z",
-  "payload": {
-    "node_id": "gslb-node-1",
-    "signal": "bleed",
-    "reason": "cpu_high",
-    "value": 92.5,
-    "threshold": 90.0
-  }
-}
-```
-
-**Signal types:**
-- `bleed`: Gradual degradation, reduce traffic slowly
-- `drain`: Prepare for shutdown, stop accepting new connections
-- `critical`: Immediate action required
-
-**Reason codes:**
-- `cpu_high`: CPU utilization above threshold
-- `memory_pressure`: Memory usage above threshold
-- `error_rate`: Error rate above threshold
-- `latency_high`: Response latency above threshold
-
-### Override Command (`override`)
-
-Sent by overwatch nodes to override health status ("reactive from the outside").
-
-```json
-{
-  "type": "override",
-  "node_id": "overwatch-1",
-  "timestamp": "2025-04-08T10:30:00Z",
-  "payload": {
-    "target_node": "gslb-node-1",
-    "server_addr": "10.0.1.10:80",
-    "action": "force_unhealthy",
-    "reason": "external validation failed",
-    "expiry": 1712577000
-  }
-}
-```
-
-**Action types:**
-- `force_healthy`: Override to healthy status
-- `force_unhealthy`: Override to unhealthy status
-- `clear`: Remove override, use local health check result
-
-### Node State (`node_state`)
-
-Periodic full state synchronization during push/pull.
-
-```json
-{
-  "type": "node_state",
-  "node_id": "gslb-node-1",
-  "timestamp": "2025-04-08T10:30:00Z",
-  "payload": {
-    "node_id": "gslb-node-1",
-    "is_leader": true,
-    "uptime": 86400000000000,
-    "health_states": [
+    "fingerprint": "sha256:...",
+    "backends": [
       {
-        "server_addr": "10.0.1.10:80",
-        "region": "us-east-1",
+        "service": "web-service",
+        "address": "10.0.1.10",
+        "port": 80,
+        "weight": 100,
         "healthy": true,
-        "last_check": "2025-04-08T10:29:55Z",
-        "last_latency": 45000000,
-        "consecutive_fails": 0
+        "latency_ms": 45,
+        "last_check": "2025-04-08T10:29:55Z"
       }
     ]
   }
 }
 ```
 
+### Predictive Signal (`predictive`)
+
+Sent when an agent predicts an impending failure based on resource metrics.
+
+```json
+{
+  "type": "predictive",
+  "agent_id": "agent-abc123",
+  "timestamp": "2025-04-08T10:30:00Z",
+  "payload": {
+    "agent_id": "agent-abc123",
+    "service": "web-service",
+    "address": "10.0.1.10",
+    "port": 80,
+    "signal": "bleed",
+    "reason": "cpu_high",
+    "value": 92.5,
+    "threshold": 90.0,
+    "bleed_weight": 50
+  }
+}
+```
+
+**Signal types:**
+- `bleed`: Gradual degradation, reduce traffic weight
+- `drain`: Prepare for shutdown, stop accepting new traffic
+- `recovered`: Signal cleared, return to normal operation
+
+**Reason codes:**
+- `cpu_high`: CPU utilization above threshold
+- `memory_pressure`: Memory usage above threshold
+- `error_rate`: Error rate above threshold
+
+### Deregister (`deregister`)
+
+Sent by agent during graceful shutdown to remove backends from registry.
+
+```json
+{
+  "type": "deregister",
+  "agent_id": "agent-abc123",
+  "timestamp": "2025-04-08T10:30:00Z",
+  "payload": {
+    "agent_id": "agent-abc123",
+    "reason": "shutdown"
+  }
+}
+```
+
 ## Configuration
 
-### Basic Configuration
+### Agent Gossip Configuration
 
 ```yaml
-cluster:
-  mode: cluster
-  node_name: "gslb-node-1"
-  bind_address: "10.0.1.10:7946"
-  
+mode: agent
+
+agent:
   gossip:
-    enabled: true
-    bind_port: 7947
+    # Required: 32-byte base64-encoded encryption key
+    encryption_key: "xK7dQm9pR8vLnM3wYhA2cE5fG6jN1sU4tB0oZiXeHrI="
+
+    # Required: Overwatch nodes to connect to
+    overwatch_nodes:
+      - "overwatch-1.internal:7946"
+      - "overwatch-2.internal:7946"
 ```
 
-### Full Configuration
+### Overwatch Gossip Configuration
 
 ```yaml
-cluster:
+mode: overwatch
+
+overwatch:
   gossip:
-    # Enable gossip (default: true in cluster mode)
-    enabled: true
-    
-    # Port for gossip communication
-    bind_port: 7947
-    advertise_port: 7947
-    
-    # Encryption key (32 bytes, base64 encoded)
-    # Generate: head -c 32 /dev/urandom | base64
-    encryption_key: "your-base64-encoded-key"
-    
+    # Address to bind for receiving gossip
+    bind_address: "0.0.0.0:7946"
+
+    # Required: Must match agent encryption key
+    encryption_key: "xK7dQm9pR8vLnM3wYhA2cE5fG6jN1sU4tB0oZiXeHrI="
+
     # Failure detection timing
-    probe_interval: "1s"      # Time between probes
-    probe_timeout: "500ms"    # Probe timeout
-    
-    # Message propagation timing
-    gossip_interval: "200ms"  # Time between gossip rounds
-    push_pull_interval: "30s" # Time between full syncs
+    probe_interval: 1s
+    probe_timeout: 500ms
+
+    # Gossip message timing
+    gossip_interval: 200ms
 ```
 
-### Encryption
+### Encryption (Mandatory)
 
-To enable encryption, generate a 32-byte key:
+OpenGSLB **requires** encrypted gossip communication. There is no option to disable encryption - this is a security-critical feature that protects against:
+
+- **Man-in-the-middle attacks**: Prevents attackers from intercepting or modifying health updates
+- **Unauthorized agents**: Only nodes with the correct key can participate in the cluster
+- **Data tampering**: Ensures integrity of backend health information
+
+#### Key Requirements
+
+- **Algorithm**: AES-256 encryption via memberlist
+- **Key length**: Exactly 32 bytes (256 bits)
+- **Format**: Base64-encoded in configuration files
+- **Scope**: Same key must be used by all Agents and Overwatch nodes
+
+#### Generating an Encryption Key
 
 ```bash
-# Generate key
-head -c 32 /dev/urandom | base64
+# Recommended: Generate a secure 32-byte key using OpenSSL
+openssl rand -base64 32
 
 # Example output: xK7dQm9pR8vLnM3wYhA2cE5fG6jN1sU4tB0oZiXeHrI=
 ```
 
-Add to all nodes' configuration:
+Alternative methods:
 
-```yaml
-cluster:
-  gossip:
-    encryption_key: "xK7dQm9pR8vLnM3wYhA2cE5fG6jN1sU4tB0oZiXeHrI="
+```bash
+# Using /dev/urandom (Linux/macOS)
+head -c 32 /dev/urandom | base64
+
+# Using Python
+python3 -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
 ```
 
-**Important**: All nodes must use the same encryption key.
+#### Key Distribution
+
+**Important**: All Agents and Overwatch nodes must use the same encryption key.
+
+Recommended practices:
+1. Generate the key once on a secure system
+2. Distribute via secure configuration management (e.g., Vault, AWS Secrets Manager, SOPS)
+3. Never commit keys to version control
+4. Rotate keys periodically by deploying new keys to all nodes before removing old keys
+
+#### Startup Validation
+
+OpenGSLB validates the encryption key at startup. If the key is missing or invalid, startup will fail with a clear error:
+
+```
+ERROR: gossip.encryption_key is required. OpenGSLB requires encrypted gossip communication.
+       Generate a key with: openssl rand -base64 32
+```
+
+```
+ERROR: gossip.encryption_key must be exactly 32 bytes (got 16).
+       Ensure you're using a 256-bit key. Generate with: openssl rand -base64 32
+```
 
 ## Metrics
 
 Gossip exposes the following Prometheus metrics:
 
+### Agent Metrics
+
 | Metric | Type | Description |
 |--------|------|-------------|
-| `opengslb_gossip_members_total` | Gauge | Total gossip cluster members |
-| `opengslb_gossip_healthy_members` | Gauge | Healthy (alive) members |
+| `opengslb_gossip_heartbeats_sent_total` | Counter | Heartbeats sent to Overwatch |
+| `opengslb_gossip_heartbeat_failures_total` | Counter | Failed heartbeat attempts |
+| `opengslb_gossip_predictive_signals_total` | Counter | Predictive signals sent |
+| `opengslb_gossip_connected_overwatches` | Gauge | Connected Overwatch nodes |
+
+### Overwatch Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
 | `opengslb_gossip_messages_received_total` | Counter | Messages received by type |
-| `opengslb_gossip_messages_sent_total` | Counter | Messages sent by type |
-| `opengslb_gossip_message_send_failures_total` | Counter | Failed message sends |
-| `opengslb_gossip_node_joins_total` | Counter | Node join events |
-| `opengslb_gossip_node_leaves_total` | Counter | Node leave events |
-| `opengslb_gossip_health_updates_received_total` | Counter | Health updates received |
-| `opengslb_gossip_health_updates_broadcast_total` | Counter | Health updates sent |
-| `opengslb_gossip_predictive_signals_total` | Counter | Predictive signals by type |
-| `opengslb_gossip_overrides_total` | Counter | Override commands by action |
-| `opengslb_gossip_propagation_latency_seconds` | Histogram | Message propagation latency |
+| `opengslb_gossip_heartbeats_received_total` | Counter | Heartbeats received from agents |
+| `opengslb_gossip_agents_registered` | Gauge | Currently registered agents |
+| `opengslb_gossip_message_processing_errors_total` | Counter | Message processing errors |
 
-## Propagation Latency
+## Heartbeat Behavior
 
-With default settings, health events propagate to all nodes within **500ms**:
-
-| Cluster Size | Typical Propagation Time |
-|--------------|--------------------------|
-| 3 nodes | ~200ms |
-| 5 nodes | ~300ms |
-| 7 nodes | ~400ms |
-| 10+ nodes | ~500ms |
-
-To achieve faster propagation, reduce `gossip_interval`:
+### Interval and Timeout
 
 ```yaml
-cluster:
-  gossip:
-    gossip_interval: "100ms"  # Faster propagation, more network traffic
+agent:
+  heartbeat:
+    interval: 10s         # Send heartbeat every 10 seconds
+    missed_threshold: 3   # Deregistered after 3 missed heartbeats (30s)
 ```
+
+### Staleness Detection
+
+Overwatch marks backends as stale based on heartbeat activity:
+
+```yaml
+overwatch:
+  stale:
+    threshold: 30s      # Mark stale after 30s without heartbeat
+    remove_after: 5m    # Remove backend after 5m stale
+```
+
+**Status progression:**
+1. **Healthy/Unhealthy**: Recent heartbeat from agent
+2. **Stale**: No heartbeat within `stale.threshold`
+3. **Removed**: No heartbeat within `stale.remove_after`
 
 ## Troubleshooting
 
-### Nodes Not Discovering Each Other
+### Agent Cannot Connect to Overwatch
 
-1. Check firewall rules allow UDP/TCP on gossip port
-2. Verify `bind_address` is reachable from other nodes
-3. Check `advertise_address` if using NAT
+1. Check firewall rules allow TCP/UDP on gossip port (default: 7946)
+2. Verify Overwatch bind address is reachable from agent
+3. Test connectivity:
 
 ```bash
-# Test connectivity
-nc -vz 10.0.1.10 7947
+# From agent server
+nc -zv overwatch-ip 7946
 ```
-
-### High Message Send Failures
-
-Check the `opengslb_gossip_message_send_failures_total` metric:
-
-1. Network connectivity issues
-2. Target node is down or unreachable
-3. Encryption key mismatch
 
 ### Encryption Key Mismatch
 
-If nodes can't communicate after enabling encryption:
+If agents can't communicate with Overwatch:
 
 ```
 WARN gossip: failed to decode gossip message error="cipher: message authentication failed"
@@ -272,16 +307,32 @@ WARN gossip: failed to decode gossip message error="cipher: message authenticati
 
 Ensure all nodes use the same `encryption_key` value.
 
-### Health Updates Not Propagating
+### Backends Going Stale
 
-1. Check `opengslb_gossip_health_updates_broadcast_total` is incrementing
-2. Check `opengslb_gossip_messages_sent_total{type="health_update"}` 
-3. Verify health manager's `OnStatusChange` callback is configured
+1. Check agent process is running: `systemctl status opengslb`
+2. Check agent metrics: `curl http://localhost:9090/metrics | grep gossip`
+3. Verify network connectivity to Overwatch
+4. Review agent logs: `journalctl -u opengslb | grep gossip`
+
+### High Heartbeat Failures
+
+Check the `opengslb_gossip_heartbeat_failures_total` metric:
+
+1. Network connectivity issues between agent and Overwatch
+2. Overwatch node is down or unreachable
+3. Encryption key mismatch
+4. Overwatch gossip port not listening
 
 ## Best Practices
 
-1. **Use encryption in production**: Always enable gossip encryption
-2. **Monitor propagation latency**: Alert if P99 exceeds 1 second
-3. **Match cluster topology**: Gossip seeds should match Raft join addresses
-4. **Size appropriately**: Gossip scales well to 100+ nodes, but latency increases
-5. **Separate ports**: Use different ports for Raft (consensus) and gossip (events)
+1. **Always use encryption**: Gossip encryption is required in production
+2. **Multiple Overwatch nodes**: Configure agents to connect to multiple Overwatch nodes for redundancy
+3. **Monitor heartbeat metrics**: Alert if `opengslb_gossip_heartbeat_failures_total` increases
+4. **Tune stale thresholds**: Balance between quick detection and avoiding false positives
+5. **Separate networks**: Consider using a management network for gossip traffic
+
+## See Also
+
+- [ADR-015: Agent-Overwatch Architecture](ARCHITECTURE_DECISIONS.md#adr-015)
+- [Troubleshooting: Agent Mode Issues](troubleshooting.md#agent-mode-issues)
+- [Troubleshooting: Overwatch Mode Issues](troubleshooting.md#overwatch-mode-issues)

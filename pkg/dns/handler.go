@@ -1,18 +1,6 @@
 // Copyright (C) 2025 Logan Ross
 //
-// This file is part of OpenGSLB \u2013 https://opengslb.org
-//
-// OpenGSLB is dual-licensed:
-//
-// 1. GNU Affero General Public License v3.0 (AGPLv3)
-//    Free forever for open-source and internal use. You may copy, modify,
-//    and distribute this software under the terms of the AGPLv3.
-//    \u2192 https://www.gnu.org/licenses/agpl-3.0.html
-//
-// 2. Commercial License
-//    Commercial licenses are available for proprietary integration,
-//    closed-source appliances, SaaS offerings, and dedicated support.
-//    Contact: licensing@opengslb.org
+// This file is part of OpenGSLB – https://opengslb.org
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
@@ -21,252 +9,216 @@ package dns
 import (
 	"context"
 	"log/slog"
+	"net"
+	"sync"
 	"time"
 
-	"github.com/miekg/dns"
-
 	"github.com/loganrossus/OpenGSLB/pkg/metrics"
+	"github.com/loganrossus/OpenGSLB/pkg/routing"
+	"github.com/miekg/dns"
 )
-
-// Router selects a server from a pool of servers.
-type Router interface {
-	Route(ctx context.Context, domain string, servers []ServerInfo) (*ServerInfo, error)
-	Algorithm() string
-}
-
-// HealthStatusProvider provides health status for servers.
-type HealthStatusProvider interface {
-	IsHealthy(address string, port int) bool
-}
-
-// LeaderChecker determines if this node should serve DNS queries.
-// In standalone mode, always returns true.
-// In cluster mode, returns true only if this node is the Raft leader.
-type LeaderChecker interface {
-	IsLeader() bool
-}
-
-// standaloneLeaderChecker always returns true (for standalone mode).
-type standaloneLeaderChecker struct{}
-
-func (s *standaloneLeaderChecker) IsLeader() bool { return true }
 
 // Handler processes DNS queries.
 type Handler struct {
-	registry       *Registry
-	healthProvider HealthStatusProvider
-	leaderChecker  LeaderChecker
-	defaultTTL     uint32
-	logger         *slog.Logger
-	ednsEnabled    bool
-	ednsUDPSize    uint16
+	mu         sync.RWMutex
+	registry   *Registry
+	health     HealthProvider
+	defaultTTL uint32
+	logger     *slog.Logger
 }
-
-// HandlerConfig contains configuration for the DNS handler.
-type HandlerConfig struct {
-	Registry       *Registry
-	HealthProvider HealthStatusProvider
-	LeaderChecker  LeaderChecker // If nil, defaults to standalone (always leader)
-	DefaultTTL     uint32
-	Logger         *slog.Logger
-	EDNSEnabled    *bool  // Pointer to distinguish unset from false; defaults to true
-	EDNSUDPSize    uint16 // Advertised UDP buffer size; defaults to 4096
-}
-
-// Default EDNS configuration values.
-const (
-	DefaultEDNSUDPSize = 4096 // RFC 6891 recommends 4096 for EDNS
-)
 
 // NewHandler creates a new DNS handler.
+// ADR-015: LeaderChecker is ignored - all Overwatch nodes serve DNS independently.
 func NewHandler(cfg HandlerConfig) *Handler {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 
-	// Default EDNS to enabled
-	ednsEnabled := true
-	if cfg.EDNSEnabled != nil {
-		ednsEnabled = *cfg.EDNSEnabled
-	}
-
-	// Default UDP size
-	ednsUDPSize := cfg.EDNSUDPSize
-	if ednsUDPSize == 0 {
-		ednsUDPSize = DefaultEDNSUDPSize
-	}
-
-	// Default to standalone mode (always leader)
-	leaderChecker := cfg.LeaderChecker
-	if leaderChecker == nil {
-		leaderChecker = &standaloneLeaderChecker{}
-	}
-
 	return &Handler{
-		registry:       cfg.Registry,
-		healthProvider: cfg.HealthProvider,
-		leaderChecker:  leaderChecker,
-		defaultTTL:     cfg.DefaultTTL,
-		logger:         logger,
-		ednsEnabled:    ednsEnabled,
-		ednsUDPSize:    ednsUDPSize,
+		registry:   cfg.Registry,
+		health:     cfg.HealthProvider,
+		defaultTTL: cfg.DefaultTTL,
+		logger:     logger,
 	}
-}
-
-// SetLeaderChecker updates the leader checker. Thread-safe for use during
-// leader transitions.
-func (h *Handler) SetLeaderChecker(checker LeaderChecker) {
-	h.leaderChecker = checker
 }
 
 // ServeDNS implements the dns.Handler interface.
+// ADR-015: All Overwatch nodes serve DNS independently (no leader check).
 func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	start := time.Now()
 
-	// In cluster mode, only the leader serves DNS queries.
-	// Non-leaders return REFUSED to signal clients to try another server.
-	if !h.leaderChecker.IsLeader() {
-		h.handleNonLeader(w, r)
-		return
-	}
-
-	msg := new(dns.Msg)
-	msg.SetReply(r)
-	msg.Authoritative = true
-
-	// Extract EDNS OPT record from request if present
-	clientOPT := h.getEDNS(r)
+	m := new(dns.Msg)
+	m.SetReply(r)
+	m.Authoritative = true
 
 	if len(r.Question) == 0 {
-		h.logger.Warn("received DNS query with no questions")
-		msg.Rcode = dns.RcodeFormatError
-		h.addEDNS(msg, clientOPT)
-		if err := w.WriteMsg(msg); err != nil {
-			h.logger.Error("failed to write DNS response", "error", err)
-		}
+		h.logger.Warn("DNS query with no questions")
+		m.SetRcode(m, dns.RcodeFormatError)
+		h.writeResponse(w, m, start, "FORMERR", "")
 		return
 	}
 
 	q := r.Question[0]
-	domain := q.Name
-	queryType := dns.TypeToString[q.Qtype]
+	qname := q.Name
+	qtype := dns.TypeToString[q.Qtype]
 
-	// Log EDNS info if present
-	if clientOPT != nil && h.ednsEnabled {
-		h.logger.Debug("received DNS query",
-			"name", domain,
-			"type", queryType,
-			"class", dns.ClassToString[q.Qclass],
-			"edns_version", clientOPT.Version(),
-			"edns_udp_size", clientOPT.UDPSize(),
-		)
-	} else {
-		h.logger.Debug("received DNS query",
-			"name", domain,
-			"type", queryType,
-			"class", dns.ClassToString[q.Qclass],
-		)
-	}
+	h.logger.Debug("DNS query received",
+		"name", qname,
+		"type", qtype,
+		"source", w.RemoteAddr().String(),
+	)
 
 	switch q.Qtype {
 	case dns.TypeA:
-		h.handleA(msg, q)
+		h.handleAQuery(m, qname, q)
 	case dns.TypeAAAA:
-		h.handleAAAA(msg, q)
+		h.handleAAAAQuery(m, qname, q)
 	default:
-		h.logger.Debug("unsupported query type",
-			"name", domain,
-			"type", queryType,
-		)
+		h.logger.Debug("unsupported query type", "name", qname, "type", qtype)
+		m.SetRcode(m, dns.RcodeNotImplemented)
 	}
 
-	// Add EDNS OPT record to response if client sent one
-	h.addEDNS(msg, clientOPT)
-
-	status := dns.RcodeToString[msg.Rcode]
-	duration := time.Since(start).Seconds()
-	metrics.RecordDNSQuery(domain, queryType, status)
-	metrics.RecordDNSQueryDuration(domain, status, duration)
-
-	if err := w.WriteMsg(msg); err != nil {
-		h.logger.Error("failed to write DNS response",
-			"error", err,
-			"name", domain,
-		)
-	}
+	status := dns.RcodeToString[m.Rcode]
+	h.writeResponse(w, m, start, status, qname)
 }
 
-// handleNonLeader responds with REFUSED when this node is not the cluster leader.
-// Per RFC 2136, REFUSED indicates the server refuses to perform the operation.
-// Clients (especially well-behaved resolvers) will retry with another server.
-func (h *Handler) handleNonLeader(w dns.ResponseWriter, r *dns.Msg) {
-	msg := new(dns.Msg)
-	msg.SetRcode(r, dns.RcodeRefused)
+// handleAQuery processes A record queries (IPv4).
+func (h *Handler) handleAQuery(m *dns.Msg, qname string, q dns.Question) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 
-	// Track refused queries for monitoring
-	metrics.RecordDNSRefused()
-
-	// Extract query info for logging
-	domain := ""
-	queryType := ""
-	if len(r.Question) > 0 {
-		domain = r.Question[0].Name
-		queryType = dns.TypeToString[r.Question[0].Qtype]
-	}
-
-	h.logger.Debug("refusing query - not leader",
-		"name", domain,
-		"type", queryType,
-	)
-
-	// Still include EDNS if client sent it
-	if clientOPT := h.getEDNS(r); clientOPT != nil {
-		h.addEDNS(msg, clientOPT)
-	}
-
-	if err := w.WriteMsg(msg); err != nil {
-		h.logger.Error("failed to write REFUSED response", "error", err)
-	}
-}
-
-// handleA processes A record queries (IPv4).
-func (h *Handler) handleA(msg *dns.Msg, q dns.Question) {
-	entry := h.registry.Lookup(q.Name)
+	entry := h.registry.Lookup(qname)
 	if entry == nil {
-		h.logger.Debug("domain not found", "name", q.Name)
-		msg.Rcode = dns.RcodeNameError
+		h.logger.Debug("domain not found", "name", qname)
+		m.SetRcode(m, dns.RcodeNameError) // NXDOMAIN
 		return
 	}
 
-	// Filter to healthy IPv4 servers only
-	healthyServers := h.filterHealthyServers(entry.Servers)
-	ipv4Servers := filterByAddressFamily(healthyServers, true)
-
-	if len(ipv4Servers) == 0 {
-		h.logger.Debug("no healthy IPv4 servers available",
-			"domain", entry.Name,
-			"total_servers", len(entry.Servers),
-			"healthy_servers", len(healthyServers),
-		)
+	servers := h.getHealthyIPv4Servers(entry)
+	if len(servers) == 0 {
+		h.logger.Debug("no healthy IPv4 servers", "domain", qname)
+		m.SetRcode(m, dns.RcodeServerFailure)
 		return
 	}
 
-	// Use the domain's router to select a server
-	ctx := context.Background()
-	server, err := entry.Router.Route(ctx, entry.Name, ipv4Servers)
+	pool := routing.NewSimpleServerPool(servers)
+	selected, err := entry.Router.Route(context.Background(), pool)
 	if err != nil {
-		h.logger.Error("routing failed",
-			"domain", entry.Name,
-			"error", err,
-		)
-		msg.Rcode = dns.RcodeServerFailure
+		h.logger.Error("routing failed", "domain", qname, "error", err)
+		m.SetRcode(m, dns.RcodeServerFailure)
 		return
 	}
 
-	ttl := entry.TTL
+	h.addARecord(m, q, selected, entry.TTL)
+	metrics.RecordRoutingDecision(qname, entry.Router.Algorithm(), selected.Address)
+
+	h.logger.Debug("resolved A query",
+		"domain", qname,
+		"selected", selected.Address,
+		"algorithm", entry.Router.Algorithm(),
+	)
+}
+
+// handleAAAAQuery processes AAAA record queries (IPv6).
+func (h *Handler) handleAAAAQuery(m *dns.Msg, qname string, q dns.Question) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	entry := h.registry.Lookup(qname)
+	if entry == nil {
+		h.logger.Debug("domain not found", "name", qname)
+		m.SetRcode(m, dns.RcodeNameError) // NXDOMAIN
+		return
+	}
+
+	servers := h.getHealthyIPv6Servers(entry)
+	if len(servers) == 0 {
+		h.logger.Debug("no healthy IPv6 servers", "domain", qname)
+		m.SetRcode(m, dns.RcodeServerFailure)
+		return
+	}
+
+	pool := routing.NewSimpleServerPool(servers)
+	selected, err := entry.Router.Route(context.Background(), pool)
+	if err != nil {
+		h.logger.Error("routing failed", "domain", qname, "error", err)
+		m.SetRcode(m, dns.RcodeServerFailure)
+		return
+	}
+
+	h.addAAAARecord(m, q, selected, entry.TTL)
+	metrics.RecordRoutingDecision(qname, entry.Router.Algorithm(), selected.Address)
+
+	h.logger.Debug("resolved AAAA query",
+		"domain", qname,
+		"selected", selected.Address,
+		"algorithm", entry.Router.Algorithm(),
+	)
+}
+
+// getHealthyIPv4Servers returns healthy IPv4 servers from the entry.
+func (h *Handler) getHealthyIPv4Servers(entry *DomainEntry) []*routing.Server {
+	var servers []*routing.Server
+
+	for _, server := range entry.Servers {
+		// Check if IPv4
+		if server.Address.To4() == nil {
+			continue
+		}
+
+		// Check health
+		if h.health != nil && !h.health.IsHealthy(server.Address.String(), server.Port) {
+			continue
+		}
+
+		servers = append(servers, &routing.Server{
+			Address: server.Address.String(),
+			Port:    server.Port,
+			Weight:  server.Weight,
+			Region:  server.Region,
+		})
+	}
+
+	return servers
+}
+
+// getHealthyIPv6Servers returns healthy IPv6 servers from the entry.
+func (h *Handler) getHealthyIPv6Servers(entry *DomainEntry) []*routing.Server {
+	var servers []*routing.Server
+
+	for _, server := range entry.Servers {
+		// Check if IPv6 (not IPv4)
+		if server.Address.To4() != nil {
+			continue
+		}
+
+		// Check health
+		if h.health != nil && !h.health.IsHealthy(server.Address.String(), server.Port) {
+			continue
+		}
+
+		servers = append(servers, &routing.Server{
+			Address: server.Address.String(),
+			Port:    server.Port,
+			Weight:  server.Weight,
+			Region:  server.Region,
+		})
+	}
+
+	return servers
+}
+
+// addARecord adds an A record to the response.
+func (h *Handler) addARecord(m *dns.Msg, q dns.Question, server *routing.Server, ttl uint32) {
 	if ttl == 0 {
 		ttl = h.defaultTTL
+	}
+
+	ip := net.ParseIP(server.Address)
+	if ip == nil {
+		h.logger.Error("invalid IP address", "address", server.Address)
+		return
 	}
 
 	rr := &dns.A{
@@ -276,60 +228,22 @@ func (h *Handler) handleA(msg *dns.Msg, q dns.Question) {
 			Class:  dns.ClassINET,
 			Ttl:    ttl,
 		},
-		A: server.Address,
+		A: ip.To4(),
 	}
 
-	msg.Answer = append(msg.Answer, rr)
-
-	metrics.RecordRoutingDecision(entry.Name, entry.Router.Algorithm(), server.Address.String())
-
-	h.logger.Debug("routing decision",
-		"domain", entry.Name,
-		"type", "A",
-		"algorithm", entry.Router.Algorithm(),
-		"selected_server", server.Address.String(),
-		"region", server.Region,
-		"ttl", ttl,
-	)
+	m.Answer = append(m.Answer, rr)
 }
 
-// handleAAAA processes AAAA record queries (IPv6).
-func (h *Handler) handleAAAA(msg *dns.Msg, q dns.Question) {
-	entry := h.registry.Lookup(q.Name)
-	if entry == nil {
-		h.logger.Debug("domain not found", "name", q.Name)
-		msg.Rcode = dns.RcodeNameError
-		return
-	}
-
-	// Filter to healthy IPv6 servers only
-	healthyServers := h.filterHealthyServers(entry.Servers)
-	ipv6Servers := filterByAddressFamily(healthyServers, false)
-
-	if len(ipv6Servers) == 0 {
-		h.logger.Debug("no healthy IPv6 servers available",
-			"domain", entry.Name,
-			"total_servers", len(entry.Servers),
-			"healthy_servers", len(healthyServers),
-		)
-		return
-	}
-
-	// Use the domain's router to select a server
-	ctx := context.Background()
-	server, err := entry.Router.Route(ctx, entry.Name, ipv6Servers)
-	if err != nil {
-		h.logger.Error("routing failed",
-			"domain", entry.Name,
-			"error", err,
-		)
-		msg.Rcode = dns.RcodeServerFailure
-		return
-	}
-
-	ttl := entry.TTL
+// addAAAARecord adds an AAAA record to the response.
+func (h *Handler) addAAAARecord(m *dns.Msg, q dns.Question, server *routing.Server, ttl uint32) {
 	if ttl == 0 {
 		ttl = h.defaultTTL
+	}
+
+	ip := net.ParseIP(server.Address)
+	if ip == nil {
+		h.logger.Error("invalid IP address", "address", server.Address)
+		return
 	}
 
 	rr := &dns.AAAA{
@@ -339,80 +253,42 @@ func (h *Handler) handleAAAA(msg *dns.Msg, q dns.Question) {
 			Class:  dns.ClassINET,
 			Ttl:    ttl,
 		},
-		AAAA: server.Address,
+		AAAA: ip,
 	}
 
-	msg.Answer = append(msg.Answer, rr)
+	m.Answer = append(m.Answer, rr)
+}
 
-	metrics.RecordRoutingDecision(entry.Name, entry.Router.Algorithm(), server.Address.String())
+// writeResponse writes the DNS response and records metrics.
+func (h *Handler) writeResponse(w dns.ResponseWriter, m *dns.Msg, start time.Time, status string, domain string) {
+	duration := time.Since(start)
 
-	h.logger.Debug("routing decision",
-		"domain", entry.Name,
-		"type", "AAAA",
-		"algorithm", entry.Router.Algorithm(),
-		"selected_server", server.Address.String(),
-		"region", server.Region,
-		"ttl", ttl,
+	if err := w.WriteMsg(m); err != nil {
+		h.logger.Error("failed to write DNS response",
+			"error", err,
+			"domain", domain,
+		)
+	}
+
+	qtype := ""
+	if len(m.Question) > 0 {
+		qtype = dns.TypeToString[m.Question[0].Qtype]
+	}
+
+	metrics.RecordDNSQuery(domain, qtype, status)
+	metrics.RecordDNSQueryDuration(domain, status, duration.Seconds())
+
+	h.logger.Debug("DNS response sent",
+		"domain", domain,
+		"status", status,
+		"duration", duration,
 	)
 }
 
-// filterHealthyServers returns only servers that are currently healthy.
-func (h *Handler) filterHealthyServers(servers []ServerInfo) []ServerInfo {
-	if h.healthProvider == nil {
-		return servers
-	}
-
-	healthy := make([]ServerInfo, 0, len(servers))
-	for _, s := range servers {
-		if h.healthProvider.IsHealthy(s.Address.String(), s.Port) {
-			healthy = append(healthy, s)
-		}
-	}
-	return healthy
-}
-
-// filterByAddressFamily filters servers by IP address family.
-func filterByAddressFamily(servers []ServerInfo, ipv4 bool) []ServerInfo {
-	filtered := make([]ServerInfo, 0, len(servers))
-	for _, s := range servers {
-		isIPv4 := s.Address.To4() != nil
-		if ipv4 && isIPv4 {
-			filtered = append(filtered, s)
-		} else if !ipv4 && !isIPv4 {
-			filtered = append(filtered, s)
-		}
-	}
-	return filtered
-}
-
-// getEDNS extracts the OPT pseudo-record from the request's additional section.
-// Returns nil if no OPT record is present.
-func (h *Handler) getEDNS(r *dns.Msg) *dns.OPT {
-	if !h.ednsEnabled {
-		return nil
-	}
-	for _, rr := range r.Extra {
-		if opt, ok := rr.(*dns.OPT); ok {
-			return opt
-		}
-	}
-	return nil
-}
-
-// addEDNS adds an OPT pseudo-record to the response if the client sent one.
-// Per RFC 6891, servers should include an OPT record in the response
-// when the client included one in the request.
-func (h *Handler) addEDNS(msg *dns.Msg, clientOPT *dns.OPT) {
-	if clientOPT == nil || !h.ednsEnabled {
-		return
-	}
-
-	opt := new(dns.OPT)
-	opt.Hdr.Name = "."
-	opt.Hdr.Rrtype = dns.TypeOPT
-	opt.SetUDPSize(h.ednsUDPSize)
-	// Keep EDNS version 0 (the only version defined)
-	opt.SetVersion(0)
-
-	msg.Extra = append(msg.Extra, opt)
+// UpdateRegistry updates the handler's registry.
+func (h *Handler) UpdateRegistry(registry *Registry) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.registry = registry
+	h.logger.Info("DNS handler registry updated")
 }
