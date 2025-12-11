@@ -39,6 +39,7 @@ type Server struct {
 	overwatchHandlers OverwatchAPIHandlers
 	overrideHandlers  *OverrideHandlers
 	dnssecHandlers    *DNSSECHandlers
+	geoHandlers       *GeoHandlers
 }
 
 // NewServer creates a new API server.
@@ -69,6 +70,11 @@ func (s *Server) SetOverrideHandlers(oh *OverrideHandlers) {
 // SetDNSSECHandlers sets the DNSSEC handlers for DNSSEC API endpoints.
 func (s *Server) SetDNSSECHandlers(dh *DNSSECHandlers) {
 	s.dnssecHandlers = dh
+}
+
+// SetGeoHandlers sets the geo handlers for geolocation API endpoints.
+func (s *Server) SetGeoHandlers(gh *GeoHandlers) {
+	s.geoHandlers = gh
 }
 
 // Start starts the API server.
@@ -105,6 +111,14 @@ func (s *Server) Start(ctx context.Context) error {
 		mux.HandleFunc("/api/v1/dnssec", s.withACL(s.dnssecHandlers.HandleDNSSEC))
 		mux.HandleFunc("/api/v1/dnssec/", s.withACL(s.dnssecHandlers.HandleDNSSEC))
 		s.logger.Debug("DNSSEC API endpoints registered")
+	}
+
+	// Geolocation endpoints (Sprint 6)
+	if s.geoHandlers != nil {
+		mux.HandleFunc("/api/v1/geo/mappings", s.withACL(s.geoHandlers.HandleMappings))
+		mux.HandleFunc("/api/v1/geo/mappings/", s.withACL(s.geoHandlers.DeleteMapping))
+		mux.HandleFunc("/api/v1/geo/test", s.withACL(s.geoHandlers.TestIP))
+		s.logger.Debug("geolocation API endpoints registered")
 	}
 
 	// ADR-015: Cluster endpoints removed

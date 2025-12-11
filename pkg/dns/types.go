@@ -57,6 +57,7 @@ type HandlerConfig struct {
 	LeaderChecker  LeaderChecker // Deprecated: ignored in ADR-015
 	DNSSECSigner   DNSSECSigner  // Optional: signs responses if provided
 	DNSSECEnabled  bool          // Whether DNSSEC is enabled
+	ECSEnabled     bool          // Whether to use EDNS Client Subnet for geolocation
 	DefaultTTL     uint32
 	Logger         *slog.Logger
 }
