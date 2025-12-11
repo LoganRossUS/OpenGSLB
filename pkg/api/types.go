@@ -74,3 +74,37 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 	Code  int    `json:"code"`
 }
+
+// OverrideRequest is the request body for PUT /api/v1/overrides/{service}/{address}.
+type OverrideRequest struct {
+	Healthy bool   `json:"healthy"`
+	Reason  string `json:"reason"`
+	Source  string `json:"source"`
+}
+
+// Override represents an active health override for a server.
+type Override struct {
+	Service   string    `json:"service"`
+	Address   string    `json:"address"`
+	Healthy   bool      `json:"healthy"`
+	Reason    string    `json:"reason"`
+	Source    string    `json:"source"`
+	CreatedAt time.Time `json:"created_at"`
+	Authority string    `json:"authority,omitempty"`
+}
+
+// OverrideResponse is the response for PUT /api/v1/overrides/{service}/{address}.
+type OverrideResponse struct {
+	Service   string    `json:"service"`
+	Address   string    `json:"address"`
+	Healthy   bool      `json:"healthy"`
+	Reason    string    `json:"reason"`
+	Source    string    `json:"source"`
+	CreatedAt time.Time `json:"created_at"`
+	Authority string    `json:"authority"`
+}
+
+// OverridesListResponse is the response for GET /api/v1/overrides.
+type OverridesListResponse struct {
+	Overrides []Override `json:"overrides"`
+}

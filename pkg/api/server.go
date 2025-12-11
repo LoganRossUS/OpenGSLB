@@ -37,6 +37,7 @@ type Server struct {
 	logger            *slog.Logger
 	handlers          *Handlers
 	overwatchHandlers OverwatchAPIHandlers
+	overrideHandlers  *OverrideHandlers
 }
 
 // NewServer creates a new API server.
@@ -59,6 +60,11 @@ func (s *Server) SetOverwatchHandlers(handlers OverwatchAPIHandlers) {
 	s.overwatchHandlers = handlers
 }
 
+// SetOverrideHandlers sets the override handlers for override API endpoints.
+func (s *Server) SetOverrideHandlers(oh *OverrideHandlers) {
+	s.overrideHandlers = oh
+}
+
 // Start starts the API server.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -77,6 +83,13 @@ func (s *Server) Start(ctx context.Context) error {
 		mux.HandleFunc("/api/v1/overwatch/validate", s.withACL(s.overwatchHandlers.HandleValidate))
 	}
 
+	// External override endpoints (Story 6)
+	if s.overrideHandlers != nil {
+		mux.HandleFunc("/api/v1/overrides/", s.withACL(s.overrideHandlers.HandleOverrides))
+		mux.HandleFunc("/api/v1/overrides", s.withACL(s.overrideHandlers.HandleOverrides))
+		s.logger.Debug("override API endpoints registered")
+	}
+
 	// ADR-015: Cluster endpoints removed
 	// The following endpoints no longer exist:
 	// - /api/v1/cluster/status
@@ -91,7 +104,10 @@ func (s *Server) Start(ctx context.Context) error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	s.logger.Info("starting API server", "address", s.config.Address)
+	s.logger.Info("starting API server",
+		"address", s.config.Address,
+		"override_endpoints", s.overrideHandlers != nil,
+	)
 
 	// Start server in a way that respects context cancellation
 	errCh := make(chan error, 1)
