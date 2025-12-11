@@ -343,6 +343,177 @@ rate(opengslb_routing_decisions_total{algorithm="failover"}[5m])
     summary: "Less than 50% of servers are healthy"
 ```
 
+### Overwatch Metrics (ADR-015)
+
+These metrics are only available in Overwatch mode.
+
+#### `opengslb_overwatch_backends_total`
+**Type:** Gauge
+
+Total number of backends in the registry.
+
+**Example:**
+```
+opengslb_overwatch_backends_total 24
+```
+
+#### `opengslb_overwatch_backends_healthy`
+**Type:** Gauge
+
+Number of backends with healthy effective status.
+
+**Example:**
+```
+opengslb_overwatch_backends_healthy 22
+```
+
+#### `opengslb_overwatch_agents_registered`
+**Type:** Gauge
+
+Number of unique agents currently registered.
+
+**Example:**
+```
+opengslb_overwatch_agents_registered 8
+```
+
+#### `opengslb_overwatch_stale_agents`
+**Type:** Gauge
+
+Number of backends marked as stale (no recent heartbeat).
+
+**Example:**
+```
+opengslb_overwatch_stale_agents 2
+```
+
+#### `opengslb_overwatch_overrides_active`
+**Type:** Gauge
+
+Number of active manual overrides.
+
+**Example:**
+```
+opengslb_overwatch_overrides_active 1
+```
+
+#### `opengslb_overwatch_validation_total`
+**Type:** Counter
+**Labels:** `service`, `result`
+
+External validation results.
+
+| Label | Description |
+|-------|-------------|
+| `service` | Service name |
+| `result` | Validation result: `healthy`, `unhealthy` |
+
+**Example:**
+```
+opengslb_overwatch_validation_total{service="web-service",result="healthy"} 450
+opengslb_overwatch_validation_total{service="web-service",result="unhealthy"} 12
+```
+
+#### `opengslb_overwatch_veto_total`
+**Type:** Counter
+**Labels:** `service`, `reason`
+
+Veto events where Overwatch overrode agent health claims.
+
+| Label | Description |
+|-------|-------------|
+| `service` | Service name |
+| `reason` | Veto reason: `validation_unhealthy`, `validation_healthy` |
+
+**Example:**
+```
+opengslb_overwatch_veto_total{service="web-service",reason="validation_unhealthy"} 5
+```
+
+#### `opengslb_overwatch_backends_by_authority`
+**Type:** Gauge
+**Labels:** `authority`
+
+Backends grouped by health authority source.
+
+| Label | Description |
+|-------|-------------|
+| `authority` | Source: `agent`, `override`, `stale` |
+
+**Example:**
+```
+opengslb_overwatch_backends_by_authority{authority="agent"} 20
+opengslb_overwatch_backends_by_authority{authority="override"} 1
+opengslb_overwatch_backends_by_authority{authority="stale"} 3
+```
+
+### Gossip Metrics
+
+#### `opengslb_gossip_messages_received_total`
+**Type:** Counter
+**Labels:** `type`
+
+Total gossip messages received by type.
+
+**Example:**
+```
+opengslb_gossip_messages_received_total{type="heartbeat"} 4521
+opengslb_gossip_messages_received_total{type="predictive"} 12
+```
+
+#### `opengslb_gossip_override_operations_total`
+**Type:** Counter
+**Labels:** `operation`
+
+Override operations via API.
+
+| Label | Description |
+|-------|-------------|
+| `operation` | Operation type: `set`, `clear` |
+
+**Example:**
+```
+opengslb_gossip_override_operations_total{operation="set"} 5
+opengslb_gossip_override_operations_total{operation="clear"} 3
+```
+
+## Overwatch Alerting Examples
+
+### No Registered Agents
+```yaml
+- alert: OpenGSLBNoAgents
+  expr: opengslb_overwatch_agents_registered == 0
+  for: 5m
+  labels:
+    severity: critical
+  annotations:
+    summary: "No agents registered with Overwatch"
+```
+
+### High Stale Backend Count
+```yaml
+- alert: OpenGSLBHighStaleBackends
+  expr: |
+    opengslb_overwatch_stale_agents / opengslb_overwatch_backends_total > 0.2
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "More than 20% of backends are stale"
+```
+
+### Validation Disagreement Rate
+```yaml
+- alert: OpenGSLBHighVetoRate
+  expr: |
+    rate(opengslb_overwatch_veto_total[5m]) > 0.1
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High rate of validation vetoes - agent health claims being overridden"
+```
+
 ## Metric Cardinality
 
 Be aware of metric cardinality when configuring monitoring:

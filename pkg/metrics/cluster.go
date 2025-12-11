@@ -1,127 +1,249 @@
 // Copyright (C) 2025 Logan Ross
 //
-// This file is part of OpenGSLB \u2013 https://opengslb.org
+// This file is part of OpenGSLB – https://opengslb.org
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
 package metrics
 
 import (
-	"fmt"
-
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// Cluster/Raft metrics
+// Runtime mode metrics
 var (
-	// ClusterIsLeader indicates whether this node is the Raft leader.
-	ClusterIsLeader = promauto.NewGauge(
+	// RuntimeMode indicates the current runtime mode.
+	// Values: 0=agent, 1=overwatch
+	RuntimeMode = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: namespace,
-			Name:      "cluster_is_leader",
-			Help:      "1 if this node is the Raft leader, 0 otherwise",
+			Name:      "runtime_mode",
+			Help:      "Runtime mode (0=agent, 1=overwatch)",
 		},
 	)
 
-	// ClusterState indicates the current Raft state of this node.
-	// Values: 0=follower, 1=candidate, 2=leader, 3=shutdown
-	ClusterState = promauto.NewGauge(
+	// RuntimeModeInfo provides mode identification as labels.
+	RuntimeModeInfo = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: namespace,
-			Name:      "cluster_state",
-			Help:      "Current Raft state (0=follower, 1=candidate, 2=leader, 3=shutdown)",
+			Name:      "runtime_mode_info",
+			Help:      "Runtime mode information",
+		},
+		[]string{"mode", "node_id", "region"},
+	)
+)
+
+// Agent metrics (when running in agent mode)
+var (
+	// AgentBackendsRegistered tracks the number of backends registered by this agent.
+	AgentBackendsRegistered = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "agent_backends_registered",
+			Help:      "Number of backends registered by this agent",
 		},
 	)
 
-	// ClusterPeers tracks the number of peers in the cluster.
-	ClusterPeers = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "cluster_peers",
-			Help:      "Number of peers in the Raft cluster",
-		},
-	)
-
-	// ClusterLeaderChangesTotal counts leadership transitions.
-	ClusterLeaderChangesTotal = promauto.NewCounter(
+	// AgentBackendHealthChecksTotal counts health checks performed by the agent.
+	AgentBackendHealthChecksTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
-			Name:      "cluster_leader_changes_total",
-			Help:      "Total number of Raft leadership changes observed",
+			Name:      "agent_backend_health_checks_total",
+			Help:      "Total health checks performed by agent",
 		},
+		[]string{"service", "result"},
 	)
 
-	// ClusterAppliedIndex tracks the last applied Raft log index.
-	ClusterAppliedIndex = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "cluster_applied_index",
-			Help:      "Last applied Raft log index",
-		},
-	)
-
-	// ClusterCommitIndex tracks the committed Raft log index.
-	ClusterCommitIndex = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "cluster_commit_index",
-			Help:      "Committed Raft log index",
-		},
-	)
-
-	// ClusterLastContactSeconds tracks time since last leader contact (for followers).
-	ClusterLastContactSeconds = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "cluster_last_contact_seconds",
-			Help:      "Seconds since last contact with leader (followers only)",
-		},
-	)
-
-	// ClusterSnapshotIndex tracks the last snapshot index.
-	ClusterSnapshotIndex = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "cluster_snapshot_index",
-			Help:      "Last Raft snapshot index",
-		},
-	)
-
-	// ClusterFSMApplyTotal counts FSM apply operations.
-	ClusterFSMApplyTotal = promauto.NewCounter(
+	// AgentHeartbeatsSentTotal counts heartbeats sent to Overwatches.
+	AgentHeartbeatsSentTotal = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: namespace,
-			Name:      "cluster_fsm_apply_total",
-			Help:      "Total number of FSM apply operations",
+			Name:      "agent_heartbeats_sent_total",
+			Help:      "Total heartbeats sent to Overwatch nodes",
 		},
 	)
 
-	// ClusterMode indicates the runtime mode (0=standalone, 1=cluster).
-	ClusterMode = promauto.NewGauge(
+	// AgentHeartbeatFailuresTotal counts failed heartbeat sends.
+	AgentHeartbeatFailuresTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "agent_heartbeat_failures_total",
+			Help:      "Total failed heartbeat sends",
+		},
+	)
+
+	// AgentOverwatchConnectionsActive tracks active connections to Overwatch nodes.
+	AgentOverwatchConnectionsActive = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: namespace,
-			Name:      "cluster_mode",
-			Help:      "Runtime mode (0=standalone, 1=cluster)",
+			Name:      "agent_overwatch_connections_active",
+			Help:      "Number of active connections to Overwatch nodes",
 		},
 	)
 
-	// ClusterNodeInfo provides node identification as labels.
-	ClusterNodeInfo = promauto.NewGaugeVec(
+	// AgentPredictiveStateActive indicates if predictive signals are active.
+	AgentPredictiveStateActive = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: namespace,
-			Name:      "cluster_node_info",
-			Help:      "Cluster node information",
+			Name:      "agent_predictive_state_active",
+			Help:      "Predictive health state (1=bleeding, 0=normal)",
 		},
-		[]string{"node_id", "address"},
+		[]string{"service", "signal_type"},
+	)
+)
+
+// Overwatch metrics (when running in overwatch mode)
+var (
+	// OverwatchAgentsRegistered tracks the number of agents registered with this Overwatch.
+	OverwatchAgentsRegistered = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "overwatch_agents_registered",
+			Help:      "Number of agents registered with this Overwatch",
+		},
 	)
 
-	// DNSRefusedTotal counts DNS queries refused because this node is not the leader.
+	// OverwatchBackendsTotal tracks total backends known to this Overwatch.
+	OverwatchBackendsTotal = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "overwatch_backends_total",
+			Help:      "Total backends known to this Overwatch",
+		},
+	)
+
+	// OverwatchBackendsHealthy tracks healthy backends.
+	OverwatchBackendsHealthy = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "overwatch_backends_healthy",
+			Help:      "Number of healthy backends",
+		},
+	)
+
+	// OverwatchBackendsByAuthority tracks backends by health authority level.
+	OverwatchBackendsByAuthority = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "overwatch_backends_by_authority",
+			Help:      "Backends grouped by health authority source",
+		},
+		[]string{"authority"},
+	)
+
+	// OverwatchValidationChecksTotal counts external validation checks.
+	OverwatchValidationChecksTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "overwatch_validation_checks_total",
+			Help:      "Total external validation checks performed",
+		},
+		[]string{"service", "result"},
+	)
+
+	// OverwatchValidationLatency tracks external validation check duration.
+	OverwatchValidationLatency = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "overwatch_validation_latency_seconds",
+			Help:      "External validation check latency in seconds",
+			Buckets:   []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0},
+		},
+		[]string{"service"},
+	)
+
+	// OverwatchVetoesTotal counts veto decisions by reason.
+	OverwatchVetoesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "overwatch_vetoes_total",
+			Help:      "Total number of overwatch vetoes applied",
+		},
+		[]string{"service", "reason"},
+	)
+
+	// OverwatchOverridesActive tracks active health overrides.
+	OverwatchOverridesActive = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "overwatch_overrides_active",
+			Help:      "Number of active health overrides",
+		},
+	)
+
+	// OverwatchOverridesByAuthority tracks overrides by authority level.
+	OverwatchOverridesByAuthority = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "overwatch_overrides_by_authority",
+			Help:      "Active overrides grouped by authority source",
+		},
+		[]string{"authority"},
+	)
+
+	// OverwatchAgentHeartbeatAge tracks time since last heartbeat per agent.
+	OverwatchAgentHeartbeatAge = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "overwatch_agent_heartbeat_age_seconds",
+			Help:      "Seconds since last heartbeat from agent",
+		},
+		[]string{"agent_id", "region"},
+	)
+
+	// OverwatchStaleAgentsTotal tracks agents marked as stale.
+	OverwatchStaleAgentsTotal = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "overwatch_stale_agents_total",
+			Help:      "Number of agents marked as stale (missed heartbeats)",
+		},
+	)
+)
+
+// Agent identity/TOFU metrics
+var (
+	// OverwatchAgentCertsPinned tracks the number of pinned agent certificates.
+	OverwatchAgentCertsPinned = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "overwatch_agent_certs_pinned",
+			Help:      "Number of pinned agent certificates (TOFU)",
+		},
+	)
+
+	// OverwatchAgentAuthSuccessTotal counts successful agent authentications.
+	OverwatchAgentAuthSuccessTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "overwatch_agent_auth_success_total",
+			Help:      "Total successful agent authentications",
+		},
+	)
+
+	// OverwatchAgentAuthFailuresTotal counts failed agent authentications.
+	OverwatchAgentAuthFailuresTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "overwatch_agent_auth_failures_total",
+			Help:      "Total failed agent authentications",
+		},
+		[]string{"reason"},
+	)
+)
+
+// DNS metrics for mode-specific behavior
+var (
+	// DNSRefusedTotal counts DNS queries refused.
+	// In agent mode: all queries refused (agents don't serve DNS)
+	// In overwatch mode: should be 0 (all Overwatches serve DNS)
+	// Kept for backward compatibility during migration.
 	DNSRefusedTotal = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "dns_refused_total",
-			Help:      "Total DNS queries refused (non-leader in cluster mode)",
+			Help:      "Total DNS queries refused (agent mode or misconfiguration)",
 		},
 	)
 )
@@ -193,7 +315,7 @@ var (
 		},
 	)
 
-	// GossipHealthUpdatesReceivedTotal counts health updates received from other nodes.
+	// GossipHealthUpdatesReceivedTotal counts health updates received from agents.
 	GossipHealthUpdatesReceivedTotal = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: namespace,
@@ -202,7 +324,7 @@ var (
 		},
 	)
 
-	// GossipHealthUpdatesBroadcastTotal counts health updates broadcast to the cluster.
+	// GossipHealthUpdatesBroadcastTotal counts health updates broadcast.
 	GossipHealthUpdatesBroadcastTotal = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: namespace,
@@ -250,124 +372,204 @@ var (
 		},
 	)
 
-	// OverwatchVetoesTotal counts veto decisions by reason.
-	OverwatchVetoesTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
+	// GossipEncryptionEnabled indicates if gossip encryption is enabled (should always be 1).
+	GossipEncryptionEnabled = promauto.NewGauge(
+		prometheus.GaugeOpts{
 			Namespace: namespace,
-			Name:      "overwatch_vetoes_total",
-			Help:      "Total number of overwatch vetoes applied by reason",
+			Name:      "gossip_encryption_enabled",
+			Help:      "Gossip encryption status (always 1, encryption is mandatory)",
 		},
-		[]string{"reason"},
 	)
 )
 
-// SetClusterLeader updates the leadership metric.
-func SetClusterLeader(isLeader bool) {
-	if isLeader {
-		ClusterIsLeader.Set(1)
-	} else {
-		ClusterIsLeader.Set(0)
-	}
-}
+// DNSSEC metrics
+var (
+	// DNSSECEnabled indicates if DNSSEC signing is enabled.
+	DNSSECEnabled = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "dnssec_enabled",
+			Help:      "DNSSEC signing status (1=enabled, 0=disabled)",
+		},
+	)
 
-// SetClusterState updates the cluster state metric.
-// state: "follower", "candidate", "leader", "shutdown"
-func SetClusterState(state string) {
-	var value float64
-	switch state {
-	case "follower":
-		value = 0
-	case "candidate":
-		value = 1
-	case "leader":
-		value = 2
-	case "shutdown":
-		value = 3
+	// DNSSECSigningLatency tracks DNSSEC signing latency.
+	DNSSECSigningLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "dnssec_signing_latency_seconds",
+			Help:      "DNSSEC response signing latency in seconds",
+			Buckets:   []float64{0.0001, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025},
+		},
+	)
+
+	// DNSSECKeyAgeSeconds tracks the age of the current DNSSEC key.
+	DNSSECKeyAgeSeconds = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "dnssec_key_age_seconds",
+			Help:      "Age of the current DNSSEC signing key in seconds",
+		},
+	)
+
+	// DNSSECKeySyncSuccessTotal counts successful key syncs from peers.
+	DNSSECKeySyncSuccessTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "dnssec_key_sync_success_total",
+			Help:      "Total successful DNSSEC key syncs from peers",
+		},
+	)
+
+	// DNSSECKeySyncFailuresTotal counts failed key syncs.
+	DNSSECKeySyncFailuresTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "dnssec_key_sync_failures_total",
+			Help:      "Total failed DNSSEC key syncs",
+		},
+		[]string{"peer"},
+	)
+)
+
+// Runtime mode helper functions
+
+// SetRuntimeMode sets the runtime mode metric.
+func SetRuntimeMode(mode string) {
+	switch mode {
+	case "agent":
+		RuntimeMode.Set(0)
+	case "overwatch":
+		RuntimeMode.Set(1)
 	default:
-		value = 0
-	}
-	ClusterState.Set(value)
-}
-
-// SetClusterPeers updates the peer count metric.
-func SetClusterPeers(count int) {
-	ClusterPeers.Set(float64(count))
-}
-
-// RecordLeaderChange increments the leadership change counter.
-func RecordLeaderChange() {
-	ClusterLeaderChangesTotal.Inc()
-}
-
-// SetClusterIndices updates the Raft index metrics.
-func SetClusterIndices(applied, commit, snapshot uint64) {
-	ClusterAppliedIndex.Set(float64(applied))
-	ClusterCommitIndex.Set(float64(commit))
-	ClusterSnapshotIndex.Set(float64(snapshot))
-}
-
-// SetClusterLastContact updates the last contact metric.
-func SetClusterLastContact(seconds float64) {
-	ClusterLastContactSeconds.Set(seconds)
-}
-
-// RecordFSMApply increments the FSM apply counter.
-func RecordFSMApply() {
-	ClusterFSMApplyTotal.Inc()
-}
-
-// SetClusterMode sets the runtime mode metric.
-func SetClusterMode(isCluster bool) {
-	if isCluster {
-		ClusterMode.Set(1)
-	} else {
-		ClusterMode.Set(0)
+		RuntimeMode.Set(-1)
 	}
 }
 
-// SetClusterNodeInfo sets the node identification metric.
-func SetClusterNodeInfo(nodeID, address string) {
-	ClusterNodeInfo.WithLabelValues(nodeID, address).Set(1)
+// SetRuntimeModeInfo sets the runtime mode info with labels.
+func SetRuntimeModeInfo(mode, nodeID, region string) {
+	RuntimeModeInfo.WithLabelValues(mode, nodeID, region).Set(1)
 }
+
+// Agent metric helper functions
+
+// SetAgentBackendsRegistered sets the number of backends registered by this agent.
+func SetAgentBackendsRegistered(count int) {
+	AgentBackendsRegistered.Set(float64(count))
+}
+
+// RecordAgentHealthCheck records a health check result.
+func RecordAgentHealthCheck(service string, healthy bool) {
+	result := "healthy"
+	if !healthy {
+		result = "unhealthy"
+	}
+	AgentBackendHealthChecksTotal.WithLabelValues(service, result).Inc()
+}
+
+// RecordAgentHeartbeatSent increments the heartbeat sent counter.
+func RecordAgentHeartbeatSent() {
+	AgentHeartbeatsSentTotal.Inc()
+}
+
+// RecordAgentHeartbeatFailure increments the heartbeat failure counter.
+func RecordAgentHeartbeatFailure() {
+	AgentHeartbeatFailuresTotal.Inc()
+}
+
+// SetAgentOverwatchConnections sets the number of active Overwatch connections.
+func SetAgentOverwatchConnections(count int) {
+	AgentOverwatchConnectionsActive.Set(float64(count))
+}
+
+// SetAgentPredictiveState sets the predictive state for a service/signal.
+func SetAgentPredictiveState(service, signalType string, active bool) {
+	value := 0.0
+	if active {
+		value = 1.0
+	}
+	AgentPredictiveStateActive.WithLabelValues(service, signalType).Set(value)
+}
+
+// Overwatch metric helper functions
+
+// SetOverwatchAgentsRegistered sets the number of registered agents.
+func SetOverwatchAgentsRegistered(count int) {
+	OverwatchAgentsRegistered.Set(float64(count))
+}
+
+// SetOverwatchBackends sets the backend count metrics.
+func SetOverwatchBackends(total, healthy int) {
+	OverwatchBackendsTotal.Set(float64(total))
+	OverwatchBackendsHealthy.Set(float64(healthy))
+}
+
+// SetOverwatchBackendsByAuthority sets backend counts per authority level.
+func SetOverwatchBackendsByAuthority(authority string, count int) {
+	OverwatchBackendsByAuthority.WithLabelValues(authority).Set(float64(count))
+}
+
+// RecordOverwatchValidation records an external validation check result.
+func RecordOverwatchValidation(service string, healthy bool, latencySeconds float64) {
+	result := "healthy"
+	if !healthy {
+		result = "unhealthy"
+	}
+	OverwatchValidationChecksTotal.WithLabelValues(service, result).Inc()
+	OverwatchValidationLatency.WithLabelValues(service).Observe(latencySeconds)
+}
+
+// RecordOverwatchVeto increments the veto counter.
+func RecordOverwatchVeto(service, reason string) {
+	OverwatchVetoesTotal.WithLabelValues(service, reason).Inc()
+}
+
+// SetOverwatchOverridesActive sets the number of active overrides.
+func SetOverwatchOverridesActive(count int) {
+	OverwatchOverridesActive.Set(float64(count))
+}
+
+// SetOverwatchOverridesByAuthority sets override counts per authority level.
+func SetOverwatchOverridesByAuthority(authority string, count int) {
+	OverwatchOverridesByAuthority.WithLabelValues(authority).Set(float64(count))
+}
+
+// SetOverwatchAgentHeartbeatAge sets the heartbeat age for an agent.
+func SetOverwatchAgentHeartbeatAge(agentID, region string, ageSeconds float64) {
+	OverwatchAgentHeartbeatAge.WithLabelValues(agentID, region).Set(ageSeconds)
+}
+
+// SetOverwatchStaleAgents sets the count of stale agents.
+func SetOverwatchStaleAgents(count int) {
+	OverwatchStaleAgentsTotal.Set(float64(count))
+}
+
+// Agent identity helper functions
+
+// SetOverwatchAgentCertsPinned sets the number of pinned certificates.
+func SetOverwatchAgentCertsPinned(count int) {
+	OverwatchAgentCertsPinned.Set(float64(count))
+}
+
+// RecordOverwatchAgentAuthSuccess increments the auth success counter.
+func RecordOverwatchAgentAuthSuccess() {
+	OverwatchAgentAuthSuccessTotal.Inc()
+}
+
+// RecordOverwatchAgentAuthFailure increments the auth failure counter.
+func RecordOverwatchAgentAuthFailure(reason string) {
+	OverwatchAgentAuthFailuresTotal.WithLabelValues(reason).Inc()
+}
+
+// DNS helper functions
 
 // RecordDNSRefused increments the DNS refused counter.
-// This is called when a non-leader node refuses to serve DNS queries.
+// In the agent-overwatch architecture, this is called when:
+// - An agent receives a DNS query (agents don't serve DNS)
+// - A misconfigured node refuses queries
+// All Overwatches serve DNS, so this should be 0 in overwatch mode.
 func RecordDNSRefused() {
 	DNSRefusedTotal.Inc()
-}
-
-// UpdateRaftStats updates metrics from Raft stats map.
-func UpdateRaftStats(stats map[string]string) {
-	if applied, ok := stats["applied_index"]; ok {
-		if v, err := parseUint64(applied); err == nil {
-			ClusterAppliedIndex.Set(float64(v))
-		}
-	}
-	if commit, ok := stats["commit_index"]; ok {
-		if v, err := parseUint64(commit); err == nil {
-			ClusterCommitIndex.Set(float64(v))
-		}
-	}
-	if snapshot, ok := stats["snapshot_index"]; ok {
-		if v, err := parseUint64(snapshot); err == nil {
-			ClusterSnapshotIndex.Set(float64(v))
-		}
-	}
-	if numPeers, ok := stats["num_peers"]; ok {
-		if v, err := parseUint64(numPeers); err == nil {
-			ClusterPeers.Set(float64(v))
-		}
-	}
-	if state, ok := stats["state"]; ok {
-		SetClusterState(state)
-	}
-}
-
-// parseUint64 parses a string to uint64.
-func parseUint64(s string) (uint64, error) {
-	var v uint64
-	_, err := fmt.Sscanf(s, "%d", &v)
-	return v, err
 }
 
 // Gossip metric helper functions
@@ -433,7 +635,38 @@ func SetGossipQueueDepth(depth int) {
 	GossipQueueDepth.Set(float64(depth))
 }
 
-// RecordOverwatchVeto increments the veto counter.
-func RecordOverwatchVeto(reason string) {
-	OverwatchVetoesTotal.WithLabelValues(reason).Inc()
+// SetGossipEncryptionEnabled sets the encryption status (should always be 1).
+func SetGossipEncryptionEnabled() {
+	GossipEncryptionEnabled.Set(1)
+}
+
+// DNSSEC metric helper functions
+
+// SetDNSSECEnabled sets the DNSSEC enabled status.
+func SetDNSSECEnabled(enabled bool) {
+	if enabled {
+		DNSSECEnabled.Set(1)
+	} else {
+		DNSSECEnabled.Set(0)
+	}
+}
+
+// ObserveDNSSECSigningLatency records a DNSSEC signing latency observation.
+func ObserveDNSSECSigningLatency(seconds float64) {
+	DNSSECSigningLatency.Observe(seconds)
+}
+
+// SetDNSSECKeyAge sets the age of the current DNSSEC key.
+func SetDNSSECKeyAge(ageSeconds float64) {
+	DNSSECKeyAgeSeconds.Set(ageSeconds)
+}
+
+// RecordDNSSECKeySyncSuccess increments the key sync success counter.
+func RecordDNSSECKeySyncSuccess() {
+	DNSSECKeySyncSuccessTotal.Inc()
+}
+
+// RecordDNSSECKeySyncFailure increments the key sync failure counter.
+func RecordDNSSECKeySyncFailure(peer string) {
+	DNSSECKeySyncFailuresTotal.WithLabelValues(peer).Inc()
 }

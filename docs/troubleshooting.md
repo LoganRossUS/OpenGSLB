@@ -1,13 +1,14 @@
 # OpenGSLB Troubleshooting Guide
 
-This guide covers common issues and their solutions for both standalone and cluster deployments.
+This guide covers common issues and their solutions for Agent and Overwatch mode deployments.
 
 ## Table of Contents
 
 - [DNS Issues](#dns-issues)
 - [Health Check Issues](#health-check-issues)
 - [Configuration Issues](#configuration-issues)
-- [Cluster Mode Issues](#cluster-mode-issues)
+- [Agent Mode Issues](#agent-mode-issues)
+- [Overwatch Mode Issues](#overwatch-mode-issues)
 - [Performance Issues](#performance-issues)
 - [Logging and Debugging](#logging-and-debugging)
 
@@ -28,7 +29,7 @@ This guide covers common issues and their solutions for both standalone and clus
    # Check server health status
    curl http://localhost:8080/api/v1/health/servers | jq '.servers[] | select(.healthy == false)'
    ```
-   
+
    **Solution:** Verify backend servers are running and health check endpoints are accessible.
 
 2. **Health checks not yet completed**
@@ -36,7 +37,7 @@ This guide covers common issues and their solutions for both standalone and clus
    # Check readiness
    curl http://localhost:8080/api/v1/ready
    ```
-   
+
    **Solution:** Wait for initial health checks to complete (typically 5-10 seconds after startup).
 
 3. **Configuration validation error**
@@ -44,24 +45,6 @@ This guide covers common issues and their solutions for both standalone and clus
    # Check logs for validation errors
    journalctl -u opengslb | grep -i "validation\|error"
    ```
-
-### DNS Queries Return REFUSED (Cluster Mode)
-
-**Symptoms:**
-- `dig` returns `status: REFUSED`
-- Queries work on some nodes but not others
-
-**Cause:** In cluster mode, only the Raft leader serves DNS queries. Non-leaders return REFUSED.
-
-**Solution:**
-1. Check which node is leader:
-   ```bash
-   curl http://localhost:8080/api/v1/cluster/status | jq '.is_leader'
-   ```
-
-2. Query the leader node directly, or configure clients to retry with multiple servers.
-
-3. For anycast deployments, ensure only the leader is advertising the VIP.
 
 ### DNS Queries Return NXDOMAIN
 
@@ -225,8 +208,9 @@ top -p $(pgrep opengslb)
 
 2. **Some changes require restart:**
    - `dns.listen_address`
-   - `cluster.mode`
-   - `cluster.bind_address`
+   - `mode` (agent/overwatch)
+   - `overwatch.gossip.bind_address`
+   - `agent.gossip.overwatch_nodes`
 
 3. **Verify reload was successful:**
    ```bash
@@ -235,200 +219,245 @@ top -p $(pgrep opengslb)
 
 ---
 
-## Cluster Mode Issues
+## Agent Mode Issues
 
-### Leader Election Fails
+### Agent Not Sending Heartbeats
 
 **Symptoms:**
-- No leader elected
-- All nodes report `state: candidate` or `state: follower`
-- DNS queries return REFUSED on all nodes
+- Agent logs show no heartbeat activity
+- Overwatch shows backends as stale
 
 **Possible Causes:**
 
-1. **Insufficient nodes for quorum**
-   - 3-node cluster requires 2 nodes for quorum
-   - 5-node cluster requires 3 nodes for quorum
-   
-   ```bash
-   # Check cluster members
-   curl http://localhost:8080/api/v1/cluster/members | jq
+1. **Gossip not configured**
+   ```yaml
+   agent:
+     gossip:
+       encryption_key: "your-32-byte-base64-key"
+       overwatch_nodes:
+         - "overwatch-1.internal:7946"
    ```
 
-2. **Network partition** - Nodes cannot communicate
+2. **Network connectivity to Overwatch**
    ```bash
-   # From node-1, test connectivity to node-2
-   nc -zv node-2-ip 7000  # Raft port
+   # Test gossip port connectivity
+   nc -zv overwatch-ip 7946
    ```
 
-3. **Clock skew** - Raft is sensitive to time differences
-   ```bash
-   # Check time sync status
-   timedatectl status
-   chronyc tracking
-   ```
-
-**Solutions:**
-- Ensure majority of nodes are running and reachable
-- Verify firewall allows Raft port traffic (default: 7000)
-- Sync clocks with NTP
-
-### Node Fails to Join Cluster
-
-**Symptoms:**
-- New node starts but doesn't appear in cluster members
-- Logs show "failed to join cluster" errors
-
-**Possible Causes:**
-
-1. **Join address incorrect**
-   ```bash
-   # Verify join address is reachable
-   curl http://join-address:8080/api/v1/cluster/status
-   ```
-
-2. **Node name conflict**
-   - Each node must have unique `node_name`
-   
-3. **Data directory contains stale state**
-   ```bash
-   # Remove stale Raft data (WARNING: loses cluster state)
-   rm -rf /var/lib/opengslb/raft/*
-   ```
-
-4. **Cluster not accepting new voters**
-   - Leader must explicitly add voter (handled automatically by join)
-   
-   ```bash
-   # Manual voter addition (from leader)
-   curl -X POST http://localhost:8080/api/v1/cluster/join \
-     -d '{"node_id": "new-node", "address": "new-node-ip:7000"}'
-   ```
-
-### Split-Brain Scenario
-
-**Symptoms:**
-- Multiple nodes claim to be leader
-- Inconsistent DNS responses
-
-**Cause:** Network partition caused cluster to split into isolated groups.
-
-**Solution:**
-1. **Identify the partition:**
-   ```bash
-   # On each node
-   curl http://localhost:8080/api/v1/cluster/members
-   ```
-
-2. **Minority partition will lose quorum:**
-   - Nodes in minority will demote to follower
-   - DNS will return REFUSED on minority nodes
-
-3. **Restore network connectivity:**
-   - Once network heals, cluster will reconcile automatically
-
-4. **Monitor for resolution:**
-   ```bash
-   watch -n 1 'curl -s http://localhost:8080/api/v1/cluster/status | jq'
-   ```
-
-### Gossip Communication Issues
-
-**Symptoms:**
-- Health updates not propagating between nodes
-- `opengslb_gossip_members` metric lower than expected
-
-**Possible Causes:**
-
-1. **Gossip port blocked**
-   ```bash
-   # Test gossip connectivity (default port: 7946)
-   nc -zvu other-node-ip 7946
-   ```
-
-2. **Encryption key mismatch**
-   - All nodes must use identical `gossip.encryption_key`
-
-3. **Bind address issues**
-   - Ensure gossip binds to correct interface for multi-homed hosts
+3. **Encryption key mismatch**
+   - Agent and Overwatch must use identical `encryption_key`
 
 **Solutions:**
 ```bash
-# Check gossip members
+# Check agent gossip metrics
 curl http://localhost:9090/metrics | grep opengslb_gossip
+
+# Review agent logs
+journalctl -u opengslb | grep -i "gossip\|heartbeat"
+```
+
+### Agent Health Checks Not Running
+
+**Symptoms:**
+- No health check metrics for agent backends
+- Backend status unknown
+
+**Possible Causes:**
+
+1. **Backends not configured**
+   ```yaml
+   agent:
+     backends:
+       - service: "my-service"
+         address: "127.0.0.1"
+         port: 8080
+         health_check:
+           type: http
+           path: /health
+   ```
+
+2. **Health check interval too long**
+   ```yaml
+   agent:
+     backends:
+       - service: "my-service"
+         health_check:
+           interval: 10s  # Default may be longer
+   ```
+
+**Solutions:**
+```bash
+# Check health check status
+curl http://localhost:9090/metrics | grep opengslb_health_check
+
+# Review agent backend status
+journalctl -u opengslb | grep -i "backend\|health"
+```
+
+### Agent Certificate Issues
+
+**Symptoms:**
+- Agent fails to start with certificate errors
+- Gossip connection rejected
+
+**Possible Causes:**
+
+1. **Certificate paths incorrect**
+   ```yaml
+   agent:
+     identity:
+       cert_path: /var/lib/opengslb/agent.crt
+       key_path: /var/lib/opengslb/agent.key
+   ```
+
+2. **Certificate permissions**
+   ```bash
+   # Check file permissions
+   ls -la /var/lib/opengslb/agent.*
+
+   # Fix permissions
+   chmod 600 /var/lib/opengslb/agent.key
+   chmod 644 /var/lib/opengslb/agent.crt
+   ```
+
+3. **Certificate not trusted by Overwatch**
+   - Ensure agent tokens are configured on Overwatch
+
+---
+
+## Overwatch Mode Issues
+
+### Backends Not Registering
+
+**Symptoms:**
+- Overwatch shows no backends
+- Agent heartbeats not received
+
+**Possible Causes:**
+
+1. **Gossip port not accessible**
+   ```bash
+   # Check gossip listener
+   ss -tlnp | grep 7946
+
+   # Test from agent
+   nc -zv overwatch-ip 7946
+   ```
+
+2. **Agent tokens not configured**
+   ```yaml
+   overwatch:
+     agent_tokens:
+       my-service: "service-token-here"
+   ```
+
+3. **Encryption key mismatch**
+   - All agents and Overwatch nodes must use the same key
+
+**Solutions:**
+```bash
+# Check Overwatch backend registry
+curl http://localhost:8080/api/v1/overwatch/backends | jq
 
 # Review gossip logs
 journalctl -u opengslb | grep -i gossip
 ```
 
-### Overwatch Veto Not Working
+### External Validation Disagreements
 
 **Symptoms:**
-- Agent claims server healthy
-- External checks failing
-- Server still receiving traffic
+- Overwatch validation disagrees with agent claims
+- Backend marked unhealthy despite agent claiming healthy
 
-**Possible Causes:**
+**This is expected behavior.** Per ADR-015, Overwatch validation ALWAYS wins over agent claims.
 
-1. **Veto mode set to permissive**
-   ```yaml
-   cluster:
-     overwatch:
-       veto_mode: balanced  # or "strict"
-   ```
-
-2. **Veto threshold too high**
-   ```yaml
-   cluster:
-     overwatch:
-       veto_threshold: 3  # External failures before veto
-   ```
-
-3. **Not running as leader**
-   - Overwatch only runs on Raft leader
-
-**Solutions:**
+**Investigate disagreements:**
 ```bash
-# Check veto metrics
-curl http://localhost:9090/metrics | grep opengslb_overwatch_veto
+# Check validation status
+curl http://localhost:8080/api/v1/overwatch/backends | jq '.backends[] | select(.validation_healthy != .agent_healthy)'
 
-# Review overwatch logs
-journalctl -u opengslb | grep -i overwatch
+# Check validation metrics
+curl http://localhost:9090/metrics | grep opengslb_overwatch_validation
+
+# Review disagreement logs
+journalctl -u opengslb | grep -i "disagrees with agent"
 ```
 
-### Predictive Health Not Triggering
+**Possible causes of disagreement:**
+1. **Network path differences** - Overwatch can't reach backend that agent can
+2. **Different health check configuration** - Agent and Overwatch using different paths/ports
+3. **Intermittent failures** - Backend flapping, caught at different times
+
+### Backends Going Stale
 
 **Symptoms:**
-- High CPU/memory but no bleed signal
-- No predictive health metrics
+- Backends marked as `stale` status
+- `agent_last_seen` timestamp is old
 
 **Possible Causes:**
 
-1. **Predictive health disabled**
-   ```yaml
-   cluster:
-     predictive_health:
-       enabled: true
+1. **Agent stopped or crashed**
+   ```bash
+   # Check agent status on backend server
+   systemctl status opengslb
    ```
 
-2. **Thresholds not reached**
-   ```yaml
-   cluster:
-     predictive_health:
-       cpu:
-         threshold: 80  # Current CPU below this?
+2. **Network partition between agent and Overwatch**
+   ```bash
+   # Test connectivity from agent to Overwatch
+   nc -zv overwatch-ip 7946
    ```
 
-3. **Running in standalone mode**
-   - Predictive health only works in cluster mode
+3. **Stale threshold too aggressive**
+   ```yaml
+   overwatch:
+     stale:
+       threshold: 30s      # Time before marking stale
+       remove_after: 5m    # Time before removing
+   ```
 
 **Solutions:**
 ```bash
-# Check predictive metrics
-curl http://localhost:9090/metrics | grep opengslb_predictive
+# Check stale backends
+curl http://localhost:8080/api/v1/overwatch/backends?status=stale | jq
 
-# Review agent logs
-journalctl -u opengslb | grep -i predictive
+# Check stale metrics
+curl http://localhost:9090/metrics | grep opengslb_overwatch_stale
+```
+
+### Manual Override Not Working
+
+**Symptoms:**
+- Override API returns success but backend status unchanged
+- Override not persisting
+
+**Diagnostic Steps:**
+
+1. **Verify override was set:**
+   ```bash
+   curl http://localhost:8080/api/v1/overwatch/backends | jq '.backends[] | select(.override_status != null)'
+   ```
+
+2. **Check override takes precedence:**
+   - Override > Validation > Staleness > Agent claim
+   - Backend must not be stale for override to show in effective status
+
+3. **Review persistence:**
+   ```bash
+   # Check if bbolt store is working
+   journalctl -u opengslb | grep -i "store\|persist"
+   ```
+
+**Setting an override:**
+```bash
+# Force backend healthy
+curl -X POST http://localhost:8080/api/v1/overwatch/backends/my-service/10.0.1.10/80/override \
+  -H "Content-Type: application/json" \
+  -H "X-User: admin" \
+  -d '{"healthy": true, "reason": "maintenance bypass"}'
+
+# Clear override
+curl -X DELETE http://localhost:8080/api/v1/overwatch/backends/my-service/10.0.1.10/80/override
 ```
 
 ---
@@ -525,7 +554,7 @@ cat /etc/os-release
 opengslb --version
 
 # Configuration (sanitize secrets)
-cat /etc/opengslb/config.yaml | grep -v key
+cat /etc/opengslb/config.yaml | grep -v key | grep -v token
 
 # Metrics snapshot
 curl http://localhost:9090/metrics > metrics.txt
@@ -533,9 +562,9 @@ curl http://localhost:9090/metrics > metrics.txt
 # Recent logs
 journalctl -u opengslb --since "1 hour ago" > logs.txt
 
-# Cluster status (if applicable)
-curl http://localhost:8080/api/v1/cluster/status > cluster-status.json
-curl http://localhost:8080/api/v1/cluster/members > cluster-members.json
+# Overwatch status (if applicable)
+curl http://localhost:8080/api/v1/overwatch/backends > backends.json
+curl http://localhost:8080/api/v1/overwatch/stats > stats.json
 curl http://localhost:8080/api/v1/health/servers > health-status.json
 ```
 

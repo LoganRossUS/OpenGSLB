@@ -8,185 +8,410 @@ package store
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/loganrossus/OpenGSLB/pkg/cluster"
 )
 
-func TestBboltStore(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "kv.db")
+// ADR-015: Removed Raft store tests - only bbolt store remains
+
+func TestBboltStore_GetSet(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
 
 	store, err := NewBboltStore(dbPath)
 	if err != nil {
-		t.Fatalf("NewBboltStore failed: %v", err)
+		t.Fatalf("failed to create store: %v", err)
 	}
 	defer store.Close()
 
-	runStoreTests(t, store)
+	ctx := context.Background()
+
+	// Test Set
+	err = store.Set(ctx, "test-key", []byte("test-value"))
+	if err != nil {
+		t.Fatalf("failed to set: %v", err)
+	}
+
+	// Test Get
+	val, err := store.Get(ctx, "test-key")
+	if err != nil {
+		t.Fatalf("failed to get: %v", err)
+	}
+	if string(val) != "test-value" {
+		t.Errorf("expected 'test-value', got '%s'", string(val))
+	}
 }
 
-func TestRaftStore(t *testing.T) {
-	// This test requires a full Raft setup, which is heavy.
-	// We'll set up a single-node cluster.
-	dir := t.TempDir()
+func TestBboltStore_GetNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
 
-	// Create minimal config
-	cfg := cluster.DefaultConfig()
-	cfg.NodeID = "test-node"
-	cfg.BindAddress = "127.0.0.1:0" // Ephemeral port
-	cfg.DataDir = dir
-	cfg.Bootstrap = true
-
-	// Use a specific port for stability
-	cfg.BindAddress = "127.0.0.1:18088"
-
-	node, err := cluster.NewRaftNode(cfg, nil)
+	store, err := NewBboltStore(dbPath)
 	if err != nil {
-		t.Skipf("Skipping RaftStore test due to node creation failure: %v", err)
-		return
+		t.Fatalf("failed to create store: %v", err)
 	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Test Get non-existent key - should return ErrKeyNotFound
+	_, err = store.Get(ctx, "non-existent")
+	if err != ErrKeyNotFound {
+		t.Errorf("expected ErrKeyNotFound, got %v", err)
+	}
+}
+
+func TestBboltStore_Delete(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	store, err := NewBboltStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Set a value
+	err = store.Set(ctx, "delete-key", []byte("to-be-deleted"))
+	if err != nil {
+		t.Fatalf("failed to set: %v", err)
+	}
+
+	// Verify it exists
+	val, err := store.Get(ctx, "delete-key")
+	if err != nil {
+		t.Fatalf("failed to get: %v", err)
+	}
+	if val == nil {
+		t.Fatal("key should exist before delete")
+	}
+
+	// Delete
+	err = store.Delete(ctx, "delete-key")
+	if err != nil {
+		t.Fatalf("failed to delete: %v", err)
+	}
+
+	// Verify it's gone
+	_, err = store.Get(ctx, "delete-key")
+	if err != ErrKeyNotFound {
+		t.Errorf("expected ErrKeyNotFound after delete, got %v", err)
+	}
+}
+
+func TestBboltStore_List(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	store, err := NewBboltStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Set multiple keys with prefix
+	testKeys := []string{
+		"servers/us-east/server1",
+		"servers/us-east/server2",
+		"servers/us-west/server1",
+		"domains/example.com",
+	}
+
+	for _, key := range testKeys {
+		err = store.Set(ctx, key, []byte("value"))
+		if err != nil {
+			t.Fatalf("failed to set %s: %v", key, err)
+		}
+	}
+
+	// List with prefix
+	pairs, err := store.List(ctx, "servers/us-east/")
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+
+	if len(pairs) != 2 {
+		t.Errorf("expected 2 pairs with prefix 'servers/us-east/', got %d", len(pairs))
+	}
+
+	// List all servers
+	pairs, err = store.List(ctx, "servers/")
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+
+	if len(pairs) != 3 {
+		t.Errorf("expected 3 pairs with prefix 'servers/', got %d", len(pairs))
+	}
+}
+
+func TestBboltStore_Persistence(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// Create store and write data
+	store, err := NewBboltStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	ctx := context.Background()
+	err = store.Set(ctx, "persistent-key", []byte("persistent-value"))
+	if err != nil {
+		t.Fatalf("failed to set: %v", err)
+	}
+
+	// Close store
+	err = store.Close()
+	if err != nil {
+		t.Fatalf("failed to close: %v", err)
+	}
+
+	// Reopen store
+	store2, err := NewBboltStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to reopen store: %v", err)
+	}
+	defer store2.Close()
+
+	// Verify data persisted
+	val, err := store2.Get(ctx, "persistent-key")
+	if err != nil {
+		t.Fatalf("failed to get after reopen: %v", err)
+	}
+	if string(val) != "persistent-value" {
+		t.Errorf("expected 'persistent-value', got '%s'", string(val))
+	}
+}
+
+func TestBboltStore_Watch(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	store, err := NewBboltStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := node.Start(ctx); err != nil {
-		t.Skipf("Skipping RaftStore test due to start failure: %v", err)
-		return
+	// Start watching
+	watchCh, err := store.Watch(ctx, "watch/")
+	if err != nil {
+		t.Fatalf("failed to watch: %v", err)
 	}
-	defer node.Stop(context.Background())
 
-	// Wait for leader election
-	time.Sleep(2 * time.Second)
-	if !node.IsLeader() {
-		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 5*time.Second)
-		defer timeoutCancel()
-		if err := node.WaitForLeader(timeoutCtx); err != nil {
-			t.Skipf("Skipping RaftStore test: failed to become leader: %v", err)
-			return
+	// Set a value that matches the prefix
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		store.Set(context.Background(), "watch/key1", []byte("value1"))
+	}()
+
+	// Wait for event
+	select {
+	case event := <-watchCh:
+		if event.Type != EventPut {
+			t.Errorf("expected EventPut, got %v", event.Type)
 		}
+		if event.Key != "watch/key1" {
+			t.Errorf("expected key 'watch/key1', got '%s'", event.Key)
+		}
+		if string(event.Value) != "value1" {
+			t.Errorf("expected value 'value1', got '%s'", string(event.Value))
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout waiting for watch event")
 	}
-
-	store := NewRaftStore(node)
-	defer store.Close()
-
-	runStoreTests(t, store)
 }
 
-func runStoreTests(t *testing.T, store Store) {
+func TestFactory_BBolt(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cfg := Config{
+		Type: StoreBBolt,
+		Path: dbPath,
+	}
+
+	store, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create store via factory: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	err = store.Set(ctx, "factory-key", []byte("factory-value"))
+	if err != nil {
+		t.Fatalf("failed to set via factory-created store: %v", err)
+	}
+}
+
+func TestFactory_DefaultToBBolt(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cfg := Config{
+		Type: "", // Empty should default to bbolt
+		Path: dbPath,
+	}
+
+	store, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create store with empty type: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	err = store.Set(ctx, "default-key", []byte("default-value"))
+	if err != nil {
+		t.Fatalf("failed to set: %v", err)
+	}
+}
+
+func TestFactory_UnsupportedType(t *testing.T) {
+	cfg := Config{
+		Type: "unsupported",
+		Path: "/tmp/test.db",
+	}
+
+	_, err := New(cfg)
+	if err == nil {
+		t.Error("expected error for unsupported store type")
+	}
+}
+
+func TestBboltStore_ConcurrentAccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	store, err := NewBboltStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	done := make(chan bool)
+
+	// Concurrent writers
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			for j := 0; j < 100; j++ {
+				key := "concurrent-key"
+				val := []byte("value")
+				_ = store.Set(ctx, key, val)
+			}
+			done <- true
+		}(i)
+	}
+
+	// Wait for all goroutines
+	for i := 0; i < 10; i++ {
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout waiting for concurrent operations")
+		}
+	}
+}
+
+func TestBboltStore_LargeValue(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	store, err := NewBboltStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
 	ctx := context.Background()
 
-	// 1. Set and Get
-	t.Run("Set and Get", func(t *testing.T) {
-		key := "foo"
-		val := []byte("bar")
-		if err := store.Set(ctx, key, val); err != nil {
-			t.Fatalf("Set failed: %v", err)
-		}
+	// Create 1MB value
+	largeValue := make([]byte, 1024*1024)
+	for i := range largeValue {
+		largeValue[i] = byte(i % 256)
+	}
 
-		got, err := store.Get(ctx, key)
+	err = store.Set(ctx, "large-key", largeValue)
+	if err != nil {
+		t.Fatalf("failed to set large value: %v", err)
+	}
+
+	val, err := store.Get(ctx, "large-key")
+	if err != nil {
+		t.Fatalf("failed to get large value: %v", err)
+	}
+
+	if len(val) != len(largeValue) {
+		t.Errorf("expected %d bytes, got %d", len(largeValue), len(val))
+	}
+}
+
+func TestBboltStore_SpecialCharactersInKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	store, err := NewBboltStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	specialKeys := []string{
+		"key/with/slashes",
+		"key.with.dots",
+		"key-with-dashes",
+		"key_with_underscores",
+		"key:with:colons",
+	}
+
+	for _, key := range specialKeys {
+		err = store.Set(ctx, key, []byte("value"))
 		if err != nil {
-			t.Fatalf("Get failed: %v", err)
-		}
-		if string(got) != string(val) {
-			t.Errorf("Get = %s, want %s", string(got), string(val))
-		}
-	})
-
-	// 2. Update
-	t.Run("Update", func(t *testing.T) {
-		key := "foo"
-		val := []byte("baz")
-		if err := store.Set(ctx, key, val); err != nil {
-			t.Fatalf("Set failed: %v", err)
+			t.Errorf("failed to set key '%s': %v", key, err)
+			continue
 		}
 
-		got, err := store.Get(ctx, key)
+		val, err := store.Get(ctx, key)
 		if err != nil {
-			t.Fatalf("Get failed: %v", err)
-		}
-		if string(got) != string(val) {
-			t.Errorf("Get = %s, want %s", string(got), string(val))
-		}
-	})
-
-	// 3. List
-	t.Run("List", func(t *testing.T) {
-		// Clear previous
-		_ = store.Delete(ctx, "foo")
-
-		data := map[string]string{
-			"prefix/1": "val1",
-			"prefix/2": "val2",
-			"other/1":  "val3",
-		}
-		for k, v := range data {
-			if err := store.Set(ctx, k, []byte(v)); err != nil {
-				t.Fatalf("Set failed: %v", err)
-			}
+			t.Errorf("failed to get key '%s': %v", key, err)
+			continue
 		}
 
-		list, err := store.List(ctx, "prefix/")
-		if err != nil {
-			t.Fatalf("List failed: %v", err)
+		if string(val) != "value" {
+			t.Errorf("wrong value for key '%s': expected 'value', got '%s'", key, string(val))
 		}
-		if len(list) != 2 {
-			t.Errorf("List returned %d items, want 2", len(list))
-		}
-	})
+	}
+}
 
-	// 4. Watch
-	t.Run("Watch", func(t *testing.T) {
-		watchCtx, watchCancel := context.WithCancel(ctx)
-		defer watchCancel()
+func TestBboltStore_FilePermissions(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping permission test when running as root")
+	}
 
-		prefix := "watch/"
-		ch, err := store.Watch(watchCtx, prefix)
-		if err != nil {
-			t.Fatalf("Watch failed: %v", err)
-		}
+	tmpDir := t.TempDir()
 
-		// Set value in a goroutine
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			store.Set(ctx, "watch/foo", []byte("bar"))
-		}()
+	// Make directory read-only
+	err := os.Chmod(tmpDir, 0444)
+	if err != nil {
+		t.Fatalf("failed to change permissions: %v", err)
+	}
+	defer os.Chmod(tmpDir, 0755)
 
-		select {
-		case ev := <-ch:
-			if ev.Type != EventPut {
-				t.Errorf("Event type = %v, want Put", ev.Type)
-			}
-			if ev.Key != "watch/foo" {
-				t.Errorf("Event key = %s, want watch/foo", ev.Key)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("Timeout waiting for watch event")
-		}
-	})
-
-	// 5. Delete
-	t.Run("Delete", func(t *testing.T) {
-		key := "del"
-		if err := store.Set(ctx, key, []byte("val")); err != nil {
-			t.Fatalf("Set failed: %v", err)
-		}
-		if err := store.Delete(ctx, key); err != nil {
-			t.Fatalf("Delete failed: %v", err)
-		}
-		_, err := store.Get(ctx, key)
-		if err != ErrKeyNotFound {
-			t.Errorf("Get after delete error = %v, want ErrKeyNotFound", err)
-		}
-	})
-
-	// 6. Get non-existent key
-	t.Run("Get non-existent", func(t *testing.T) {
-		_, err := store.Get(ctx, "nonexistent-key-12345")
-		if err != ErrKeyNotFound {
-			t.Errorf("Get non-existent error = %v, want ErrKeyNotFound", err)
-		}
-	})
+	dbPath := filepath.Join(tmpDir, "test.db")
+	_, err = NewBboltStore(dbPath)
+	if err == nil {
+		t.Error("expected error creating store in read-only directory")
+	}
 }

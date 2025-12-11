@@ -16,6 +16,228 @@ chmod 600 /etc/opengslb/config.yaml
 
 If the file has insecure permissions, OpenGSLB will refuse to start and display an error message.
 
+## Runtime Mode (ADR-015)
+
+OpenGSLB operates in one of two modes:
+
+| Mode | Description |
+|------|-------------|
+| `overwatch` | DNS-serving, health-validating authority node. Receives agent heartbeats, validates health claims, serves DNS. |
+| `agent` | Health-reporting agent on application servers. Monitors local backends, gossips status to Overwatch nodes. |
+
+```yaml
+# Set runtime mode
+mode: overwatch  # or "agent"
+```
+
+If `mode` is not specified, OpenGSLB defaults to `overwatch` mode.
+
+## Agent Mode Configuration
+
+Agent mode runs on application servers to monitor local backends and report health to Overwatch nodes.
+
+```yaml
+mode: agent
+
+agent:
+  identity:
+    service_token: "pre-shared-token-for-auth"
+    region: "us-east-1"
+    cert_path: /var/lib/opengslb/agent.crt
+    key_path: /var/lib/opengslb/agent.key
+
+  backends:
+    - service: "web-service"
+      address: "127.0.0.1"
+      port: 8080
+      weight: 100
+      health_check:
+        type: http
+        interval: 10s
+        timeout: 5s
+        path: /health
+        failure_threshold: 3
+        success_threshold: 2
+
+  gossip:
+    encryption_key: "base64-encoded-32-byte-key"
+    overwatch_nodes:
+      - "overwatch-1.internal:7946"
+      - "overwatch-2.internal:7946"
+
+  heartbeat:
+    interval: 10s
+    missed_threshold: 3
+
+  predictive:
+    enabled: true
+    cpu:
+      threshold: 80
+      bleed_duration: 30s
+    memory:
+      threshold: 85
+      bleed_duration: 30s
+    error_rate:
+      threshold: 5
+      window: 60s
+      bleed_duration: 30s
+```
+
+### Agent Identity Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `service_token` | string | Required | Pre-shared token for initial authentication with Overwatch |
+| `region` | string | Required | Geographic region this agent belongs to |
+| `cert_path` | string | `/var/lib/opengslb/agent.crt` | Path to store/load agent certificate |
+| `key_path` | string | `/var/lib/opengslb/agent.key` | Path to store/load agent private key |
+
+### Agent Backend Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `service` | string | Required | Service name (maps to DNS domain) |
+| `address` | string | Required | Backend server IP address |
+| `port` | integer | Required | Backend server port |
+| `weight` | integer | `100` | Routing weight (1-1000) |
+| `health_check` | object | Required | Health check configuration |
+
+### Agent Gossip Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `encryption_key` | string | Required | 32-byte base64-encoded encryption key |
+| `overwatch_nodes` | list | Required | List of Overwatch gossip addresses |
+
+Generate an encryption key with:
+```bash
+openssl rand -base64 32
+```
+
+### Agent Heartbeat Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `interval` | duration | `10s` | Time between heartbeat messages |
+| `missed_threshold` | integer | `3` | Missed heartbeats before deregistration |
+
+### Agent Predictive Health Settings
+
+Predictive health allows agents to signal impending failures before they impact traffic.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `false` | Enable predictive health monitoring |
+| `cpu.threshold` | float | `80` | CPU usage percentage to trigger bleed |
+| `cpu.bleed_duration` | duration | `30s` | Duration to gradually drain traffic |
+| `memory.threshold` | float | `85` | Memory usage percentage to trigger bleed |
+| `memory.bleed_duration` | duration | `30s` | Duration to gradually drain traffic |
+| `error_rate.threshold` | float | `5` | Error rate percentage to trigger bleed |
+| `error_rate.window` | duration | `60s` | Window for error rate calculation |
+| `error_rate.bleed_duration` | duration | `30s` | Duration to gradually drain traffic |
+
+## Overwatch Mode Configuration
+
+Overwatch mode serves DNS and validates health claims from agents.
+
+```yaml
+mode: overwatch
+
+overwatch:
+  identity:
+    node_id: "overwatch-1"
+    region: "us-east-1"
+
+  agent_tokens:
+    web-service: "pre-shared-token-for-web-service"
+    api-service: "pre-shared-token-for-api-service"
+
+  gossip:
+    bind_address: "0.0.0.0:7946"
+    encryption_key: "base64-encoded-32-byte-key"
+    probe_interval: 1s
+    probe_timeout: 500ms
+    gossip_interval: 200ms
+
+  validation:
+    enabled: true
+    check_interval: 30s
+    check_timeout: 5s
+
+  stale:
+    threshold: 30s
+    remove_after: 5m
+
+  data_dir: /var/lib/opengslb
+
+  dnssec:
+    enabled: true
+    algorithm: ECDSAP256SHA256
+```
+
+### Overwatch Identity Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `node_id` | string | hostname | Unique identifier for this Overwatch node |
+| `region` | string | (empty) | Geographic region this Overwatch serves |
+
+### Overwatch Agent Tokens
+
+Map of service names to authentication tokens. Agents must provide matching tokens to register.
+
+```yaml
+overwatch:
+  agent_tokens:
+    web-service: "token-for-web"
+    api-service: "token-for-api"
+```
+
+### Overwatch Gossip Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `bind_address` | string | `0.0.0.0:7946` | Address to listen for agent gossip |
+| `encryption_key` | string | Required | 32-byte base64-encoded key (must match agents) |
+| `probe_interval` | duration | `1s` | Interval between failure probes |
+| `probe_timeout` | duration | `500ms` | Timeout for a single probe |
+| `gossip_interval` | duration | `200ms` | Interval between gossip messages |
+
+### Overwatch Validation Settings
+
+External validation allows Overwatch to independently verify agent health claims.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `true` | Enable external health validation |
+| `check_interval` | duration | `30s` | Frequency of validation checks |
+| `check_timeout` | duration | `5s` | Timeout for validation checks |
+
+**Important:** Per ADR-015, Overwatch validation ALWAYS wins over agent claims. This prevents agents from falsely claiming healthy status.
+
+### Overwatch Stale Settings
+
+Configure when backends are considered stale (no recent heartbeat from agent).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `threshold` | duration | `30s` | Time without heartbeat before marking stale |
+| `remove_after` | duration | `5m` | Time after which stale backends are removed |
+
+### Overwatch Data Directory
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `data_dir` | string | `/var/lib/opengslb` | Directory for persistent data (bbolt database) |
+
+### Overwatch DNSSEC Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `true` | Enable DNSSEC signing |
+| `security_acknowledgment` | string | (empty) | Required if disabling DNSSEC |
+| `algorithm` | string | `ECDSAP256SHA256` | DNSSEC signing algorithm |
+
 ## Configuration Sections
 
 ### DNS Configuration

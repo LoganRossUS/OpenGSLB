@@ -11,6 +11,16 @@
 # When a higher-priority server recovers, traffic automatically
 # returns to it (return-to-primary behavior).
 
+mode: overwatch
+
+# Gossip encryption is MANDATORY for all deployments
+# Generate key with: openssl rand -base64 32
+overwatch:
+  gossip:
+    encryption_key: "REPLACE_WITH_YOUR_32_BYTE_BASE64_KEY"
+  dnssec:
+    enabled: true
+
 dns:
   listen_address: ":53"
   default_ttl: 60
