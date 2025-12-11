@@ -20,11 +20,13 @@ import (
 
 // Handler processes DNS queries.
 type Handler struct {
-	mu         sync.RWMutex
-	registry   *Registry
-	health     HealthProvider
-	defaultTTL uint32
-	logger     *slog.Logger
+	mu            sync.RWMutex
+	registry      *Registry
+	health        HealthProvider
+	dnssecSigner  DNSSECSigner
+	dnssecEnabled bool
+	defaultTTL    uint32
+	logger        *slog.Logger
 }
 
 // NewHandler creates a new DNS handler.
@@ -36,10 +38,12 @@ func NewHandler(cfg HandlerConfig) *Handler {
 	}
 
 	return &Handler{
-		registry:   cfg.Registry,
-		health:     cfg.HealthProvider,
-		defaultTTL: cfg.DefaultTTL,
-		logger:     logger,
+		registry:      cfg.Registry,
+		health:        cfg.HealthProvider,
+		dnssecSigner:  cfg.DNSSECSigner,
+		dnssecEnabled: cfg.DNSSECEnabled,
+		defaultTTL:    cfg.DefaultTTL,
+		logger:        logger,
 	}
 }
 
@@ -74,13 +78,18 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		h.handleAQuery(m, qname, q)
 	case dns.TypeAAAA:
 		h.handleAAAAQuery(m, qname, q)
+	case dns.TypeDNSKEY:
+		h.handleDNSKEYQuery(m, qname, q)
 	default:
 		h.logger.Debug("unsupported query type", "name", qname, "type", qtype)
 		m.SetRcode(m, dns.RcodeNotImplemented)
 	}
 
-	status := dns.RcodeToString[m.Rcode]
-	h.writeResponse(w, m, start, status, qname)
+	// Sign the response if DNSSEC is enabled
+	signed := h.signResponse(m)
+
+	status := dns.RcodeToString[signed.Rcode]
+	h.writeResponse(w, signed, start, status, qname)
 }
 
 // handleAQuery processes A record queries (IPv4).
@@ -291,4 +300,55 @@ func (h *Handler) UpdateRegistry(registry *Registry) {
 	defer h.mu.Unlock()
 	h.registry = registry
 	h.logger.Info("DNS handler registry updated")
+}
+
+// handleDNSKEYQuery processes DNSKEY record queries.
+func (h *Handler) handleDNSKEYQuery(m *dns.Msg, qname string, q dns.Question) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	// Check if the domain exists in our registry
+	entry := h.registry.Lookup(qname)
+	if entry == nil {
+		h.logger.Debug("domain not found for DNSKEY query", "name", qname)
+		m.SetRcode(m, dns.RcodeNameError) // NXDOMAIN
+		return
+	}
+
+	// DNSKEY records are added by the signer during signResponse
+	// Just mark the query as successful - the signer will add the key
+	h.logger.Debug("resolved DNSKEY query", "domain", qname)
+}
+
+// signResponse signs the DNS response if DNSSEC is enabled.
+// Returns the original message if DNSSEC is disabled or signing fails.
+func (h *Handler) signResponse(m *dns.Msg) *dns.Msg {
+	if !h.dnssecEnabled || h.dnssecSigner == nil {
+		return m
+	}
+
+	// Call the signer - it handles all DNSSEC signing
+	signed, err := h.dnssecSigner.SignResponse(m)
+	if err != nil {
+		h.logger.Warn("failed to sign DNS response",
+			"error", err,
+		)
+		return m
+	}
+
+	// Type assert back to *dns.Msg
+	if signedMsg, ok := signed.(*dns.Msg); ok {
+		return signedMsg
+	}
+
+	return m
+}
+
+// SetDNSSECSigner sets the DNSSEC signer for signing responses.
+func (h *Handler) SetDNSSECSigner(signer DNSSECSigner, enabled bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.dnssecSigner = signer
+	h.dnssecEnabled = enabled
+	h.logger.Info("DNSSEC signer configured", "enabled", enabled)
 }

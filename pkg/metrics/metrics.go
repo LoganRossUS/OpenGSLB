@@ -160,6 +160,40 @@ var (
 	)
 )
 
+// Additional DNSSEC metrics (Stories 7 & 8)
+// Note: Core DNSSEC metrics (DNSSECEnabled, DNSSECSigningLatency, DNSSECKeyAgeSeconds)
+// are defined in cluster.go
+var (
+	// DNSSECSigningTotal counts DNSSEC signing operations by zone and result.
+	DNSSECSigningTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "dnssec_signing_operations_total",
+			Help:      "Total number of DNSSEC signing operations",
+		},
+		[]string{"zone", "result"},
+	)
+
+	// DNSSECKeysImported counts keys imported from peers.
+	DNSSECKeysImported = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "dnssec_keys_imported_total",
+			Help:      "Total number of DNSSEC keys imported from peers",
+		},
+		[]string{"peer"},
+	)
+
+	// DNSSECManagedZones tracks number of zones with DNSSEC keys.
+	DNSSECManagedZones = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "dnssec_managed_zones",
+			Help:      "Number of zones with DNSSEC keys",
+		},
+	)
+)
+
 // Predictive Health metrics
 var (
 	// PredictiveCPUPercent tracks current CPU utilization.
@@ -263,4 +297,35 @@ func SetPredictiveMetrics(cpu, memory, errorRate float64, bleeding bool) {
 	} else {
 		PredictiveBleeding.Set(0)
 	}
+}
+
+// RecordDNSSECSigning records a DNSSEC signing operation.
+// Uses DNSSECSigningTotal from this file and DNSSECSigningLatency from cluster.go.
+func RecordDNSSECSigning(zone string, durationSeconds float64, success bool) {
+	result := "success"
+	if !success {
+		result = "failure"
+	}
+	DNSSECSigningTotal.WithLabelValues(zone, result).Inc()
+	if success {
+		ObserveDNSSECSigningLatency(durationSeconds)
+	}
+}
+
+// RecordDNSSECKeySync records a key sync operation.
+// Uses metrics from both this file and cluster.go.
+func RecordDNSSECKeySync(peer string, success bool, keysImported int) {
+	if success {
+		RecordDNSSECKeySyncSuccess()
+	} else {
+		RecordDNSSECKeySyncFailure(peer)
+	}
+	if keysImported > 0 {
+		DNSSECKeysImported.WithLabelValues(peer).Add(float64(keysImported))
+	}
+}
+
+// SetDNSSECManagedZones sets the number of zones with DNSSEC keys.
+func SetDNSSECManagedZones(count int) {
+	DNSSECManagedZones.Set(float64(count))
 }
