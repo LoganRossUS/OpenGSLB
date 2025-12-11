@@ -48,12 +48,12 @@ func NewRouter(algorithm string) (Router, error) {
 
 // Factory creates routers with access to shared resources like geo resolver.
 type Factory struct {
-	geoResolver     *geo.Resolver
-	latencyProvider LatencyProvider
-	defaultRegion   string
-	maxLatencyMs    int
+	geoResolver       *geo.Resolver
+	latencyProvider   LatencyProvider
+	defaultRegion     string
+	maxLatencyMs      int
 	minLatencySamples int
-	logger          *slog.Logger
+	logger            *slog.Logger
 }
 
 // FactoryConfig contains configuration for creating a Factory.
