@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/loganrossus/OpenGSLB/pkg/geo"
+	"github.com/loganrossus/OpenGSLB/pkg/metrics"
 )
 
 // Context keys for geolocation routing.
@@ -21,6 +22,9 @@ type geoContextKey string
 const (
 	// ClientIPKey is the context key for the client IP address.
 	ClientIPKey geoContextKey = "clientIP"
+
+	// DomainKey is the context key for the domain being queried.
+	DomainKey geoContextKey = "domain"
 
 	// AlgorithmGeolocation is the algorithm name for geolocation routing.
 	AlgorithmGeolocation = "geolocation"
@@ -37,6 +41,19 @@ func GetClientIP(ctx context.Context) net.IP {
 		return ip
 	}
 	return nil
+}
+
+// WithDomain adds the domain name to the context for metric recording.
+func WithDomain(ctx context.Context, domain string) context.Context {
+	return context.WithValue(ctx, DomainKey, domain)
+}
+
+// GetDomain retrieves the domain from the context.
+func GetDomain(ctx context.Context) string {
+	if domain, ok := ctx.Value(DomainKey).(string); ok {
+		return domain
+	}
+	return ""
 }
 
 // GeoRouter implements geolocation-based server selection.
@@ -81,10 +98,16 @@ func (r *GeoRouter) Route(ctx context.Context, pool ServerPool) (*Server, error)
 		return nil, ErrNoHealthyServers
 	}
 
+	// Get domain from context for metrics
+	domain := GetDomain(ctx)
+
 	// Get client IP from context
 	clientIP := GetClientIP(ctx)
 	if clientIP == nil {
 		r.logger.Debug("no client IP in context, using round-robin fallback")
+		if domain != "" {
+			metrics.RecordGeoFallback(domain, "no_client_ip")
+		}
 		return r.fallback.Route(ctx, pool)
 	}
 
@@ -94,6 +117,9 @@ func (r *GeoRouter) Route(ctx context.Context, pool ServerPool) (*Server, error)
 
 	if resolver == nil {
 		r.logger.Warn("geo resolver not configured, using round-robin fallback")
+		if domain != "" {
+			metrics.RecordGeoFallback(domain, "no_resolver")
+		}
 		return r.fallback.Route(ctx, pool)
 	}
 
@@ -105,6 +131,20 @@ func (r *GeoRouter) Route(ctx context.Context, pool ServerPool) (*Server, error)
 		"region", match.Region,
 		"matchType", match.MatchType,
 	)
+
+	// Record metrics based on match type
+	if domain != "" {
+		switch match.MatchType {
+		case geo.MatchTypeCustomMapping:
+			metrics.RecordGeoCustomHit(domain, match.Region, match.MatchedCIDR)
+			metrics.RecordGeoRoutingDecision(domain, "", "", match.Region)
+		case geo.MatchTypeGeoIP:
+			metrics.RecordGeoRoutingDecision(domain, match.Country, match.Continent, match.Region)
+		case geo.MatchTypeDefault:
+			metrics.RecordGeoFallback(domain, "lookup_failed")
+			metrics.RecordGeoRoutingDecision(domain, "", "", match.Region)
+		}
+	}
 
 	// Find servers in the matched region
 	regionServers := r.filterByRegion(servers, match.Region)
@@ -120,6 +160,9 @@ func (r *GeoRouter) Route(ctx context.Context, pool ServerPool) (*Server, error)
 			"matchedRegion", match.Region,
 			"defaultRegion", r.defaultRegion,
 		)
+		if domain != "" {
+			metrics.RecordGeoFallback(domain, "no_servers_in_region")
+		}
 		defaultServers := r.filterByRegion(servers, r.defaultRegion)
 		if len(defaultServers) > 0 {
 			defaultPool := NewSimpleServerPool(defaultServers)
@@ -131,6 +174,9 @@ func (r *GeoRouter) Route(ctx context.Context, pool ServerPool) (*Server, error)
 	r.logger.Debug("no servers in region or default, using any available server",
 		"matchedRegion", match.Region,
 	)
+	if domain != "" {
+		metrics.RecordGeoFallback(domain, "no_match")
+	}
 	return r.fallback.Route(ctx, pool)
 }
 
