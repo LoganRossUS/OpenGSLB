@@ -26,6 +26,11 @@ type Config struct {
 	// Mode specifies the runtime mode: "agent" or "overwatch" (ADR-015)
 	Mode RuntimeMode `yaml:"mode"`
 
+	// Includes is a list of glob patterns for additional configuration files
+	// to merge into this configuration. Patterns are relative to the main config file.
+	// Example: ["regions/*.yaml", "domains/**/*.yaml"]
+	Includes []string `yaml:"includes,omitempty"`
+
 	// Agent configuration (only used when mode=agent)
 	Agent AgentConfig `yaml:"agent"`
 

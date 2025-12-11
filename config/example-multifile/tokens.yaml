@@ -1,0 +1,29 @@
+# Agent Authentication Tokens
+# ==========================
+#
+# SECURITY WARNING: This file contains sensitive authentication tokens.
+# Ensure proper file permissions: chmod 600 tokens.yaml
+#
+# Each service deployed as an agent needs a token to authenticate
+# with the Overwatch node. Tokens should be:
+# - At least 32 characters
+# - Unique per service
+# - Generated securely (e.g., openssl rand -base64 32)
+#
+# To add a new service:
+# 1. Generate a token: openssl rand -base64 32
+# 2. Add it here: service_name: "generated-token"
+# 3. Configure the agent with the same token
+# 4. Send SIGHUP to Overwatch to reload: kill -HUP $(pidof opengslb)
+
+overwatch:
+  agent_tokens:
+    # Team A services
+    team-a-app: "REPLACE_WITH_SECURE_TOKEN_FOR_TEAM_A_APP"
+
+    # Team B services
+    team-b-api: "REPLACE_WITH_SECURE_TOKEN_FOR_TEAM_B_API"
+    team-b-admin-api: "REPLACE_WITH_SECURE_TOKEN_FOR_TEAM_B_ADMIN_API"
+
+    # Shared infrastructure services
+    monitoring: "REPLACE_WITH_SECURE_TOKEN_FOR_MONITORING"

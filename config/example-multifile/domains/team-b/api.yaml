@@ -1,0 +1,23 @@
+# Team B - API Service Domain Configuration
+# Managed by: Team B
+# Contact: team-b@example.com
+# Last updated: 2025-12-11
+#
+# This domain serves the API backend for mobile and partner integrations.
+# Uses failover routing for high availability with us-east-1 as primary.
+
+domains:
+  - name: api.gslb.example.com
+    routing_algorithm: failover
+    regions:
+      - us-east-1   # Primary
+      - us-west-2   # Secondary
+      - eu-west-1   # Tertiary
+    ttl: 15         # Lower TTL for faster failover
+
+  # Internal admin API - only available in us-east-1
+  - name: admin-api.gslb.example.com
+    routing_algorithm: round-robin
+    regions:
+      - us-east-1
+    ttl: 60
