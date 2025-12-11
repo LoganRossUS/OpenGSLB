@@ -15,23 +15,23 @@ import (
 
 // BackendResponse represents a backend from the API.
 type BackendResponse struct {
-	Service          string        `json:"service"`
-	Address          string        `json:"address"`
-	Port             int           `json:"port"`
-	Weight           int           `json:"weight"`
-	Region           string        `json:"region"`
-	AgentID          string        `json:"agent_id"`
-	AgentHealthy     bool          `json:"agent_healthy"`
-	AgentLastSeen    time.Time     `json:"agent_last_seen"`
-	ValidationHealthy *bool        `json:"validation_healthy,omitempty"`
-	ValidationLastCheck time.Time  `json:"validation_last_check,omitempty"`
-	ValidationError  string        `json:"validation_error,omitempty"`
-	OverrideStatus   *bool         `json:"override_status,omitempty"`
-	OverrideReason   string        `json:"override_reason,omitempty"`
-	OverrideBy       string        `json:"override_by,omitempty"`
-	EffectiveStatus  string        `json:"effective_status"`
-	SmoothedLatency  time.Duration `json:"smoothed_latency,omitempty"`
-	LatencySamples   int           `json:"latency_samples,omitempty"`
+	Service             string        `json:"service"`
+	Address             string        `json:"address"`
+	Port                int           `json:"port"`
+	Weight              int           `json:"weight"`
+	Region              string        `json:"region"`
+	AgentID             string        `json:"agent_id"`
+	AgentHealthy        bool          `json:"agent_healthy"`
+	AgentLastSeen       time.Time     `json:"agent_last_seen"`
+	ValidationHealthy   *bool         `json:"validation_healthy,omitempty"`
+	ValidationLastCheck time.Time     `json:"validation_last_check,omitempty"`
+	ValidationError     string        `json:"validation_error,omitempty"`
+	OverrideStatus      *bool         `json:"override_status,omitempty"`
+	OverrideReason      string        `json:"override_reason,omitempty"`
+	OverrideBy          string        `json:"override_by,omitempty"`
+	EffectiveStatus     string        `json:"effective_status"`
+	SmoothedLatency     time.Duration `json:"smoothed_latency,omitempty"`
+	LatencySamples      int           `json:"latency_samples,omitempty"`
 }
 
 // BackendsListResponse is the API response for /api/v1/overwatch/backends.

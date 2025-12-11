@@ -128,5 +128,5 @@ Examples:
 func init() {
 	configCmd.AddCommand(configValidateCmd)
 	configValidateCmd.Flags().StringVarP(&configFile, "config", "c", "", "Path to configuration file (required)")
-	configValidateCmd.MarkFlagRequired("config")
+	_ = configValidateCmd.MarkFlagRequired("config")
 }

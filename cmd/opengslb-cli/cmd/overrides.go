@@ -171,5 +171,5 @@ func init() {
 
 	overridesSetCmd.Flags().BoolVar(&overrideHealthy, "healthy", false, "Set health status (true or false)")
 	overridesSetCmd.Flags().StringVar(&overrideReason, "reason", "", "Reason for the override")
-	overridesSetCmd.MarkFlagRequired("reason")
+	_ = overridesSetCmd.MarkFlagRequired("reason")
 }

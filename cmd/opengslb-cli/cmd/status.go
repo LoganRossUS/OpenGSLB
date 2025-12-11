@@ -24,31 +24,31 @@ type ReadyResponse struct {
 
 // OverwatchStatsResponse is the API response for /api/v1/overwatch/stats.
 type OverwatchStatsResponse struct {
-	Mode          string    `json:"mode"`
-	StartedAt     time.Time `json:"started_at"`
-	AgentCount    int       `json:"agent_count"`
-	BackendCount  int       `json:"backend_count"`
-	HealthyCount  int       `json:"healthy_count"`
-	UnhealthyCount int      `json:"unhealthy_count"`
-	StaleCount    int       `json:"stale_count"`
-	DomainCount   int       `json:"domain_count"`
-	DNSSECEnabled bool      `json:"dnssec_enabled"`
-	Zones         []string  `json:"zones"`
+	Mode           string    `json:"mode"`
+	StartedAt      time.Time `json:"started_at"`
+	AgentCount     int       `json:"agent_count"`
+	BackendCount   int       `json:"backend_count"`
+	HealthyCount   int       `json:"healthy_count"`
+	UnhealthyCount int       `json:"unhealthy_count"`
+	StaleCount     int       `json:"stale_count"`
+	DomainCount    int       `json:"domain_count"`
+	DNSSECEnabled  bool      `json:"dnssec_enabled"`
+	Zones          []string  `json:"zones"`
 }
 
 // StatusOutput is the combined status output.
 type StatusOutput struct {
-	Status        string    `json:"status"`
-	Mode          string    `json:"mode"`
-	Uptime        string    `json:"uptime"`
-	AgentCount    int       `json:"agent_count"`
-	BackendCount  int       `json:"backend_count"`
-	HealthyCount  int       `json:"healthy_count"`
+	Status         string   `json:"status"`
+	Mode           string   `json:"mode"`
+	Uptime         string   `json:"uptime"`
+	AgentCount     int      `json:"agent_count"`
+	BackendCount   int      `json:"backend_count"`
+	HealthyCount   int      `json:"healthy_count"`
 	UnhealthyCount int      `json:"unhealthy_count"`
-	StaleCount    int       `json:"stale_count"`
-	DomainCount   int       `json:"domain_count"`
-	DNSSECEnabled bool      `json:"dnssec_enabled"`
-	Zones         []string  `json:"zones"`
+	StaleCount     int      `json:"stale_count"`
+	DomainCount    int      `json:"domain_count"`
+	DNSSECEnabled  bool     `json:"dnssec_enabled"`
+	Zones          []string `json:"zones"`
 }
 
 var statusCmd = &cobra.Command{
@@ -87,17 +87,17 @@ var statusCmd = &cobra.Command{
 
 		if jsonOutput {
 			output := StatusOutput{
-				Status:        statusStr,
-				Mode:          stats.Mode,
-				Uptime:        uptime,
-				AgentCount:    stats.AgentCount,
-				BackendCount:  stats.BackendCount,
-				HealthyCount:  stats.HealthyCount,
+				Status:         statusStr,
+				Mode:           stats.Mode,
+				Uptime:         uptime,
+				AgentCount:     stats.AgentCount,
+				BackendCount:   stats.BackendCount,
+				HealthyCount:   stats.HealthyCount,
 				UnhealthyCount: stats.UnhealthyCount,
-				StaleCount:    stats.StaleCount,
-				DomainCount:   stats.DomainCount,
-				DNSSECEnabled: stats.DNSSECEnabled,
-				Zones:         stats.Zones,
+				StaleCount:     stats.StaleCount,
+				DomainCount:    stats.DomainCount,
+				DNSSECEnabled:  stats.DNSSECEnabled,
+				Zones:          stats.Zones,
 			}
 			return formatter.Print(output)
 		}
