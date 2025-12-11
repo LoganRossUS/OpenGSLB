@@ -10,6 +10,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -19,7 +21,9 @@ import (
 	"github.com/loganrossus/OpenGSLB/pkg/dns"
 	"github.com/loganrossus/OpenGSLB/pkg/health"
 	"github.com/loganrossus/OpenGSLB/pkg/metrics"
+	"github.com/loganrossus/OpenGSLB/pkg/overwatch"
 	"github.com/loganrossus/OpenGSLB/pkg/routing"
+	"github.com/loganrossus/OpenGSLB/pkg/store"
 	"github.com/loganrossus/OpenGSLB/pkg/version"
 )
 
@@ -37,6 +41,12 @@ type Application struct {
 	healthManager *health.Manager
 	metricsServer *metrics.Server
 	apiServer     *api.Server
+
+	// Overwatch mode components (Story 3)
+	backendRegistry   *overwatch.Registry
+	overwatchValidator *overwatch.Validator
+	gossipHandler     *overwatch.GossipHandler
+	overwatchStore    store.Store
 
 	// Agent mode components (Story 2)
 	agentInstance *agent.Agent
@@ -141,6 +151,21 @@ func (a *Application) initializeOverwatchMode() error {
 		return fmt.Errorf("failed to initialize health manager: %w", err)
 	}
 
+	// Initialize backend registry (Story 3)
+	if err := a.initializeBackendRegistry(); err != nil {
+		return fmt.Errorf("failed to initialize backend registry: %w", err)
+	}
+
+	// Initialize external validator (Story 3)
+	if err := a.initializeValidator(); err != nil {
+		return fmt.Errorf("failed to initialize validator: %w", err)
+	}
+
+	// Initialize gossip handler (Story 3 - placeholder for Story 4)
+	if err := a.initializeGossipHandler(); err != nil {
+		return fmt.Errorf("failed to initialize gossip handler: %w", err)
+	}
+
 	// Initialize DNS server
 	if err := a.initializeDNSServer(); err != nil {
 		return fmt.Errorf("failed to initialize DNS server: %w", err)
@@ -156,13 +181,10 @@ func (a *Application) initializeOverwatchMode() error {
 		return fmt.Errorf("failed to initialize API server: %w", err)
 	}
 
-	// Story 3 will add:
-	// - Gossip receiver for agent messages
-	// - Backend registry from agent registrations
-	// - External validation of agent health claims
-	// - Override API
-
-	a.logger.Info("overwatch mode initialized")
+	a.logger.Info("overwatch mode initialized",
+		"validation_enabled", a.config.Overwatch.Validation.Enabled,
+		"stale_threshold", a.config.Overwatch.Stale.Threshold,
+	)
 	return nil
 }
 
@@ -231,6 +253,103 @@ func (a *Application) registerHealthCheckServers() error {
 			)
 		}
 	}
+	return nil
+}
+
+// initializeBackendRegistry creates and configures the backend registry for agent registrations.
+func (a *Application) initializeBackendRegistry() error {
+	// Initialize bbolt store for persistence
+	dataDir := "/var/lib/opengslb"
+	if err := os.MkdirAll(dataDir, 0750); err != nil {
+		a.logger.Warn("failed to create data directory, using temp dir", "error", err)
+		dataDir = os.TempDir()
+	}
+
+	storePath := filepath.Join(dataDir, "overwatch.db")
+	bboltStore, err := store.NewBboltStore(storePath)
+	if err != nil {
+		a.logger.Warn("failed to initialize bbolt store, running without persistence", "error", err)
+		// Continue without persistence
+	} else {
+		a.overwatchStore = bboltStore
+	}
+
+	// Configure registry with stale thresholds from config
+	staleThreshold := a.config.Overwatch.Stale.Threshold
+	if staleThreshold == 0 {
+		staleThreshold = 30 * time.Second
+	}
+	removeAfter := a.config.Overwatch.Stale.RemoveAfter
+	if removeAfter == 0 {
+		removeAfter = 5 * time.Minute
+	}
+
+	registryCfg := overwatch.RegistryConfig{
+		StaleThreshold: staleThreshold,
+		RemoveAfter:    removeAfter,
+		Logger:         a.logger,
+	}
+
+	a.backendRegistry = overwatch.NewRegistry(registryCfg, a.overwatchStore)
+
+	// Set up status change callback for metrics
+	a.backendRegistry.OnStatusChange(func(backend *overwatch.Backend, oldStatus, newStatus overwatch.BackendStatus) {
+		overwatch.RecordBackendStatusChange(backend.Service, oldStatus, newStatus)
+		// Update registry metrics
+		overwatch.UpdateRegistryMetrics(a.backendRegistry)
+	})
+
+	a.logger.Info("backend registry initialized",
+		"stale_threshold", staleThreshold,
+		"remove_after", removeAfter,
+		"persistence", a.overwatchStore != nil,
+	)
+	return nil
+}
+
+// initializeValidator creates and configures the external health validator.
+func (a *Application) initializeValidator() error {
+	if !a.config.Overwatch.Validation.Enabled {
+		a.logger.Info("external validation disabled")
+		return nil
+	}
+
+	checkInterval := a.config.Overwatch.Validation.CheckInterval
+	if checkInterval == 0 {
+		checkInterval = 30 * time.Second
+	}
+	checkTimeout := a.config.Overwatch.Validation.CheckTimeout
+	if checkTimeout == 0 {
+		checkTimeout = 5 * time.Second
+	}
+
+	// Create a composite checker for validation
+	checker := health.NewCompositeChecker()
+	checker.Register("http", health.NewHTTPChecker())
+	checker.Register("tcp", health.NewTCPChecker())
+
+	validatorCfg := overwatch.ValidatorConfig{
+		Enabled:       true,
+		CheckInterval: checkInterval,
+		CheckTimeout:  checkTimeout,
+		Logger:        a.logger,
+	}
+
+	a.overwatchValidator = overwatch.NewValidator(validatorCfg, a.backendRegistry, checker)
+
+	a.logger.Info("external validator initialized",
+		"check_interval", checkInterval,
+		"check_timeout", checkTimeout,
+	)
+	return nil
+}
+
+// initializeGossipHandler creates and configures the gossip message handler.
+// Note: The actual gossip receiver will be added in Story 4.
+func (a *Application) initializeGossipHandler() error {
+	a.gossipHandler = overwatch.NewGossipHandler(a.backendRegistry, a.logger)
+
+	a.logger.Info("gossip handler initialized (awaiting Story 4 for receiver)")
 	return nil
 }
 
@@ -320,7 +439,13 @@ func (a *Application) initializeAPIServer() error {
 		return fmt.Errorf("failed to create API server: %w", err)
 	}
 
-	// ADR-015: No cluster handlers - removed
+	// Set Overwatch API handlers (Story 3)
+	if a.backendRegistry != nil {
+		overwatchHandlers := overwatch.NewAPIHandlers(a.backendRegistry, a.overwatchValidator)
+		server.SetOverwatchHandlers(overwatchHandlers)
+		a.logger.Debug("overwatch API handlers registered")
+	}
+
 	a.apiServer = server
 
 	a.logger.Info("API server initialized",
@@ -380,6 +505,25 @@ func (a *Application) startOverwatchMode(ctx context.Context) error {
 	}
 	a.logger.Info("health manager started")
 
+	// Start backend registry (Story 3)
+	if a.backendRegistry != nil {
+		if err := a.backendRegistry.Start(); err != nil {
+			return fmt.Errorf("failed to start backend registry: %w", err)
+		}
+		a.logger.Info("backend registry started")
+	}
+
+	// Start external validator (Story 3)
+	if a.overwatchValidator != nil {
+		if err := a.overwatchValidator.Start(); err != nil {
+			return fmt.Errorf("failed to start validator: %w", err)
+		}
+		a.logger.Info("external validator started")
+	}
+
+	// Note: Gossip receiver will be started in Story 4
+	// For now, the gossip handler is ready but has no incoming messages
+
 	// Start metrics server
 	if a.metricsServer != nil {
 		go func() {
@@ -407,10 +551,6 @@ func (a *Application) startOverwatchMode(ctx context.Context) error {
 			}
 		}()
 	}
-
-	// Story 3 will add:
-	// - Start gossip receiver
-	// - Start external validation loop
 
 	// Start DNS server (blocks until shutdown)
 	a.logger.Info("starting DNS server", "address", a.config.DNS.ListenAddress)
@@ -474,8 +614,41 @@ func (a *Application) shutdownAgentMode(ctx context.Context) error {
 func (a *Application) shutdownOverwatchMode(ctx context.Context) error {
 	var shutdownErr error
 
-	// Story 3 will add:
-	// - Stop gossip receiver
+	// Stop gossip handler (Story 3)
+	if a.gossipHandler != nil {
+		a.logger.Debug("stopping gossip handler")
+		if err := a.gossipHandler.Stop(); err != nil {
+			a.logger.Error("error stopping gossip handler", "error", err)
+			shutdownErr = err
+		}
+	}
+
+	// Stop external validator (Story 3)
+	if a.overwatchValidator != nil {
+		a.logger.Debug("stopping external validator")
+		if err := a.overwatchValidator.Stop(); err != nil {
+			a.logger.Error("error stopping validator", "error", err)
+			shutdownErr = err
+		}
+	}
+
+	// Stop backend registry (Story 3)
+	if a.backendRegistry != nil {
+		a.logger.Debug("stopping backend registry")
+		if err := a.backendRegistry.Stop(); err != nil {
+			a.logger.Error("error stopping backend registry", "error", err)
+			shutdownErr = err
+		}
+	}
+
+	// Close store (Story 3)
+	if a.overwatchStore != nil {
+		a.logger.Debug("closing store")
+		if err := a.overwatchStore.Close(); err != nil {
+			a.logger.Error("error closing store", "error", err)
+			shutdownErr = err
+		}
+	}
 
 	if a.apiServer != nil {
 		a.logger.Debug("stopping API server")
@@ -699,6 +872,18 @@ func (a *Application) reloadHealthManager(newCfg *config.Config) error {
 // Returns nil if not running in agent mode.
 func (a *Application) GetAgent() *agent.Agent {
 	return a.agentInstance
+}
+
+// GetBackendRegistry returns the backend registry (for testing and introspection).
+// Returns nil if not running in overwatch mode.
+func (a *Application) GetBackendRegistry() *overwatch.Registry {
+	return a.backendRegistry
+}
+
+// GetValidator returns the external validator (for testing and introspection).
+// Returns nil if not running in overwatch mode or validation is disabled.
+func (a *Application) GetValidator() *overwatch.Validator {
+	return a.overwatchValidator
 }
 
 // readinessChecker implements api.ReadinessChecker for the Application.

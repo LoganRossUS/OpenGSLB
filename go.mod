@@ -2,8 +2,6 @@ module github.com/loganrossus/OpenGSLB
 
 go 1.23.0
 
-toolchain go1.24.10
-
 require (
 	github.com/miekg/dns v1.1.68
 	github.com/prometheus/client_golang v1.23.2

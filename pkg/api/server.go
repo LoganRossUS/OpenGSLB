@@ -22,12 +22,21 @@ type ServerConfig struct {
 	Logger            *slog.Logger
 }
 
+// OverwatchAPIHandlers interface for Overwatch-specific API endpoints.
+type OverwatchAPIHandlers interface {
+	HandleBackends(w http.ResponseWriter, r *http.Request)
+	HandleBackendOverride(w http.ResponseWriter, r *http.Request)
+	HandleStats(w http.ResponseWriter, r *http.Request)
+	HandleValidate(w http.ResponseWriter, r *http.Request)
+}
+
 // Server provides the HTTP API for OpenGSLB.
 type Server struct {
-	config     ServerConfig
-	httpServer *http.Server
-	logger     *slog.Logger
-	handlers   *Handlers
+	config            ServerConfig
+	httpServer        *http.Server
+	logger            *slog.Logger
+	handlers          *Handlers
+	overwatchHandlers OverwatchAPIHandlers
 }
 
 // NewServer creates a new API server.
@@ -45,6 +54,11 @@ func NewServer(cfg ServerConfig, handlers *Handlers) (*Server, error) {
 	}, nil
 }
 
+// SetOverwatchHandlers sets the Overwatch-specific API handlers.
+func (s *Server) SetOverwatchHandlers(handlers OverwatchAPIHandlers) {
+	s.overwatchHandlers = handlers
+}
+
 // Start starts the API server.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -54,6 +68,14 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/v1/health/regions", s.withACL(s.handlers.HealthRegions))
 	mux.HandleFunc("/api/v1/ready", s.handlers.Ready)
 	mux.HandleFunc("/api/v1/live", s.handlers.Live)
+
+	// Overwatch-specific endpoints (Story 3)
+	if s.overwatchHandlers != nil {
+		mux.HandleFunc("/api/v1/overwatch/backends", s.withACL(s.overwatchHandlers.HandleBackends))
+		mux.HandleFunc("/api/v1/overwatch/backends/", s.withACL(s.overwatchHandlers.HandleBackendOverride))
+		mux.HandleFunc("/api/v1/overwatch/stats", s.withACL(s.overwatchHandlers.HandleStats))
+		mux.HandleFunc("/api/v1/overwatch/validate", s.withACL(s.overwatchHandlers.HandleValidate))
+	}
 
 	// ADR-015: Cluster endpoints removed
 	// The following endpoints no longer exist:
