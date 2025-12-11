@@ -113,7 +113,7 @@ func (c *CustomMappings) Add(mapping CustomMapping) error {
 
 	// Remove existing entry if present
 	if _, exists := c.mappings[mapping.CIDR]; exists {
-		c.ranger.Remove(*network)
+		_, _ = c.ranger.Remove(*network)
 	}
 
 	entry := regionEntry{
@@ -198,7 +198,10 @@ func (c *CustomMappings) Lookup(ip net.IP) *CustomLookupResult {
 
 	// cidranger returns entries in order from least specific to most specific,
 	// so we want the last entry (most specific / longest prefix match)
-	mostSpecific := entries[len(entries)-1].(regionEntry)
+	mostSpecific, ok := entries[len(entries)-1].(regionEntry)
+	if !ok {
+		return &CustomLookupResult{Found: false}
+	}
 
 	return &CustomLookupResult{
 		Region:  mostSpecific.region,

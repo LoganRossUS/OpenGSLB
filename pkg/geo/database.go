@@ -19,11 +19,11 @@ import (
 
 // Database provides GeoIP lookup functionality with hot-reload support.
 type Database struct {
-	mu       sync.RWMutex
-	reader   *geoip2.Reader
-	path     string
-	logger   *slog.Logger
-	modTime  int64
+	mu      sync.RWMutex
+	reader  *geoip2.Reader
+	path    string
+	logger  *slog.Logger
+	modTime int64
 }
 
 // NewDatabase creates a new GeoIP database instance.

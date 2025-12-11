@@ -71,8 +71,8 @@ func TestCustomMappings_LongestPrefixMatch(t *testing.T) {
 		ip       string
 		expected string
 	}{
-		{"10.2.0.1", "broad"},      // Only /8 matches
-		{"10.1.100.1", "medium"},   // /16 is more specific than /8
+		{"10.2.0.1", "broad"},       // Only /8 matches
+		{"10.1.100.1", "medium"},    // /16 is more specific than /8
 		{"10.1.50.100", "specific"}, // /24 is most specific
 	}
 

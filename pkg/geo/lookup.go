@@ -55,14 +55,14 @@ type RegionConfig struct {
 // Resolver provides unified IP-to-region resolution using custom mappings
 // and GeoIP database lookup.
 type Resolver struct {
-	mu             sync.RWMutex
-	database       *Database
-	customMappings *CustomMappings
-	regions        map[string]*RegionConfig
-	countryToRegion    map[string]string // country code -> region name
-	continentToRegion  map[string]string // continent code -> region name
-	defaultRegion  string
-	logger         *slog.Logger
+	mu                sync.RWMutex
+	database          *Database
+	customMappings    *CustomMappings
+	regions           map[string]*RegionConfig
+	countryToRegion   map[string]string // country code -> region name
+	continentToRegion map[string]string // continent code -> region name
+	defaultRegion     string
+	logger            *slog.Logger
 }
 
 // ResolverConfig contains configuration for creating a Resolver.
@@ -106,13 +106,13 @@ func NewResolver(cfg ResolverConfig) (*Resolver, error) {
 	}
 
 	resolver := &Resolver{
-		database:       db,
-		customMappings: custom,
-		regions:        make(map[string]*RegionConfig),
+		database:          db,
+		customMappings:    custom,
+		regions:           make(map[string]*RegionConfig),
 		countryToRegion:   make(map[string]string),
 		continentToRegion: make(map[string]string),
-		defaultRegion:  cfg.DefaultRegion,
-		logger:         logger,
+		defaultRegion:     cfg.DefaultRegion,
+		logger:            logger,
 	}
 
 	// Build region mappings
