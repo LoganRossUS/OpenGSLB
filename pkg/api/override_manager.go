@@ -125,11 +125,9 @@ func (m *OverrideManager) SetOverride(ctx context.Context, service, address stri
 
 	// Audit log
 	if auditFn != nil {
-		action := "override_set"
+		action := "override_set_unhealthy"
 		if healthy {
 			action = "override_set_healthy"
-		} else {
-			action = "override_set_unhealthy"
 		}
 		auditFn(action, service, address, reason, source, clientIP)
 	}

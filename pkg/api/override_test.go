@@ -17,82 +17,6 @@ import (
 	"time"
 )
 
-// mockStore implements store.Store for testing.
-type mockStore struct {
-	mu      sync.RWMutex
-	data    map[string][]byte
-	setErr  error
-	getErr  error
-	delErr  error
-	listErr error
-}
-
-func newMockStore() *mockStore {
-	return &mockStore{
-		data: make(map[string][]byte),
-	}
-}
-
-func (m *mockStore) Get(ctx context.Context, key string) ([]byte, error) {
-	if m.getErr != nil {
-		return nil, m.getErr
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if val, ok := m.data[key]; ok {
-		return val, nil
-	}
-	return nil, nil
-}
-
-func (m *mockStore) Set(ctx context.Context, key string, value []byte) error {
-	if m.setErr != nil {
-		return m.setErr
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.data[key] = value
-	return nil
-}
-
-func (m *mockStore) Delete(ctx context.Context, key string) error {
-	if m.delErr != nil {
-		return m.delErr
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.data, key)
-	return nil
-}
-
-type kvPair struct {
-	Key   string
-	Value []byte
-}
-
-func (m *mockStore) List(ctx context.Context, prefix string) ([]kvPair, error) {
-	if m.listErr != nil {
-		return nil, m.listErr
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var result []kvPair
-	for k, v := range m.data {
-		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
-			result = append(result, kvPair{Key: k, Value: v})
-		}
-	}
-	return result, nil
-}
-
-func (m *mockStore) Watch(ctx context.Context, prefix string) (<-chan interface{}, error) {
-	return nil, nil
-}
-
-func (m *mockStore) Close() error {
-	return nil
-}
-
 // TestOverrideManager_SetOverride tests setting an override.
 func TestOverrideManager_SetOverride(t *testing.T) {
 	manager := NewOverrideManager(nil, nil)
@@ -608,11 +532,11 @@ func TestOverrideHandlers_ExtractClientIP(t *testing.T) {
 	handlers := NewOverrideHandlers(manager, nil)
 
 	tests := []struct {
-		name         string
-		remoteAddr   string
-		xff          string
-		xri          string
-		expectedIP   string
+		name       string
+		remoteAddr string
+		xff        string
+		xri        string
+		expectedIP string
 	}{
 		{
 			name:       "remote addr with port",
