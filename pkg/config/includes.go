@@ -49,11 +49,11 @@ func (e *CircularIncludeError) Error() string {
 
 // includeContext tracks the state of include processing.
 type includeContext struct {
-	baseDir     string            // Base directory for resolving relative paths
-	depth       int               // Current nesting depth
-	visited     map[string]bool   // Absolute paths of visited files
-	visitPath   []string          // Current visit path for cycle detection
-	loadedFiles []string          // All files that were loaded (for hot-reload)
+	baseDir     string          // Base directory for resolving relative paths
+	depth       int             // Current nesting depth
+	visited     map[string]bool // Absolute paths of visited files
+	visitPath   []string        // Current visit path for cycle detection
+	loadedFiles []string        // All files that were loaded (for hot-reload)
 }
 
 // newIncludeContext creates a new include context.

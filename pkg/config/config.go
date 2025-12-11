@@ -8,8 +8,6 @@ package config
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -95,26 +93,6 @@ func Load(path string) (*Config, error) {
 	}
 	applyDefaults(cfg)
 	return cfg, nil
-}
-
-// loadSingleFile reads and parses a single configuration file without processing includes.
-// Used internally for the initial parse.
-func loadSingleFile(path string) (*Config, error) {
-	cleanPath := filepath.Clean(path)
-	data, err := os.ReadFile(cleanPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
-	}
-	return parseSingleFile(data)
-}
-
-// parseSingleFile parses configuration from YAML bytes without applying defaults.
-func parseSingleFile(data []byte) (*Config, error) {
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse config: %w", err)
-	}
-	return &cfg, nil
 }
 
 // Parse parses configuration from YAML bytes.
