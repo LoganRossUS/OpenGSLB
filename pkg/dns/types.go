@@ -42,11 +42,21 @@ type LeaderChecker interface {
 	IsLeader() bool
 }
 
+// DNSSECSigner signs DNS responses with DNSSEC.
+// Implemented by dnssec.Signer.
+type DNSSECSigner interface {
+	// SignResponse signs a DNS message and returns the signed message.
+	// If signing fails or is not possible, returns the original message unchanged.
+	SignResponse(msg interface{}) (interface{}, error)
+}
+
 // HandlerConfig contains configuration for the DNS handler.
 type HandlerConfig struct {
 	Registry       *Registry
 	HealthProvider HealthProvider
 	LeaderChecker  LeaderChecker // Deprecated: ignored in ADR-015
+	DNSSECSigner   DNSSECSigner  // Optional: signs responses if provided
+	DNSSECEnabled  bool          // Whether DNSSEC is enabled
 	DefaultTTL     uint32
 	Logger         *slog.Logger
 }
