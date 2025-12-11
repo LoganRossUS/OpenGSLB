@@ -38,6 +38,7 @@ type Server struct {
 	handlers          *Handlers
 	overwatchHandlers OverwatchAPIHandlers
 	overrideHandlers  *OverrideHandlers
+	dnssecHandlers    *DNSSECHandlers
 }
 
 // NewServer creates a new API server.
@@ -65,6 +66,11 @@ func (s *Server) SetOverrideHandlers(oh *OverrideHandlers) {
 	s.overrideHandlers = oh
 }
 
+// SetDNSSECHandlers sets the DNSSEC handlers for DNSSEC API endpoints.
+func (s *Server) SetDNSSECHandlers(dh *DNSSECHandlers) {
+	s.dnssecHandlers = dh
+}
+
 // Start starts the API server.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -90,6 +96,17 @@ func (s *Server) Start(ctx context.Context) error {
 		s.logger.Debug("override API endpoints registered")
 	}
 
+	// DNSSEC endpoints (Stories 7 & 8)
+	if s.dnssecHandlers != nil {
+		mux.HandleFunc("/api/v1/dnssec/ds", s.withACL(s.dnssecHandlers.HandleDS))
+		mux.HandleFunc("/api/v1/dnssec/keys", s.withACL(s.dnssecHandlers.HandleKeys))
+		mux.HandleFunc("/api/v1/dnssec/status", s.withACL(s.dnssecHandlers.HandleStatus))
+		mux.HandleFunc("/api/v1/dnssec/sync", s.withACL(s.dnssecHandlers.HandleSync))
+		mux.HandleFunc("/api/v1/dnssec", s.withACL(s.dnssecHandlers.HandleDNSSEC))
+		mux.HandleFunc("/api/v1/dnssec/", s.withACL(s.dnssecHandlers.HandleDNSSEC))
+		s.logger.Debug("DNSSEC API endpoints registered")
+	}
+
 	// ADR-015: Cluster endpoints removed
 	// The following endpoints no longer exist:
 	// - /api/v1/cluster/status
@@ -107,6 +124,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.logger.Info("starting API server",
 		"address", s.config.Address,
 		"override_endpoints", s.overrideHandlers != nil,
+		"dnssec_endpoints", s.dnssecHandlers != nil,
 	)
 
 	// Start server in a way that respects context cancellation
