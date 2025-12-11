@@ -1,13 +1,19 @@
-.PHONY: help build test test-integration test-env-up test-env-down lint clean
+.PHONY: help build build-cli build-all test test-integration test-env-up test-env-down lint clean
 
 BINARY_NAME=opengslb
+CLI_BINARY_NAME=opengslb-cli
 GO=go
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-build: ## Build the binary
+build: ## Build the main binary
 	$(GO) build -o $(BINARY_NAME) ./cmd/opengslb
+
+build-cli: ## Build the CLI binary
+	$(GO) build -o $(CLI_BINARY_NAME) ./cmd/opengslb-cli
+
+build-all: build build-cli ## Build all binaries
 
 test: ## Run unit tests
 	$(GO) test -race ./...
@@ -39,6 +45,6 @@ docker-build: ## Build Docker image
 	docker build -t $(BINARY_NAME):local .
 
 clean: ## Clean build artifacts
-	rm -f $(BINARY_NAME)
+	rm -f $(BINARY_NAME) $(CLI_BINARY_NAME)
 	rm -f coverage.out coverage.html
 	$(MAKE) test-env-down 2>/dev/null || true
