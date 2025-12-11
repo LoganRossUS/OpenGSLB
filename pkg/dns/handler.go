@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/loganrossus/OpenGSLB/pkg/geo"
 	"github.com/loganrossus/OpenGSLB/pkg/metrics"
 	"github.com/loganrossus/OpenGSLB/pkg/routing"
 	"github.com/miekg/dns"
@@ -25,6 +26,7 @@ type Handler struct {
 	health        HealthProvider
 	dnssecSigner  DNSSECSigner
 	dnssecEnabled bool
+	ecsEnabled    bool
 	defaultTTL    uint32
 	logger        *slog.Logger
 }
@@ -42,6 +44,7 @@ func NewHandler(cfg HandlerConfig) *Handler {
 		health:        cfg.HealthProvider,
 		dnssecSigner:  cfg.DNSSECSigner,
 		dnssecEnabled: cfg.DNSSECEnabled,
+		ecsEnabled:    cfg.ECSEnabled,
 		defaultTTL:    cfg.DefaultTTL,
 		logger:        logger,
 	}
@@ -67,17 +70,21 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	qname := q.Name
 	qtype := dns.TypeToString[q.Qtype]
 
+	// Get client IP for geolocation routing (ECS or source address)
+	clientIP := geo.GetClientIP(r, w.RemoteAddr(), h.ecsEnabled)
+
 	h.logger.Debug("DNS query received",
 		"name", qname,
 		"type", qtype,
 		"source", w.RemoteAddr().String(),
+		"clientIP", clientIP,
 	)
 
 	switch q.Qtype {
 	case dns.TypeA:
-		h.handleAQuery(m, qname, q)
+		h.handleAQuery(m, qname, q, clientIP)
 	case dns.TypeAAAA:
-		h.handleAAAAQuery(m, qname, q)
+		h.handleAAAAQuery(m, qname, q, clientIP)
 	case dns.TypeDNSKEY:
 		h.handleDNSKEYQuery(m, qname, q)
 	default:
@@ -93,7 +100,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 }
 
 // handleAQuery processes A record queries (IPv4).
-func (h *Handler) handleAQuery(m *dns.Msg, qname string, q dns.Question) {
+func (h *Handler) handleAQuery(m *dns.Msg, qname string, q dns.Question, clientIP net.IP) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -111,8 +118,14 @@ func (h *Handler) handleAQuery(m *dns.Msg, qname string, q dns.Question) {
 		return
 	}
 
+	// Create context with client IP for geolocation routing
+	ctx := context.Background()
+	if clientIP != nil {
+		ctx = routing.WithClientIP(ctx, clientIP)
+	}
+
 	pool := routing.NewSimpleServerPool(servers)
-	selected, err := entry.Router.Route(context.Background(), pool)
+	selected, err := entry.Router.Route(ctx, pool)
 	if err != nil {
 		h.logger.Error("routing failed", "domain", qname, "error", err)
 		m.SetRcode(m, dns.RcodeServerFailure)
@@ -130,7 +143,7 @@ func (h *Handler) handleAQuery(m *dns.Msg, qname string, q dns.Question) {
 }
 
 // handleAAAAQuery processes AAAA record queries (IPv6).
-func (h *Handler) handleAAAAQuery(m *dns.Msg, qname string, q dns.Question) {
+func (h *Handler) handleAAAAQuery(m *dns.Msg, qname string, q dns.Question, clientIP net.IP) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -148,8 +161,14 @@ func (h *Handler) handleAAAAQuery(m *dns.Msg, qname string, q dns.Question) {
 		return
 	}
 
+	// Create context with client IP for geolocation routing
+	ctx := context.Background()
+	if clientIP != nil {
+		ctx = routing.WithClientIP(ctx, clientIP)
+	}
+
 	pool := routing.NewSimpleServerPool(servers)
-	selected, err := entry.Router.Route(context.Background(), pool)
+	selected, err := entry.Router.Route(ctx, pool)
 	if err != nil {
 		h.logger.Error("routing failed", "domain", qname, "error", err)
 		m.SetRcode(m, dns.RcodeServerFailure)

@@ -944,6 +944,205 @@ domains:
 
 After reload, traffic distribution will change to respect server weights.
 
+## Multi-File Configuration (Includes)
+
+For large deployments with many domains managed by different teams, OpenGSLB supports splitting configuration across multiple files. This enables team-based configuration management while maintaining centralized infrastructure settings.
+
+### Basic Usage
+
+Use the `includes` directive in your main configuration to include additional files:
+
+```yaml
+# /etc/opengslb/config.yaml
+mode: overwatch
+
+dns:
+  listen_address: ":53"
+  zones:
+    - gslb.example.com
+
+includes:
+  - regions/*.yaml          # Load all region files
+  - domains/**/*.yaml       # Recursively load domain files
+  - tokens.yaml             # Load agent tokens
+```
+
+### Glob Patterns
+
+The `includes` directive supports glob patterns:
+
+| Pattern | Matches |
+|---------|---------|
+| `*.yaml` | All YAML files in the current directory |
+| `regions/*.yaml` | All YAML files in the regions/ subdirectory |
+| `domains/**/*.yaml` | All YAML files recursively under domains/ |
+| `tokens.yaml` | Specific file |
+
+Patterns are relative to the main configuration file's directory.
+
+### Merge Semantics
+
+When multiple files are loaded, content is merged according to these rules:
+
+| Field | Merge Behavior |
+|-------|----------------|
+| `regions` | Arrays are concatenated |
+| `domains` | Arrays are concatenated |
+| `agent_tokens` | Maps are merged (later values override) |
+| `agent.backends` | Arrays are concatenated |
+| `geolocation.custom_mappings` | Arrays are concatenated |
+| Other scalars | Only from main file (includes cannot override) |
+
+### Example Directory Structure
+
+```
+/etc/opengslb/
+├── config.yaml              # Main configuration
+├── regions/
+│   ├── us-east.yaml         # US East region
+│   ├── us-west.yaml         # US West region
+│   └── eu-west.yaml         # EU West region
+├── domains/
+│   ├── team-a/
+│   │   └── app.yaml         # Team A's application domain
+│   └── team-b/
+│       └── api.yaml         # Team B's API domain
+└── tokens.yaml              # Agent authentication tokens
+```
+
+### Example Files
+
+**Main config (config.yaml)**:
+```yaml
+mode: overwatch
+
+dns:
+  listen_address: ":53"
+  zones:
+    - gslb.example.com
+  default_ttl: 30
+
+overwatch:
+  gossip:
+    encryption_key: "YOUR_KEY_HERE"
+  dnssec:
+    enabled: true
+
+logging:
+  level: info
+  format: json
+
+includes:
+  - regions/*.yaml
+  - domains/**/*.yaml
+  - tokens.yaml
+```
+
+**Region file (regions/us-east.yaml)**:
+```yaml
+regions:
+  - name: us-east-1
+    countries: ["US", "CA", "MX"]
+    continents: ["NA", "SA"]
+    servers:
+      - address: "10.0.1.10"
+        port: 8080
+      - address: "10.0.1.11"
+        port: 8080
+    health_check:
+      type: http
+      path: /health
+      interval: 30s
+```
+
+**Domain file (domains/team-a/app.yaml)**:
+```yaml
+domains:
+  - name: app.gslb.example.com
+    routing_algorithm: round-robin
+    regions:
+      - us-east-1
+      - us-west-2
+    ttl: 30
+```
+
+**Tokens file (tokens.yaml)**:
+```yaml
+overwatch:
+  agent_tokens:
+    team-a-app: "secret-token-for-team-a"
+    team-b-api: "secret-token-for-team-b"
+```
+
+### Error Handling
+
+OpenGSLB provides clear error messages with file context:
+
+**Duplicate region name**:
+```
+regions/backup.yaml: duplicate region name "us-east-1"
+```
+
+**Circular include**:
+```
+circular include detected: config.yaml -> base.yaml -> config.yaml
+```
+
+**Permission error**:
+```
+regions/insecure.yaml: permission check failed: file is world-writable, which is a security risk
+```
+
+### Security
+
+- Included files undergo the same permission checks as the main config
+- World-writable files are rejected
+- Maximum include depth is 10 levels (prevents infinite recursion)
+- Circular includes are detected and rejected
+
+### Hot-Reload with Includes
+
+When you send SIGHUP, all included files are re-read along with the main configuration. This means:
+
+1. Changes to any included file take effect on reload
+2. New files matching glob patterns are automatically included
+3. Removed files are no longer included
+
+```bash
+# Reload after editing any config file
+kill -HUP $(pgrep opengslb)
+```
+
+### Nested Includes
+
+Included files can themselves contain `includes` directives:
+
+```yaml
+# base.yaml
+includes:
+  - regions/*.yaml
+```
+
+This allows for modular configuration hierarchies, but be careful not to create circular dependencies.
+
+### Best Practices
+
+1. **Separate by responsibility**: Keep infrastructure settings in the main file, let teams manage their domains
+2. **Use descriptive directories**: `domains/team-a/` is clearer than `domains/a/`
+3. **Document ownership**: Add comments indicating who manages each file
+4. **Secure sensitive files**: Keep tokens in a separate file with restrictive permissions
+5. **Version control**: Track all configuration files in git for audit trail
+
+### Validating Configuration
+
+Validate your multi-file configuration before deploying:
+
+```bash
+opengslb-cli config validate --config /etc/opengslb/config.yaml
+```
+
+This will load all included files and report any validation errors.
+
 ## IPv6 Support
 
 OpenGSLB supports both IPv4 and IPv6 addresses for backend servers. The DNS server automatically handles A (IPv4) and AAAA (IPv6) queries, returning only addresses of the appropriate family.

@@ -178,12 +178,15 @@ domains:
 - ✅ Configuration hot-reload (SIGHUP)
 - ✅ Health status API endpoint
 - ✅ Docker deployment
+- ✅ DNSSEC support with automatic key management
+- ✅ Geolocation-based routing (GeoIP + custom CIDR mappings)
+- ✅ Latency-based routing (EMA smoothing)
+- ✅ EDNS Client Subnet (ECS) support
+- ✅ Agent-Overwatch distributed architecture
+- ✅ Multi-file configuration with includes
+- ✅ CLI management tool (gslbctl)
 
 ### Planned
-- 🔲 Geolocation-based routing
-- 🔲 Latency-based routing
-- 🔲 EDNS Client Subnet (ECS) support
-- 🔲 Clustering and high availability
 - 🔲 Web UI dashboard
 - 🔲 Kubernetes operator
 

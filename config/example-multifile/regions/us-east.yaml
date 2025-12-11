@@ -1,0 +1,28 @@
+# US East Region Configuration
+# Managed by: Infrastructure Team
+# Contact: infra@example.com
+
+regions:
+  - name: us-east-1
+    # Geolocation mapping (for geolocation routing)
+    countries: ["US", "CA", "MX"]
+    continents: ["NA", "SA"]
+
+    servers:
+      - address: "10.0.1.10"
+        port: 8080
+        weight: 100
+      - address: "10.0.1.11"
+        port: 8080
+        weight: 100
+      - address: "10.0.1.12"
+        port: 8080
+        weight: 100
+
+    health_check:
+      type: http
+      path: /health
+      interval: 30s
+      timeout: 5s
+      failure_threshold: 3
+      success_threshold: 2

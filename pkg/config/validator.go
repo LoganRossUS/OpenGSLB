@@ -195,6 +195,11 @@ func (c *Config) validateOverwatchMode() error {
 		return err
 	}
 
+	// Geolocation validation (only if any domain uses geolocation)
+	if err := c.validateGeolocation(); err != nil {
+		return fmt.Errorf("geolocation: %w", err)
+	}
+
 	// API validation
 	if err := c.validateAPI(); err != nil {
 		return fmt.Errorf("api: %w", err)
@@ -338,6 +343,117 @@ func (c *Config) validateAPI() error {
 	for i, network := range c.API.AllowedNetworks {
 		if _, _, err := net.ParseCIDR(network); err != nil {
 			return fmt.Errorf("allowed_networks[%d] %q: invalid CIDR: %w", i, network, err)
+		}
+	}
+
+	return nil
+}
+
+// validateGeolocation validates geolocation configuration.
+// Only validates if any domain uses geolocation routing.
+func (c *Config) validateGeolocation() error {
+	// Check if any domain uses geolocation routing
+	usesGeo := false
+	for _, domain := range c.Domains {
+		if strings.ToLower(domain.RoutingAlgorithm) == "geolocation" {
+			usesGeo = true
+			break
+		}
+	}
+
+	if !usesGeo {
+		return nil
+	}
+
+	geo := c.Overwatch.Geolocation
+
+	// Database path is required for geolocation routing
+	if geo.DatabasePath == "" {
+		return fmt.Errorf("database_path is required when using geolocation routing")
+	}
+
+	// Default region is required
+	if geo.DefaultRegion == "" {
+		return fmt.Errorf("default_region is required")
+	}
+
+	// Validate default region exists
+	regionExists := false
+	for _, region := range c.Regions {
+		if region.Name == geo.DefaultRegion {
+			regionExists = true
+			break
+		}
+	}
+	if !regionExists {
+		return fmt.Errorf("default_region %q does not exist in regions", geo.DefaultRegion)
+	}
+
+	// Validate custom mappings
+	for i, mapping := range geo.CustomMappings {
+		prefix := fmt.Sprintf("custom_mappings[%d]", i)
+
+		if mapping.CIDR == "" {
+			return fmt.Errorf("%s.cidr is required", prefix)
+		}
+		if _, _, err := net.ParseCIDR(mapping.CIDR); err != nil {
+			return fmt.Errorf("%s.cidr %q: invalid CIDR: %w", prefix, mapping.CIDR, err)
+		}
+		if mapping.Region == "" {
+			return fmt.Errorf("%s.region is required", prefix)
+		}
+
+		// Validate region exists
+		mappingRegionExists := false
+		for _, region := range c.Regions {
+			if region.Name == mapping.Region {
+				mappingRegionExists = true
+				break
+			}
+		}
+		if !mappingRegionExists {
+			return fmt.Errorf("%s.region %q does not exist in regions", prefix, mapping.Region)
+		}
+	}
+
+	// Validate regions have countries/continents defined (for domains using geolocation)
+	for _, domain := range c.Domains {
+		if strings.ToLower(domain.RoutingAlgorithm) != "geolocation" {
+			continue
+		}
+
+		for _, regionName := range domain.Regions {
+			for _, region := range c.Regions {
+				if region.Name == regionName {
+					// Region must have either countries or continents defined
+					// (or be referenced only via custom mappings, which is valid)
+					// We allow regions without geo mapping for custom mapping use
+					if len(region.Countries) == 0 && len(region.Continents) == 0 {
+						// This is allowed - region can be used only via custom mappings
+						continue
+					}
+
+					// Validate continent codes if specified
+					validContinents := map[string]bool{
+						"AF": true, "AN": true, "AS": true, "EU": true,
+						"NA": true, "OC": true, "SA": true,
+					}
+					for _, cont := range region.Continents {
+						if !validContinents[strings.ToUpper(cont)] {
+							return fmt.Errorf("region %q: invalid continent code %q (valid: AF, AN, AS, EU, NA, OC, SA)",
+								region.Name, cont)
+						}
+					}
+
+					// Validate country codes are 2 characters (basic check)
+					for _, country := range region.Countries {
+						if len(country) != 2 {
+							return fmt.Errorf("region %q: invalid country code %q (must be 2-letter ISO code)",
+								region.Name, country)
+						}
+					}
+				}
+			}
 		}
 	}
 

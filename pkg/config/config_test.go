@@ -1011,6 +1011,17 @@ func TestValidate_ValidRoutingAlgorithms(t *testing.T) {
 			cfg := validOverwatchConfig()
 			cfg.Domains[0].RoutingAlgorithm = algo
 
+			// Geolocation requires additional configuration
+			if algo == "geolocation" {
+				cfg.Overwatch.Geolocation = GeolocationConfig{
+					DatabasePath:  "/var/lib/opengslb/GeoLite2-Country.mmdb",
+					DefaultRegion: "us-east-1",
+					ECSEnabled:    true,
+				}
+				cfg.Regions[0].Countries = []string{"US", "CA"}
+				cfg.Regions[0].Continents = []string{"NA"}
+			}
+
 			err := cfg.Validate()
 			if err != nil {
 				t.Errorf("unexpected error for routing algorithm %s: %v", algo, err)

@@ -380,6 +380,81 @@ var (
 			Help:      "Gossip encryption status (always 1, encryption is mandatory)",
 		},
 	)
+
+	// GossipDecryptionFailuresTotal counts gossip message decryption failures.
+	GossipDecryptionFailuresTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "gossip_decryption_failures_total",
+			Help:      "Total gossip message decryption failures",
+		},
+	)
+)
+
+// Per-agent connectivity metrics (Sprint 6)
+var (
+	// AgentConnectedPerAgent tracks connection status per agent (1=connected, 0=disconnected).
+	AgentConnectedPerAgent = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "agent_connected",
+			Help:      "Agent connection status (1=connected, 0=disconnected)",
+		},
+		[]string{"agent_id", "region"},
+	)
+
+	// AgentBackendsRegisteredPerAgent tracks backends registered per agent.
+	AgentBackendsRegisteredPerAgent = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "agent_backends_registered_per_agent",
+			Help:      "Number of backends registered by each agent",
+		},
+		[]string{"agent_id"},
+	)
+
+	// AgentStaleEventsPerAgent counts stale events per agent.
+	AgentStaleEventsPerAgent = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "agent_stale_events_total",
+			Help:      "Total stale events per agent",
+		},
+		[]string{"agent_id"},
+	)
+
+	// AgentHeartbeatAgePerAgent tracks heartbeat age per agent in seconds.
+	AgentHeartbeatAgePerAgent = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "agent_heartbeat_age_seconds",
+			Help:      "Seconds since last heartbeat per agent",
+		},
+		[]string{"agent_id"},
+	)
+)
+
+// Override metrics with service granularity (Sprint 6)
+var (
+	// OverridesActiveByService tracks active overrides per service.
+	OverridesActiveByService = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "overrides_active",
+			Help:      "Number of active overrides per service",
+		},
+		[]string{"service"},
+	)
+
+	// OverrideChangesTotal counts override changes by service and action.
+	OverrideChangesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "overrides_changes_total",
+			Help:      "Total override changes by service and action",
+		},
+		[]string{"service", "action"},
+	)
 )
 
 // DNSSEC metrics
@@ -410,6 +485,26 @@ var (
 			Name:      "dnssec_key_age_seconds",
 			Help:      "Age of the current DNSSEC signing key in seconds",
 		},
+	)
+
+	// DNSSECKeyAgeByZone tracks DNSSEC key age per zone and key tag.
+	DNSSECKeyAgeByZone = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "dnssec_key_age_by_zone_seconds",
+			Help:      "Age of DNSSEC signing keys in seconds, per zone and key tag",
+		},
+		[]string{"zone", "key_tag"},
+	)
+
+	// DNSSECSignaturesTotal counts DNSSEC signatures generated per zone.
+	DNSSECSignaturesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "dnssec_signatures_total",
+			Help:      "Total DNSSEC signatures generated per zone",
+		},
+		[]string{"zone"},
 	)
 
 	// DNSSECKeySyncSuccessTotal counts successful key syncs from peers.
@@ -669,4 +764,59 @@ func RecordDNSSECKeySyncSuccess() {
 // RecordDNSSECKeySyncFailure increments the key sync failure counter.
 func RecordDNSSECKeySyncFailure(peer string) {
 	DNSSECKeySyncFailuresTotal.WithLabelValues(peer).Inc()
+}
+
+// SetDNSSECKeyAgeByZone sets the key age for a specific zone and key tag.
+func SetDNSSECKeyAgeByZone(zone, keyTag string, ageSeconds float64) {
+	DNSSECKeyAgeByZone.WithLabelValues(zone, keyTag).Set(ageSeconds)
+}
+
+// RecordDNSSECSignature increments the signature counter for a zone.
+func RecordDNSSECSignature(zone string) {
+	DNSSECSignaturesTotal.WithLabelValues(zone).Inc()
+}
+
+// Gossip decryption helper functions
+
+// RecordGossipDecryptionFailure increments the gossip decryption failure counter.
+func RecordGossipDecryptionFailure() {
+	GossipDecryptionFailuresTotal.Inc()
+}
+
+// Per-agent connectivity helper functions
+
+// SetAgentConnected sets the connection status for an agent.
+func SetAgentConnected(agentID, region string, connected bool) {
+	value := 0.0
+	if connected {
+		value = 1.0
+	}
+	AgentConnectedPerAgent.WithLabelValues(agentID, region).Set(value)
+}
+
+// SetAgentBackendsRegisteredPerAgent sets the backend count for an agent.
+func SetAgentBackendsRegisteredPerAgent(agentID string, count int) {
+	AgentBackendsRegisteredPerAgent.WithLabelValues(agentID).Set(float64(count))
+}
+
+// RecordAgentStaleEvent increments the stale event counter for an agent.
+func RecordAgentStaleEvent(agentID string) {
+	AgentStaleEventsPerAgent.WithLabelValues(agentID).Inc()
+}
+
+// SetAgentHeartbeatAgePerAgent sets the heartbeat age for an agent.
+func SetAgentHeartbeatAgePerAgent(agentID string, ageSeconds float64) {
+	AgentHeartbeatAgePerAgent.WithLabelValues(agentID).Set(ageSeconds)
+}
+
+// Override helper functions
+
+// SetOverridesActiveByService sets the active override count for a service.
+func SetOverridesActiveByService(service string, count int) {
+	OverridesActiveByService.WithLabelValues(service).Set(float64(count))
+}
+
+// RecordOverrideChange records an override change action for a service.
+func RecordOverrideChange(service, action string) {
+	OverrideChangesTotal.WithLabelValues(service, action).Inc()
 }

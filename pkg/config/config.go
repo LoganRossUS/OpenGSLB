@@ -8,8 +8,6 @@ package config
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -86,13 +84,15 @@ func (e *ValidationError) Error() string {
 }
 
 // Load reads and parses a configuration file from the given path.
+// This function processes any 'includes' directives in the configuration,
+// merging included files into the main configuration.
 func Load(path string) (*Config, error) {
-	cleanPath := filepath.Clean(path)
-	data, err := os.ReadFile(cleanPath)
+	cfg, _, err := LoadWithIncludes(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		return nil, err
 	}
-	return Parse(data)
+	applyDefaults(cfg)
+	return cfg, nil
 }
 
 // Parse parses configuration from YAML bytes.

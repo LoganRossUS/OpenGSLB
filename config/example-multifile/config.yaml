@@ -1,0 +1,93 @@
+# OpenGSLB Multi-File Configuration Example
+# ==========================================
+#
+# This example demonstrates how to split configuration across multiple files
+# for team-based management. Each team can manage their own domains while
+# infrastructure settings remain centralized.
+#
+# Directory structure:
+#   config.yaml           - This file (main config)
+#   regions/              - Region definitions
+#     us-east.yaml        - US East region
+#     us-west.yaml        - US West region
+#     eu-west.yaml        - EU West region
+#   domains/              - Domain configurations (team-based)
+#     team-a/             - Team A's domains
+#       app.yaml          - Team A's application
+#     team-b/             - Team B's domains
+#       api.yaml          - Team B's API service
+#   tokens.yaml           - Agent authentication tokens (sensitive)
+
+mode: overwatch
+
+# Include additional configuration files
+# - Glob patterns supported (*.yaml, **/*.yaml)
+# - Relative to this file's directory
+# - Files loaded in sorted order for determinism
+includes:
+  - regions/*.yaml       # Load all region files
+  - domains/**/*.yaml    # Recursively load all domain files
+  - tokens.yaml          # Load agent tokens
+
+# DNS server configuration
+dns:
+  listen_address: ":53"
+  zones:
+    - gslb.example.com
+  default_ttl: 30
+
+# Overwatch configuration
+overwatch:
+  identity:
+    node_id: overwatch-primary
+    region: us-east-1
+
+  gossip:
+    bind_address: "0.0.0.0:7946"
+    # Generate with: openssl rand -base64 32
+    encryption_key: "REPLACE_WITH_YOUR_32_BYTE_BASE64_KEY"
+    probe_interval: 1s
+    probe_timeout: 500ms
+    gossip_interval: 200ms
+
+  validation:
+    enabled: true
+    check_interval: 30s
+    check_timeout: 5s
+
+  stale:
+    threshold: 30s
+    remove_after: 5m
+
+  dnssec:
+    enabled: true
+    algorithm: ECDSAP256SHA256
+    key_sync:
+      peers: []
+      poll_interval: 1h
+
+  # Geolocation settings (if using geolocation routing)
+  # geolocation:
+  #   database_path: "/var/lib/opengslb/GeoLite2-Country.mmdb"
+  #   default_region: us-east-1
+  #   ecs_enabled: true
+
+# Logging configuration
+logging:
+  level: info
+  format: json
+
+# Metrics configuration
+metrics:
+  enabled: true
+  address: ":9091"
+
+# API configuration
+api:
+  enabled: true
+  address: ":9090"
+  allowed_networks:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+  trust_proxy_headers: false

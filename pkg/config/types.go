@@ -26,6 +26,11 @@ type Config struct {
 	// Mode specifies the runtime mode: "agent" or "overwatch" (ADR-015)
 	Mode RuntimeMode `yaml:"mode"`
 
+	// Includes is a list of glob patterns for additional configuration files
+	// to merge into this configuration. Patterns are relative to the main config file.
+	// Example: ["regions/*.yaml", "domains/**/*.yaml"]
+	Includes []string `yaml:"includes,omitempty"`
+
 	// Agent configuration (only used when mode=agent)
 	Agent AgentConfig `yaml:"agent"`
 
@@ -154,9 +159,46 @@ type OverwatchConfig struct {
 	// DNSSEC contains DNSSEC signing settings
 	DNSSEC DNSSECConfig `yaml:"dnssec"`
 
+	// Geolocation contains geolocation routing settings
+	Geolocation GeolocationConfig `yaml:"geolocation"`
+
 	// DataDir is the directory for persistent data (bbolt database)
 	// Default: /var/lib/opengslb
 	DataDir string `yaml:"data_dir"`
+}
+
+// GeolocationConfig defines geolocation routing settings.
+type GeolocationConfig struct {
+	// DatabasePath is the path to the MaxMind GeoLite2-Country database
+	// Required for geolocation routing to work
+	DatabasePath string `yaml:"database_path"`
+
+	// DefaultRegion is the fallback region when geo lookup fails
+	// Required
+	DefaultRegion string `yaml:"default_region"`
+
+	// ECSEnabled enables parsing of EDNS Client Subnet for more accurate geo
+	// Default: true
+	ECSEnabled bool `yaml:"ecs_enabled"`
+
+	// CustomMappings define CIDR-to-region mappings (evaluated BEFORE GeoIP)
+	CustomMappings []CustomMapping `yaml:"custom_mappings"`
+}
+
+// CustomMapping defines a CIDR-to-region mapping for custom geolocation rules.
+type CustomMapping struct {
+	// CIDR is the IP range in CIDR notation (e.g., "10.1.0.0/16")
+	CIDR string `yaml:"cidr"`
+
+	// Region is the target region for this CIDR
+	Region string `yaml:"region"`
+
+	// Comment is an optional description
+	Comment string `yaml:"comment,omitempty"`
+
+	// Source indicates where this mapping came from ("config" or "api")
+	// This is set automatically, not from config
+	Source string `yaml:"-"`
 }
 
 // OverwatchIdentityConfig defines overwatch node identity settings.
@@ -267,6 +309,15 @@ type Region struct {
 	Name        string      `yaml:"name"`
 	Servers     []Server    `yaml:"servers"`
 	HealthCheck HealthCheck `yaml:"health_check"`
+
+	// Countries is a list of ISO 3166-1 alpha-2 country codes for geolocation routing
+	// e.g., ["US", "CA", "MX"]
+	Countries []string `yaml:"countries,omitempty"`
+
+	// Continents is a list of continent codes for geolocation routing
+	// Valid codes: AF (Africa), AN (Antarctica), AS (Asia), EU (Europe),
+	// NA (North America), OC (Oceania), SA (South America)
+	Continents []string `yaml:"continents,omitempty"`
 }
 
 // Server defines a backend server within a region.
@@ -290,10 +341,24 @@ type HealthCheck struct {
 
 // Domain defines a domain and its routing configuration.
 type Domain struct {
-	Name             string   `yaml:"name"`
-	RoutingAlgorithm string   `yaml:"routing_algorithm"`
-	Regions          []string `yaml:"regions"`
-	TTL              int      `yaml:"ttl"`
+	Name             string         `yaml:"name"`
+	RoutingAlgorithm string         `yaml:"routing_algorithm"`
+	Regions          []string       `yaml:"regions"`
+	TTL              int            `yaml:"ttl"`
+	LatencyConfig    *LatencyConfig `yaml:"latency_config,omitempty"`
+}
+
+// LatencyConfig defines configuration for latency-based routing.
+type LatencyConfig struct {
+	// SmoothingFactor is the EMA alpha (0-1), higher = more responsive
+	// Default: 0.3
+	SmoothingFactor float64 `yaml:"smoothing_factor"`
+	// MaxLatencyMs excludes servers above this threshold
+	// Default: 500
+	MaxLatencyMs int `yaml:"max_latency_ms"`
+	// MinSamples is the minimum number of samples before using latency data
+	// Default: 3
+	MinSamples int `yaml:"min_samples"`
 }
 
 // LoggingConfig defines logging settings.

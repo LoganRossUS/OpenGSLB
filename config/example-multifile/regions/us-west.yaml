@@ -1,0 +1,25 @@
+# US West Region Configuration
+# Managed by: Infrastructure Team
+# Contact: infra@example.com
+
+regions:
+  - name: us-west-2
+    # Geolocation mapping (for geolocation routing)
+    # US West handles overflow from US East for NA traffic
+    # (priority given to us-east-1 via country list)
+
+    servers:
+      - address: "10.0.2.10"
+        port: 8080
+        weight: 100
+      - address: "10.0.2.11"
+        port: 8080
+        weight: 100
+
+    health_check:
+      type: http
+      path: /health
+      interval: 30s
+      timeout: 5s
+      failure_threshold: 3
+      success_threshold: 2

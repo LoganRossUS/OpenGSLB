@@ -98,6 +98,92 @@ var (
 	)
 )
 
+// Geolocation routing metrics (Sprint 6)
+var (
+	// RoutingGeoDecisionsTotal counts geolocation routing decisions by location.
+	RoutingGeoDecisionsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "routing_geo_decisions_total",
+			Help:      "Total geolocation routing decisions by country, continent, and region",
+		},
+		[]string{"domain", "country", "continent", "region"},
+	)
+
+	// RoutingGeoFallbackTotal counts fallbacks in geolocation routing.
+	RoutingGeoFallbackTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "routing_geo_fallback_total",
+			Help:      "Total geolocation routing fallbacks by reason",
+		},
+		[]string{"domain", "reason"},
+	)
+
+	// RoutingGeoCustomHitsTotal counts custom CIDR mapping matches.
+	RoutingGeoCustomHitsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "routing_geo_custom_hits_total",
+			Help:      "Total custom CIDR mapping matches in geolocation routing",
+		},
+		[]string{"domain", "region", "cidr"},
+	)
+)
+
+// Latency routing metrics (Sprint 6)
+var (
+	// RoutingLatencySelectedMs records the smoothed latency of selected server.
+	RoutingLatencySelectedMs = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "routing_latency_selected_ms",
+			Help:      "Smoothed latency in milliseconds of the selected server for latency-based routing",
+		},
+		[]string{"domain", "server"},
+	)
+
+	// RoutingLatencyRejectedTotal counts servers rejected due to latency threshold.
+	RoutingLatencyRejectedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "routing_latency_rejected_total",
+			Help:      "Total number of servers rejected due to latency threshold or insufficient data",
+		},
+		[]string{"domain", "server", "reason"},
+	)
+
+	// RoutingLatencyFallbackTotal counts fallbacks to round-robin.
+	RoutingLatencyFallbackTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "routing_latency_fallback_total",
+			Help:      "Total number of fallbacks to round-robin when latency data unavailable",
+		},
+		[]string{"domain", "reason"},
+	)
+
+	// BackendSmoothedLatencyMs records smoothed latency for each backend.
+	BackendSmoothedLatencyMs = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "backend_smoothed_latency_ms",
+			Help:      "Current smoothed (EMA) latency in milliseconds for each backend",
+		},
+		[]string{"service", "address"},
+	)
+
+	// BackendLatencySamples records number of latency samples for each backend.
+	BackendLatencySamples = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "backend_latency_samples",
+			Help:      "Number of latency samples collected for each backend",
+		},
+		[]string{"service", "address"},
+	)
+)
+
 // Application metrics
 var (
 	// AppInfo provides build information as labels.
@@ -261,6 +347,42 @@ func SetHealthyServers(region string, count int) {
 // RecordRoutingDecision records a routing decision.
 func RecordRoutingDecision(domain, algorithm, server string) {
 	RoutingDecisionsTotal.WithLabelValues(domain, algorithm, server).Inc()
+}
+
+// RecordGeoRoutingDecision records a geolocation routing decision.
+func RecordGeoRoutingDecision(domain, country, continent, region string) {
+	RoutingGeoDecisionsTotal.WithLabelValues(domain, country, continent, region).Inc()
+}
+
+// RecordGeoFallback records a geolocation routing fallback.
+func RecordGeoFallback(domain, reason string) {
+	RoutingGeoFallbackTotal.WithLabelValues(domain, reason).Inc()
+}
+
+// RecordGeoCustomHit records a custom CIDR mapping match in geolocation routing.
+func RecordGeoCustomHit(domain, region, cidr string) {
+	RoutingGeoCustomHitsTotal.WithLabelValues(domain, region, cidr).Inc()
+}
+
+// RecordLatencyRoutingDecision records a latency-based routing decision.
+func RecordLatencyRoutingDecision(domain, server string, latencyMs float64) {
+	RoutingLatencySelectedMs.WithLabelValues(domain, server).Set(latencyMs)
+}
+
+// RecordLatencyRejection records a server rejected due to latency.
+func RecordLatencyRejection(domain, server, reason string) {
+	RoutingLatencyRejectedTotal.WithLabelValues(domain, server, reason).Inc()
+}
+
+// RecordLatencyFallback records a fallback to round-robin.
+func RecordLatencyFallback(domain, reason string) {
+	RoutingLatencyFallbackTotal.WithLabelValues(domain, reason).Inc()
+}
+
+// SetBackendLatency sets the current latency metrics for a backend.
+func SetBackendLatency(service, address string, smoothedMs float64, samples int) {
+	BackendSmoothedLatencyMs.WithLabelValues(service, address).Set(smoothedMs)
+	BackendLatencySamples.WithLabelValues(service, address).Set(float64(samples))
 }
 
 // SetAppInfo sets the application info metric.

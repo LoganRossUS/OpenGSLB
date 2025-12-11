@@ -1,0 +1,16 @@
+# Team A - Application Domain Configuration
+# Managed by: Team A
+# Contact: team-a@example.com
+# Last updated: 2025-12-11
+#
+# This domain serves the main customer-facing application.
+# Uses round-robin routing for even distribution.
+
+domains:
+  - name: app.gslb.example.com
+    routing_algorithm: round-robin
+    regions:
+      - us-east-1
+      - us-west-2
+      - eu-west-1
+    ttl: 30

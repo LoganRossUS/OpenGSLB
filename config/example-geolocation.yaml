@@ -1,0 +1,295 @@
+# OpenGSLB Geolocation Routing Example
+# Sprint 6 Story 1: Geolocation Routing Algorithm
+#
+# This configuration demonstrates:
+# - GeoIP database integration for geographic routing
+# - Custom CIDR mappings for internal networks and overrides
+# - EDNS Client Subnet (ECS) support for accurate geo when behind resolvers
+# - Region-to-country/continent mapping
+#
+# Prerequisites:
+# 1. Download MaxMind GeoLite2-Country database:
+#    - Register at https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
+#    - Download GeoLite2-Country.mmdb
+#    - Place in /var/lib/opengslb/GeoLite2-Country.mmdb
+#
+# Usage: opengslb --mode=overwatch --config=/etc/opengslb/geolocation.yaml
+
+mode: overwatch
+
+overwatch:
+  identity:
+    node_id: overwatch-global-1
+    region: us-east
+
+  agent_tokens:
+    webapp: "your-secure-service-token-here"
+
+  gossip:
+    bind_address: "0.0.0.0:7946"
+    encryption_key: "REPLACE_WITH_YOUR_32_BYTE_BASE64_KEY"
+
+  validation:
+    enabled: true
+    check_interval: 30s
+    check_timeout: 5s
+
+  stale:
+    threshold: 30s
+    remove_after: 5m
+
+  dnssec:
+    enabled: true
+    algorithm: ECDSAP256SHA256
+
+  # Geolocation Configuration
+  geolocation:
+    # Path to MaxMind GeoLite2-Country database
+    database_path: "/var/lib/opengslb/GeoLite2-Country.mmdb"
+
+    # Fallback region when geo lookup fails
+    default_region: us-east
+
+    # Enable EDNS Client Subnet parsing for accurate geo
+    # when clients query through public resolvers (Google DNS, Cloudflare, etc.)
+    ecs_enabled: true
+
+    # Custom IP-to-region mappings (evaluated BEFORE GeoIP lookup)
+    # Use these for:
+    # - Internal/private IP ranges
+    # - VPN networks
+    # - Partner networks with known locations
+    # - Overriding GeoIP for specific IPs
+    custom_mappings:
+      # Internal office networks
+      - cidr: "10.1.0.0/16"
+        region: us-chicago
+        comment: "Kentucky office - route to Chicago DC"
+
+      - cidr: "10.2.0.0/16"
+        region: us-dallas
+        comment: "Texas office - route to Dallas DC"
+
+      - cidr: "10.3.0.0/16"
+        region: us-west
+        comment: "California office - route to US West"
+
+      # VPN ranges
+      - cidr: "172.16.0.0/12"
+        region: us-east
+        comment: "VPN users default to us-east"
+
+      # Partner networks (public IPs with known locations)
+      - cidr: "203.0.113.0/24"
+        region: ap-southeast
+        comment: "Partner Corp - override GeoIP to APAC"
+
+      # Cloud provider CGNAT ranges
+      - cidr: "100.64.0.0/10"
+        region: us-east
+        comment: "Cloud CGNAT - default to us-east"
+
+dns:
+  listen_address: "0.0.0.0:53"
+  default_ttl: 30
+  zones:
+    - gslb.example.com
+
+# Regions with geographic mapping
+# For geolocation routing, regions should specify:
+# - countries: ISO 3166-1 alpha-2 codes (e.g., "US", "CA")
+# - continents: AF (Africa), AN (Antarctica), AS (Asia), EU (Europe),
+#               NA (North America), OC (Oceania), SA (South America)
+regions:
+  # Internal-only region (no countries/continents - uses custom mappings only)
+  - name: us-chicago
+    servers:
+      - address: 10.100.1.10
+        port: 8080
+        weight: 100
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+
+  # Internal-only region
+  - name: us-dallas
+    servers:
+      - address: 10.100.2.10
+        port: 8080
+        weight: 100
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+
+  # US East - Americas
+  - name: us-east
+    countries:
+      - US
+      - CA
+      - MX
+      - BR
+      - AR
+    continents:
+      - NA
+      - SA
+    servers:
+      - address: 10.0.1.10
+        port: 8080
+        weight: 100
+      - address: 10.0.1.11
+        port: 8080
+        weight: 100
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+      failure_threshold: 3
+      success_threshold: 2
+
+  # US West
+  - name: us-west
+    # No countries - use custom mappings or as fallback from us-east
+    servers:
+      - address: 10.0.2.10
+        port: 8080
+        weight: 100
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+
+  # Europe
+  - name: eu-west
+    countries:
+      - GB
+      - DE
+      - FR
+      - ES
+      - IT
+      - NL
+      - BE
+      - IE
+      - AT
+      - CH
+    continents:
+      - EU
+    servers:
+      - address: 10.0.3.10
+        port: 8080
+        weight: 100
+      - address: 10.0.3.11
+        port: 8080
+        weight: 100
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+
+  # Asia Pacific
+  - name: ap-southeast
+    countries:
+      - JP
+      - KR
+      - SG
+      - AU
+      - NZ
+      - IN
+    continents:
+      - AS
+      - OC
+    servers:
+      - address: 10.0.4.10
+        port: 8080
+        weight: 100
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+
+# Domains using geolocation routing
+domains:
+  # Global service - route to nearest datacenter
+  - name: global.gslb.example.com
+    routing_algorithm: geolocation
+    regions:
+      - us-chicago  # Internal-only
+      - us-dallas   # Internal-only
+      - us-east     # Americas
+      - eu-west     # Europe
+      - ap-southeast  # Asia Pacific
+    ttl: 30
+
+  # API service - geolocation with specific regions
+  - name: api.gslb.example.com
+    routing_algorithm: geolocation
+    regions:
+      - us-east
+      - eu-west
+      - ap-southeast
+    ttl: 15
+
+  # Non-geo service using round-robin for comparison
+  - name: static.gslb.example.com
+    routing_algorithm: round-robin
+    regions:
+      - us-east
+      - eu-west
+    ttl: 300
+
+logging:
+  level: info
+  format: json
+
+metrics:
+  enabled: true
+  address: ":9090"
+
+api:
+  enabled: true
+  address: ":9091"
+  allowed_networks:
+    - 10.0.0.0/8
+    - 192.168.0.0/16
+    - 127.0.0.1/32
+
+# =============================================================================
+# Geolocation API Endpoints
+# =============================================================================
+#
+# List custom mappings:
+#   GET /api/v1/geo/mappings
+#
+# Add/update custom mapping:
+#   PUT /api/v1/geo/mappings
+#   {"cidr": "10.5.0.0/16", "region": "us-west", "comment": "New office"}
+#
+# Delete custom mapping:
+#   DELETE /api/v1/geo/mappings/10.5.0.0%2F16
+#
+# Test IP routing:
+#   GET /api/v1/geo/test?ip=10.1.50.100
+#   Response: {"ip": "10.1.50.100", "region": "us-chicago", "match_type": "custom_mapping", ...}
+#
+# =============================================================================
+# Hot-Reload
+# =============================================================================
+#
+# - GeoIP database: Automatically reloaded when file changes
+# - Custom mappings (config): Reloaded on SIGHUP
+# - Custom mappings (API): Immediate, persisted in KV store
+#
+# =============================================================================
+# Resolution Order
+# =============================================================================
+#
+# 1. Custom CIDR mappings (longest prefix match)
+# 2. GeoIP database lookup (country match > continent match)
+# 3. Default region fallback
