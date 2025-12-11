@@ -1,0 +1,229 @@
+# OpenGSLB Latency-Based Routing Example Configuration
+#
+# This example demonstrates latency-based routing, which routes DNS queries
+# to the server with the lowest measured latency. This is ideal for performance-
+# critical applications where response time is paramount.
+#
+# How Latency Routing Works:
+# 1. Overwatch performs external validation health checks on each backend
+# 2. The latency of each health check is recorded
+# 3. Latency is smoothed using Exponential Moving Average (EMA) to prevent flapping
+# 4. DNS queries are routed to the server with the lowest smoothed latency
+# 5. Falls back to round-robin when insufficient latency data is available
+
+mode: overwatch
+
+# Agent tokens for authentication
+overwatch:
+  identity:
+    node_id: "overwatch-1"
+    region: "us-east-1"
+
+  # Agent tokens (map service name to token)
+  agent_tokens:
+    myapp: "secret-token-for-myapp"
+    api-service: "secret-token-for-api"
+
+  # Gossip configuration for receiving agent health reports
+  gossip:
+    bind_address: "0.0.0.0:7946"
+    encryption_key: "YOUR_32_BYTE_BASE64_ENCRYPTION_KEY_HERE"
+
+  # External validation settings (CRITICAL for latency routing)
+  # Overwatch performs its own health checks to measure latency
+  validation:
+    enabled: true             # Must be enabled for latency routing
+    check_interval: 15s       # More frequent checks = more responsive routing
+    check_timeout: 5s
+
+  # Stale detection
+  stale:
+    threshold: 30s
+    remove_after: 5m
+
+  # Data directory for persistent storage
+  data_dir: /var/lib/opengslb
+
+  # DNSSEC (enabled by default)
+  dnssec:
+    enabled: true
+    algorithm: ECDSAP256SHA256
+
+# DNS server configuration
+dns:
+  listen_address: ":53"
+  default_ttl: 15             # Lower TTL for latency routing (faster failover)
+  zones:
+    - perf.example.com
+
+# Logging
+logging:
+  level: info
+  format: json
+
+# Metrics
+metrics:
+  enabled: true
+  address: ":9091"
+
+# API (for CLI and external tools)
+api:
+  enabled: true
+  address: ":9090"
+  allowed_networks:
+    - 10.0.0.0/8
+    - 192.168.0.0/16
+
+# Regions with servers
+regions:
+  - name: us-east-1
+    servers:
+      - address: "10.0.1.10"
+        port: 8080
+        weight: 1
+      - address: "10.0.1.11"
+        port: 8080
+        weight: 1
+    health_check:
+      type: http
+      path: /health
+      interval: 10s
+      timeout: 3s
+      failure_threshold: 2
+      success_threshold: 2
+
+  - name: us-west-2
+    servers:
+      - address: "10.0.2.10"
+        port: 8080
+        weight: 1
+      - address: "10.0.2.11"
+        port: 8080
+        weight: 1
+    health_check:
+      type: http
+      path: /health
+      interval: 10s
+      timeout: 3s
+      failure_threshold: 2
+      success_threshold: 2
+
+  - name: eu-west-1
+    servers:
+      - address: "10.0.3.10"
+        port: 8080
+        weight: 1
+    health_check:
+      type: http
+      path: /health
+      interval: 10s
+      timeout: 3s
+      failure_threshold: 2
+      success_threshold: 2
+
+# Domain configurations
+domains:
+  # Performance-critical API endpoint - uses latency routing
+  - name: api.perf.example.com
+    routing_algorithm: latency
+    regions:
+      - us-east-1
+      - us-west-2
+      - eu-west-1
+    ttl: 15
+    latency_config:
+      smoothing_factor: 0.3    # EMA alpha (0-1), higher = more responsive to changes
+      max_latency_ms: 500      # Exclude servers with latency above this threshold
+      min_samples: 3           # Require at least 3 samples before using latency data
+
+  # Database connection - lower max latency for DB connections
+  - name: db.perf.example.com
+    routing_algorithm: latency
+    regions:
+      - us-east-1
+      - us-west-2
+    ttl: 10
+    latency_config:
+      smoothing_factor: 0.5    # Higher alpha = faster response to latency changes
+      max_latency_ms: 100      # DB connections need low latency
+      min_samples: 5           # More samples for stability
+
+  # Static assets - latency matters less, use geolocation
+  - name: cdn.perf.example.com
+    routing_algorithm: round-robin
+    regions:
+      - us-east-1
+      - us-west-2
+      - eu-west-1
+    ttl: 60
+
+# ============================================================================
+# Latency Routing Configuration Reference
+# ============================================================================
+#
+# smoothing_factor (0.0 - 1.0):
+#   Controls how responsive the EMA is to new measurements.
+#   - Higher values (0.5-0.8): More responsive, adapts quickly to changes
+#   - Lower values (0.1-0.3): More stable, smooths out temporary spikes
+#   - Default: 0.3 (balanced)
+#
+#   Formula: smoothed = alpha * new_measurement + (1 - alpha) * previous_smoothed
+#
+# max_latency_ms:
+#   Servers with smoothed latency above this threshold are excluded from selection.
+#   If ALL servers are above threshold, the lowest latency server is still selected.
+#   - Use for ensuring quality-of-service guarantees
+#   - Set to 0 to disable threshold filtering
+#   - Default: 500ms
+#
+# min_samples:
+#   Minimum number of latency measurements required before using latency data.
+#   Servers with fewer samples fall back to round-robin selection.
+#   - Higher values: More stable but slower initial routing
+#   - Lower values: Faster adaptation but potentially noisy
+#   - Default: 3
+#
+# ============================================================================
+# Prometheus Metrics for Latency Routing
+# ============================================================================
+#
+# opengslb_backend_smoothed_latency_ms{service, address}
+#   Current smoothed (EMA) latency in milliseconds for each backend
+#
+# opengslb_backend_latency_samples{service, address}
+#   Number of latency samples collected for each backend
+#
+# opengslb_routing_latency_selected_ms{domain, server}
+#   Smoothed latency of the selected server for each latency routing decision
+#
+# opengslb_routing_latency_rejected_total{domain, server, reason}
+#   Count of servers rejected (reason: "above_threshold" or "insufficient_data")
+#
+# opengslb_routing_latency_fallback_total{domain, reason}
+#   Count of fallbacks to round-robin (reason: "no_provider" or "no_valid_servers")
+#
+# ============================================================================
+# Best Practices
+# ============================================================================
+#
+# 1. Enable external validation (validation.enabled: true)
+#    Latency routing requires Overwatch to measure latency during health checks.
+#
+# 2. Set appropriate check_interval
+#    More frequent checks = more accurate latency data, but more load.
+#    Recommended: 10-30 seconds depending on traffic patterns.
+#
+# 3. Use lower TTLs for latency-routed domains
+#    Lower TTL (10-30s) allows faster failover when latency changes.
+#
+# 4. Tune smoothing_factor based on your needs:
+#    - Stable services: 0.2-0.3 (smooth out noise)
+#    - Variable latency: 0.4-0.5 (respond to changes)
+#    - Highly dynamic: 0.6-0.8 (very responsive)
+#
+# 5. Set realistic max_latency_ms
+#    Base this on your SLA requirements and typical latency ranges.
+#
+# 6. Monitor the metrics
+#    Watch opengslb_backend_smoothed_latency_ms to understand latency patterns.
+#    Alert on opengslb_routing_latency_fallback_total increasing unexpectedly.

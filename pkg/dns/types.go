@@ -9,6 +9,7 @@ package dns
 import (
 	"log/slog"
 	"net"
+	"time"
 
 	"github.com/loganrossus/OpenGSLB/pkg/routing"
 )
@@ -33,6 +34,23 @@ type DomainEntry struct {
 // HealthProvider checks if a server is healthy.
 type HealthProvider interface {
 	IsHealthy(address string, port int) bool
+}
+
+// LatencyInfo contains latency information for a backend server.
+type LatencyInfo struct {
+	// SmoothedLatency is the EMA of validation latency measurements.
+	SmoothedLatency time.Duration
+	// Samples is the number of latency samples collected.
+	Samples int
+	// LastLatency is the most recent raw latency measurement.
+	LastLatency time.Duration
+	// HasData indicates whether latency data is available.
+	HasData bool
+}
+
+// LatencyProvider provides latency data for servers (used by latency-based routing).
+type LatencyProvider interface {
+	GetLatency(address string, port int) LatencyInfo
 }
 
 // LeaderChecker checks if this node should serve DNS.

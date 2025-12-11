@@ -24,8 +24,8 @@ const (
 )
 
 // NewRouter creates a router based on the algorithm name.
-// Supported algorithms: round-robin, weighted, failover.
-// For geolocation or latency routing, use NewRouterWithConfig or Factory.
+// Supported algorithms: round-robin, weighted, failover, geolocation, latency.
+// For geolocation or latency routing with providers, use Factory.NewRouter().
 func NewRouter(algorithm string) (Router, error) {
 	switch strings.ToLower(algorithm) {
 	case AlgorithmRoundRobin, "roundrobin", "rr":
@@ -38,8 +38,9 @@ func NewRouter(algorithm string) (Router, error) {
 		// Return a GeoRouter without resolver - must be configured later
 		return NewGeoRouter(GeoRouterConfig{}), nil
 	case AlgorithmLatency:
-		// Latency routing will be implemented in Sprint 6 Story 2
-		return nil, fmt.Errorf("latency routing not yet implemented")
+		// Return a LatencyRouter without provider - will fall back to round-robin
+		// until a provider is set via SetProvider()
+		return NewLatencyRouter(LatencyRouterConfig{}), nil
 	default:
 		return nil, fmt.Errorf("unknown routing algorithm: %s", algorithm)
 	}
@@ -47,16 +48,22 @@ func NewRouter(algorithm string) (Router, error) {
 
 // Factory creates routers with access to shared resources like geo resolver.
 type Factory struct {
-	geoResolver   *geo.Resolver
-	defaultRegion string
-	logger        *slog.Logger
+	geoResolver       *geo.Resolver
+	latencyProvider   LatencyProvider
+	defaultRegion     string
+	maxLatencyMs      int
+	minLatencySamples int
+	logger            *slog.Logger
 }
 
 // FactoryConfig contains configuration for creating a Factory.
 type FactoryConfig struct {
-	GeoResolver   *geo.Resolver
-	DefaultRegion string
-	Logger        *slog.Logger
+	GeoResolver       *geo.Resolver
+	LatencyProvider   LatencyProvider
+	DefaultRegion     string
+	MaxLatencyMs      int // Max latency threshold for latency routing (default: 500)
+	MinLatencySamples int // Min samples required before using latency data (default: 3)
+	Logger            *slog.Logger
 }
 
 // NewFactory creates a new router Factory.
@@ -65,10 +72,24 @@ func NewFactory(cfg FactoryConfig) *Factory {
 	if logger == nil {
 		logger = slog.Default()
 	}
+
+	// Apply defaults for latency config
+	maxLatencyMs := cfg.MaxLatencyMs
+	if maxLatencyMs == 0 {
+		maxLatencyMs = 500
+	}
+	minSamples := cfg.MinLatencySamples
+	if minSamples == 0 {
+		minSamples = 3
+	}
+
 	return &Factory{
-		geoResolver:   cfg.GeoResolver,
-		defaultRegion: cfg.DefaultRegion,
-		logger:        logger,
+		geoResolver:       cfg.GeoResolver,
+		latencyProvider:   cfg.LatencyProvider,
+		defaultRegion:     cfg.DefaultRegion,
+		maxLatencyMs:      maxLatencyMs,
+		minLatencySamples: minSamples,
+		logger:            logger,
 	}
 }
 
@@ -89,8 +110,12 @@ func (f *Factory) NewRouter(algorithm string) (Router, error) {
 			Logger:        f.logger,
 		}), nil
 	case AlgorithmLatency:
-		// Latency routing will be implemented in Sprint 6 Story 2
-		return nil, fmt.Errorf("latency routing not yet implemented")
+		return NewLatencyRouter(LatencyRouterConfig{
+			Provider:     f.latencyProvider,
+			MaxLatencyMs: f.maxLatencyMs,
+			MinSamples:   f.minLatencySamples,
+			Logger:       f.logger,
+		}), nil
 	default:
 		return nil, fmt.Errorf("unknown routing algorithm: %s", algorithm)
 	}
@@ -104,4 +129,19 @@ func (f *Factory) SetGeoResolver(resolver *geo.Resolver) {
 // SetDefaultRegion sets the default region for geolocation routing.
 func (f *Factory) SetDefaultRegion(region string) {
 	f.defaultRegion = region
+}
+
+// SetLatencyProvider sets or updates the latency provider for creating LatencyRouters.
+func (f *Factory) SetLatencyProvider(provider LatencyProvider) {
+	f.latencyProvider = provider
+}
+
+// SetLatencyConfig updates the latency routing configuration.
+func (f *Factory) SetLatencyConfig(maxLatencyMs, minSamples int) {
+	if maxLatencyMs > 0 {
+		f.maxLatencyMs = maxLatencyMs
+	}
+	if minSamples > 0 {
+		f.minLatencySamples = minSamples
+	}
 }
