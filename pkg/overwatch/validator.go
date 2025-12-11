@@ -217,13 +217,14 @@ func (v *Validator) validateSingleBackend(backend *Backend) {
 		validationErr = result.Error.Error()
 	}
 
-	// Update the registry with validation result
-	if err := v.registry.UpdateValidation(
+	// Update the registry with validation result including latency
+	if err := v.registry.UpdateValidationWithLatency(
 		backend.Service,
 		backend.Address,
 		backend.Port,
 		result.Healthy,
 		validationErr,
+		result.Latency,
 	); err != nil {
 		v.config.Logger.Warn("failed to update validation result",
 			"service", backend.Service,

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/loganrossus/OpenGSLB/pkg/metrics"
 	"github.com/loganrossus/OpenGSLB/pkg/store"
 )
 
@@ -74,6 +75,14 @@ type Backend struct {
 
 	// EffectiveStatus is the computed effective status based on the hierarchy.
 	EffectiveStatus BackendStatus `json:"effective_status"`
+
+	// Latency tracking for latency-based routing (Sprint 6)
+	// SmoothedLatency is the EMA of validation latency measurements
+	SmoothedLatency time.Duration `json:"smoothed_latency,omitempty"`
+	// LatencySamples is the number of latency samples collected
+	LatencySamples int `json:"latency_samples,omitempty"`
+	// LastLatency is the most recent raw latency measurement
+	LastLatency time.Duration `json:"last_latency,omitempty"`
 }
 
 // RegistryConfig configures the backend registry.
@@ -85,6 +94,11 @@ type RegistryConfig struct {
 	// RemoveAfter is the duration after which a stale backend is removed.
 	RemoveAfter time.Duration
 
+	// LatencySmoothingFactor is the EMA alpha for latency smoothing (0-1).
+	// Higher values make the EMA more responsive to recent measurements.
+	// Default: 0.3
+	LatencySmoothingFactor float64
+
 	// Logger for registry operations.
 	Logger *slog.Logger
 }
@@ -92,9 +106,10 @@ type RegistryConfig struct {
 // DefaultRegistryConfig returns sensible defaults.
 func DefaultRegistryConfig() RegistryConfig {
 	return RegistryConfig{
-		StaleThreshold: 30 * time.Second,
-		RemoveAfter:    5 * time.Minute,
-		Logger:         slog.Default(),
+		StaleThreshold:         30 * time.Second,
+		RemoveAfter:            5 * time.Minute,
+		LatencySmoothingFactor: 0.3, // EMA alpha default
+		Logger:                 slog.Default(),
 	}
 }
 
@@ -253,6 +268,12 @@ func (r *Registry) Deregister(service, address string, port int) error {
 
 // UpdateValidation updates the external validation result for a backend.
 func (r *Registry) UpdateValidation(service, address string, port int, healthy bool, validationErr string) error {
+	return r.UpdateValidationWithLatency(service, address, port, healthy, validationErr, 0)
+}
+
+// UpdateValidationWithLatency updates the external validation result for a backend,
+// including latency measurement for latency-based routing.
+func (r *Registry) UpdateValidationWithLatency(service, address string, port int, healthy bool, validationErr string, latency time.Duration) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -266,6 +287,11 @@ func (r *Registry) UpdateValidation(service, address string, port int, healthy b
 	backend.ValidationHealthy = &healthy
 	backend.ValidationLastCheck = time.Now()
 	backend.ValidationError = validationErr
+
+	// Update latency with EMA smoothing (only for successful healthy checks)
+	if healthy && latency > 0 {
+		r.updateLatencyEMA(backend, latency)
+	}
 
 	r.computeEffectiveStatus(backend)
 
@@ -291,6 +317,34 @@ func (r *Registry) UpdateValidation(service, address string, port int, healthy b
 	}
 
 	return nil
+}
+
+// updateLatencyEMA updates the backend's smoothed latency using exponential moving average.
+func (r *Registry) updateLatencyEMA(backend *Backend, measured time.Duration) {
+	backend.LastLatency = measured
+
+	if backend.LatencySamples == 0 {
+		// First sample - use it directly
+		backend.SmoothedLatency = measured
+	} else {
+		// Apply EMA: smoothed = alpha * measured + (1 - alpha) * previous
+		alpha := r.config.LatencySmoothingFactor
+		if alpha <= 0 || alpha > 1 {
+			alpha = 0.3 // Default if not configured
+		}
+		backend.SmoothedLatency = time.Duration(
+			alpha*float64(measured) + (1-alpha)*float64(backend.SmoothedLatency),
+		)
+	}
+	backend.LatencySamples++
+
+	// Record metrics
+	metrics.SetBackendLatency(
+		backend.Service,
+		fmt.Sprintf("%s:%d", backend.Address, backend.Port),
+		float64(backend.SmoothedLatency.Milliseconds()),
+		backend.LatencySamples,
+	)
 }
 
 // SetOverride sets a manual override for a backend.
@@ -448,6 +502,37 @@ func (r *Registry) IsHealthy(address string, port int) bool {
 		}
 	}
 	return false
+}
+
+// LatencyInfo contains latency information for a backend.
+type LatencyInfo struct {
+	// SmoothedLatency is the EMA of validation latency measurements.
+	SmoothedLatency time.Duration
+	// Samples is the number of latency samples collected.
+	Samples int
+	// LastLatency is the most recent raw latency measurement.
+	LastLatency time.Duration
+	// HasData indicates whether latency data is available.
+	HasData bool
+}
+
+// GetLatency returns latency information for a backend (for latency-based routing).
+func (r *Registry) GetLatency(address string, port int) LatencyInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Search for backend by address:port (service-agnostic for DNS)
+	for _, backend := range r.backends {
+		if backend.Address == address && backend.Port == port {
+			return LatencyInfo{
+				SmoothedLatency: backend.SmoothedLatency,
+				Samples:         backend.LatencySamples,
+				LastLatency:     backend.LastLatency,
+				HasData:         backend.LatencySamples > 0,
+			}
+		}
+	}
+	return LatencyInfo{HasData: false}
 }
 
 // BackendCount returns the total number of registered backends.
