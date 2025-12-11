@@ -25,11 +25,12 @@ type ServerConfig struct {
 
 // Server is the HTTP API server.
 type Server struct {
-	config          ServerConfig
-	httpServer      *http.Server
-	handlers        *Handlers
-	clusterHandlers *ClusterHandlers
-	logger          *slog.Logger
+	config           ServerConfig
+	httpServer       *http.Server
+	handlers         *Handlers
+	clusterHandlers  *ClusterHandlers
+	overrideHandlers *OverrideHandlers
+	logger           *slog.Logger
 }
 
 // NewServer creates a new API server.
@@ -55,6 +56,11 @@ func (s *Server) SetClusterHandlers(ch *ClusterHandlers) {
 	s.clusterHandlers = ch
 }
 
+// SetOverrideHandlers sets the override handlers for override API endpoints.
+func (s *Server) SetOverrideHandlers(oh *OverrideHandlers) {
+	s.overrideHandlers = oh
+}
+
 // Start begins serving the API.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -71,6 +77,13 @@ func (s *Server) Start(ctx context.Context) error {
 		mux.HandleFunc("/api/v1/cluster/status", s.clusterHandlers.HandleStatus)
 		mux.HandleFunc("/api/v1/cluster/remove", s.clusterHandlers.HandleRemove)
 		s.logger.Debug("cluster API endpoints registered")
+	}
+
+	// Register override routes if override handlers are set
+	if s.overrideHandlers != nil {
+		mux.HandleFunc("/api/v1/overrides/", s.overrideHandlers.HandleOverrides)
+		mux.HandleFunc("/api/v1/overrides", s.overrideHandlers.HandleOverrides)
+		s.logger.Debug("override API endpoints registered")
 	}
 
 	// Build middleware chain
@@ -100,6 +113,7 @@ func (s *Server) Start(ctx context.Context) error {
 		"allowed_networks", s.config.AllowedNetworks,
 		"trust_proxy_headers", s.config.TrustProxyHeaders,
 		"cluster_endpoints", s.clusterHandlers != nil,
+		"override_endpoints", s.overrideHandlers != nil,
 	)
 
 	errCh := make(chan error, 1)
