@@ -1,0 +1,28 @@
+# EU West Region Configuration
+# Managed by: Infrastructure Team
+# Contact: infra@example.com
+
+regions:
+  - name: eu-west-1
+    # Geolocation mapping (for geolocation routing)
+    countries: ["GB", "DE", "FR", "ES", "IT", "NL", "BE", "IE", "PT", "AT", "CH"]
+    continents: ["EU"]
+
+    servers:
+      - address: "10.0.3.10"
+        port: 8080
+        weight: 100
+      - address: "10.0.3.11"
+        port: 8080
+        weight: 100
+      - address: "10.0.3.12"
+        port: 8080
+        weight: 100
+
+    health_check:
+      type: http
+      path: /health
+      interval: 30s
+      timeout: 5s
+      failure_threshold: 3
+      success_threshold: 2
