@@ -43,10 +43,10 @@ type Application struct {
 	apiServer     *api.Server
 
 	// Overwatch mode components (Story 3)
-	backendRegistry   *overwatch.Registry
+	backendRegistry    *overwatch.Registry
 	overwatchValidator *overwatch.Validator
-	gossipHandler     *overwatch.GossipHandler
-	overwatchStore    store.Store
+	gossipHandler      *overwatch.GossipHandler
+	overwatchStore     store.Store
 
 	// Agent mode components (Story 2)
 	agentInstance *agent.Agent

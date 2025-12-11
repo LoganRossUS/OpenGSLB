@@ -68,19 +68,19 @@ type OverrideResponse struct {
 
 // StatsResponse is the response for GET /api/v1/overwatch/stats.
 type StatsResponse struct {
-	TotalBackends       int       `json:"total_backends"`
-	HealthyBackends     int       `json:"healthy_backends"`
-	UnhealthyBackends   int       `json:"unhealthy_backends"`
-	StaleBackends       int       `json:"stale_backends"`
-	ActiveOverrides     int       `json:"active_overrides"`
-	ValidationEnabled   bool      `json:"validation_enabled"`
-	ValidatedBackends   int       `json:"validated_backends"`
-	DisagreementCount   int       `json:"disagreement_count"`
-	ActiveAgents        int       `json:"active_agents"`
-	UniqueServices      int       `json:"unique_services"`
-	BackendsByService   map[string]int `json:"backends_by_service"`
-	BackendsByRegion    map[string]int `json:"backends_by_region"`
-	GeneratedAt         time.Time `json:"generated_at"`
+	TotalBackends     int            `json:"total_backends"`
+	HealthyBackends   int            `json:"healthy_backends"`
+	UnhealthyBackends int            `json:"unhealthy_backends"`
+	StaleBackends     int            `json:"stale_backends"`
+	ActiveOverrides   int            `json:"active_overrides"`
+	ValidationEnabled bool           `json:"validation_enabled"`
+	ValidatedBackends int            `json:"validated_backends"`
+	DisagreementCount int            `json:"disagreement_count"`
+	ActiveAgents      int            `json:"active_agents"`
+	UniqueServices    int            `json:"unique_services"`
+	BackendsByService map[string]int `json:"backends_by_service"`
+	BackendsByRegion  map[string]int `json:"backends_by_region"`
+	GeneratedAt       time.Time      `json:"generated_at"`
 }
 
 // ErrorResponse represents an API error.
@@ -234,11 +234,11 @@ func (h *APIHandlers) HandleStats(w http.ResponseWriter, r *http.Request) {
 	backends := h.registry.GetAllBackends()
 
 	stats := StatsResponse{
-		TotalBackends:      len(backends),
-		ValidationEnabled:  h.validator != nil && h.validator.IsRunning(),
-		BackendsByService:  make(map[string]int),
-		BackendsByRegion:   make(map[string]int),
-		GeneratedAt:        time.Now().UTC(),
+		TotalBackends:     len(backends),
+		ValidationEnabled: h.validator != nil && h.validator.IsRunning(),
+		BackendsByService: make(map[string]int),
+		BackendsByRegion:  make(map[string]int),
+		GeneratedAt:       time.Now().UTC(),
 	}
 
 	agentIDs := make(map[string]bool)
