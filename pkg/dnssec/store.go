@@ -212,15 +212,15 @@ func sanitizeZone(zone string) string {
 
 // KeyInfo represents key information for API responses.
 type KeyInfo struct {
-	Zone        string    `json:"zone"`
-	KeyTag      uint16    `json:"key_tag"`
-	Algorithm   Algorithm `json:"algorithm"`
-	Flags       uint16    `json:"flags"`
-	PublicKey   string    `json:"public_key"`
-	CreatedAt   string    `json:"created_at"`
-	NodeID      string    `json:"node_id"`
-	CanSign     bool      `json:"can_sign"`
-	AgeSeconds  int64     `json:"age_seconds"`
+	Zone       string    `json:"zone"`
+	KeyTag     uint16    `json:"key_tag"`
+	Algorithm  Algorithm `json:"algorithm"`
+	Flags      uint16    `json:"flags"`
+	PublicKey  string    `json:"public_key"`
+	CreatedAt  string    `json:"created_at"`
+	NodeID     string    `json:"node_id"`
+	CanSign    bool      `json:"can_sign"`
+	AgeSeconds int64     `json:"age_seconds"`
 }
 
 // GetKeyInfo returns key information for API responses.

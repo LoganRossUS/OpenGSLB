@@ -252,7 +252,7 @@ type KeysResponse struct {
 
 // StatusResponse is the response for GET /api/v1/dnssec/status.
 type StatusResponse struct {
-	Enabled bool                  `json:"enabled"`
-	Keys    []*dnssec.KeyInfo     `json:"keys,omitempty"`
-	Sync    dnssec.SyncStatus     `json:"sync,omitempty"`
+	Enabled bool              `json:"enabled"`
+	Keys    []*dnssec.KeyInfo `json:"keys,omitempty"`
+	Sync    dnssec.SyncStatus `json:"sync,omitempty"`
 }

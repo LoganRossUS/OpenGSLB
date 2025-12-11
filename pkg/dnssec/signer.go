@@ -9,7 +9,6 @@ package dnssec
 import (
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -44,17 +43,8 @@ type SignerConfig struct {
 
 // Signer signs DNS responses with DNSSEC.
 type Signer struct {
-	config       SignerConfig
-	logger       *slog.Logger
-	mu           sync.RWMutex
-	signerCache  map[string]*cachedRRSIG
-	cacheMaxAge  time.Duration
-}
-
-// cachedRRSIG caches an RRSIG to avoid re-signing identical RRsets.
-type cachedRRSIG struct {
-	rrsig     *dns.RRSIG
-	createdAt time.Time
+	config SignerConfig
+	logger *slog.Logger
 }
 
 // NewSigner creates a new DNSSEC signer.
@@ -75,10 +65,8 @@ func NewSigner(config SignerConfig) *Signer {
 	}
 
 	return &Signer{
-		config:      config,
-		logger:      logger,
-		signerCache: make(map[string]*cachedRRSIG),
-		cacheMaxAge: 5 * time.Minute,
+		config: config,
+		logger: logger,
 	}
 }
 
@@ -141,9 +129,7 @@ func (s *Signer) signDNSMessage(msg *dns.Msg) (*dns.Msg, error) {
 	// Handle NXDOMAIN with NSEC3
 	if msg.Rcode == dns.RcodeNameError && s.config.NSEC3Manager != nil {
 		nsec3Records := s.config.NSEC3Manager.GenerateNXDOMAIN(zone, msg.Question[0].Name)
-		for _, nsec3 := range nsec3Records {
-			signed.Ns = append(signed.Ns, nsec3)
-		}
+		signed.Ns = append(signed.Ns, nsec3Records...)
 		// Sign the NSEC3 records
 		if err := s.signSection(&signed.Ns, keyPair, zone); err != nil {
 			s.recordMetrics(zone, time.Since(start), false)
