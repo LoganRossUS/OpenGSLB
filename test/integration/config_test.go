@@ -69,7 +69,7 @@ domains:
 			t.Fatalf("failed to write config: %v", err)
 		}
 
-		cfg, err := config.LoadFromFile(configPath)
+		cfg, err := config.Load(configPath)
 		if err != nil {
 			t.Fatalf("failed to load config: %v", err)
 		}
@@ -155,7 +155,7 @@ overwatch:
 			t.Fatalf("failed to write main config: %v", err)
 		}
 
-		cfg, err := config.LoadFromFile(mainConfigPath)
+		cfg, err := config.Load(mainConfigPath)
 		if err != nil {
 			t.Fatalf("failed to load config with includes: %v", err)
 		}
@@ -246,7 +246,7 @@ domains:
 			t.Fatalf("failed to write glob main config: %v", err)
 		}
 
-		cfg, err := config.LoadFromFile(mainConfigPath)
+		cfg, err := config.Load(mainConfigPath)
 		if err != nil {
 			t.Fatalf("failed to load config with glob includes: %v", err)
 		}
@@ -294,7 +294,7 @@ domains:
 			t.Fatalf("failed to write config: %v", err)
 		}
 
-		cfg, err := config.LoadFromFile(configPath)
+		cfg, err := config.Load(configPath)
 		if err != nil {
 			t.Fatalf("failed to load config: %v", err)
 		}
@@ -349,7 +349,7 @@ domains:
 			t.Fatalf("failed to write config: %v", err)
 		}
 
-		cfg, err := config.LoadFromFile(configPath)
+		cfg, err := config.Load(configPath)
 		if err != nil {
 			t.Fatalf("failed to load config: %v", err)
 		}
