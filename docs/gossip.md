@@ -177,18 +177,63 @@ overwatch:
     gossip_interval: 200ms
 ```
 
-### Encryption
+### Encryption (Mandatory)
 
-Encryption is **required** in production. Generate a 32-byte key:
+OpenGSLB **requires** encrypted gossip communication. There is no option to disable encryption - this is a security-critical feature that protects against:
+
+- **Man-in-the-middle attacks**: Prevents attackers from intercepting or modifying health updates
+- **Unauthorized agents**: Only nodes with the correct key can participate in the cluster
+- **Data tampering**: Ensures integrity of backend health information
+
+#### Key Requirements
+
+- **Algorithm**: AES-256 encryption via memberlist
+- **Key length**: Exactly 32 bytes (256 bits)
+- **Format**: Base64-encoded in configuration files
+- **Scope**: Same key must be used by all Agents and Overwatch nodes
+
+#### Generating an Encryption Key
 
 ```bash
-# Generate key
+# Recommended: Generate a secure 32-byte key using OpenSSL
 openssl rand -base64 32
 
 # Example output: xK7dQm9pR8vLnM3wYhA2cE5fG6jN1sU4tB0oZiXeHrI=
 ```
 
+Alternative methods:
+
+```bash
+# Using /dev/urandom (Linux/macOS)
+head -c 32 /dev/urandom | base64
+
+# Using Python
+python3 -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
+```
+
+#### Key Distribution
+
 **Important**: All Agents and Overwatch nodes must use the same encryption key.
+
+Recommended practices:
+1. Generate the key once on a secure system
+2. Distribute via secure configuration management (e.g., Vault, AWS Secrets Manager, SOPS)
+3. Never commit keys to version control
+4. Rotate keys periodically by deploying new keys to all nodes before removing old keys
+
+#### Startup Validation
+
+OpenGSLB validates the encryption key at startup. If the key is missing or invalid, startup will fail with a clear error:
+
+```
+ERROR: gossip.encryption_key is required. OpenGSLB requires encrypted gossip communication.
+       Generate a key with: openssl rand -base64 32
+```
+
+```
+ERROR: gossip.encryption_key must be exactly 32 bytes (got 16).
+       Ensure you're using a 256-bit key. Generate with: openssl rand -base64 32
+```
 
 ## Metrics
 
