@@ -20,7 +20,7 @@
 package version
 
 // Version is the current version of OpenGSLB.
-const Version = "0.1.0-dev"
+const Version = "0.6.0"
 
 // GetVersion returns the current version string.
 func GetVersion() string {
