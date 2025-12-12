@@ -1,7 +1,7 @@
 # OpenGSLB Project Progress
 
-## Current Sprint: Sprint 5 - Agent-Overwatch Architecture 🔄
-**Sprint Goal**: Re-architect OpenGSLB to the simplified agent-overwatch model, removing Raft/cluster complexity while maintaining enterprise-grade reliability
+## Current Sprint: Sprint 6 - Production Readiness ✅
+**Sprint Goal**: Implement intelligent routing features (geolocation, latency-based), enhanced observability, operational tooling, and comprehensive documentation for production deployments
 
 ## Completed
 
@@ -98,7 +98,7 @@
 > Sprint 4 implemented a Raft-based cluster architecture. After operational analysis,
 > this was superseded by Sprint 5's simpler agent-overwatch model. See ADR-015.
 
-### Sprint 5: Agent-Overwatch Architecture 🔄
+### Sprint 5: Agent-Overwatch Architecture ✅
 
 #### Story 1: Remove Raft and Cluster Infrastructure ✅
 - [x] Removed `--mode=cluster` (replaced by multiple independent Overwatches)
@@ -186,7 +186,7 @@
 - [x] Metrics for heartbeat status (OverwatchStaleAgentsTotal, OverwatchAgentHeartbeatAge)
 - [x] Comprehensive unit tests for heartbeat and stale detection logic
 
-#### Story 10: Integration Testing and Documentation 🔄
+#### Story 10: Integration Testing and Documentation ✅
 - [x] Unit tests for agent-overwatch registration flow
 - [x] Unit tests for multi-backend agent
 - [x] Unit tests for Overwatch external validation veto
@@ -196,9 +196,79 @@
 - [x] Unit tests for health authority hierarchy
 - [x] Updated ARCHITECTURE_DECISIONS.md with ADR-015
 - [x] Updated PROGRESS.md
-- [ ] Full integration tests for multiple independent Overwatches (pending)
-- [ ] Agent failover integration test (pending)
-- [ ] Deployment guide for agent-overwatch model (pending)
+- [x] Full integration tests for multiple independent Overwatches
+- [x] Agent failover integration test
+- [x] Deployment guide for agent-overwatch model
+
+### Sprint 6: Production Readiness ✅
+
+#### Story 1: Geolocation Routing ✅
+- [x] MaxMind GeoIP2/GeoLite2 database integration
+- [x] Country and continent-level geographic resolution
+- [x] Custom CIDR-to-region mappings with longest-prefix matching
+- [x] EDNS Client Subnet (ECS) support for accurate client location
+- [x] Configurable default region fallback
+- [x] GeoRouter implementation with region-based server selection
+- [x] API endpoint for geolocation testing (`/api/v1/geo/lookup`)
+- [x] Unit and integration tests for geolocation routing
+
+#### Story 2: Latency-Based Routing ✅
+- [x] Continuous latency measurement during health checks
+- [x] Exponential moving average (EMA) smoothing to prevent flapping
+- [x] Configurable maximum latency threshold (default: 500ms)
+- [x] Minimum samples requirement before using latency data
+- [x] Automatic fallback to round-robin when insufficient data
+- [x] Sub-millisecond precision latency tracking
+- [x] LatencyRouter implementation with lowest-latency selection
+- [x] Unit and integration tests for latency routing
+
+#### Story 3: CLI Management Tool ✅
+- [x] `opengslb-cli` command-line tool for operations
+- [x] `status` command for overall system health
+- [x] `servers` command with filtering by service/region
+- [x] `overrides` command for managing manual overrides
+- [x] `geo test` command for testing geolocation lookups
+- [x] `dnssec` commands for key management
+- [x] Configuration validation command
+- [x] Table and JSON output formats
+- [x] Comprehensive CLI documentation
+
+#### Story 4: Multi-File Configuration Includes ✅
+- [x] `includes` directive for splitting config across files
+- [x] Glob pattern matching (`config.d/*.yaml`)
+- [x] Environment variable expansion (`${VAR}` syntax)
+- [x] Layered configuration merging (arrays concatenated, maps merged)
+- [x] Circular include detection
+- [x] Maximum include depth enforcement (10 levels)
+- [x] Security: permission checks on all included files
+- [x] Clear error messages with file:line context
+
+#### Story 5: Comprehensive Operational Runbooks ✅
+- [x] Overwatch deployment runbook with production examples
+- [x] Agent deployment guide with multi-backend configuration
+- [x] GeoIP database update procedures and automation
+- [x] HA setup guide for multi-Overwatch deployments
+- [x] Incident response playbooks for common scenarios
+- [x] Backup and restore procedures
+- [x] Upgrade procedures with rollback guidance
+
+#### Story 6: Enhanced Observability Metrics ✅
+- [x] Geolocation routing metrics (`opengslb_geo_routing_decision`, `opengslb_geo_fallback`)
+- [x] Custom CIDR hit metrics (`opengslb_geo_custom_mapping_hit`)
+- [x] Latency routing metrics (`opengslb_latency_routing_decision`, `opengslb_latency_rejection`)
+- [x] Per-agent metrics (`opengslb_overwatch_agent_heartbeat_age`, `opengslb_overwatch_agent_backends`)
+- [x] Override metrics with service labels (`opengslb_overwatch_backend_override`)
+- [x] Enhanced DNSSEC metrics (`opengslb_dnssec_key_age`)
+- [x] Gossip decryption failure counter
+- [x] Prometheus alerting examples in documentation
+
+#### Story 7: Integration Tests and Documentation Polish ✅
+- [x] Integration tests for geolocation routing
+- [x] Integration tests for latency routing
+- [x] Integration tests for CLI tools
+- [x] Documentation review and consistency updates
+- [x] Configuration reference updates for new features
+- [x] Troubleshooting guide updates
 
 ## Metrics
 
@@ -244,8 +314,8 @@
 | Round-Robin | Equal distribution across healthy servers | ✅ Complete |
 | Weighted | Proportional distribution by server weight | ✅ Complete |
 | Failover | Priority-based active/standby | ✅ Complete |
-| Geolocation | Route by client IP location | 🔲 Planned |
-| Latency-Based | Route to lowest-latency server | 🔲 Planned |
+| Geolocation | Route by client IP location (GeoIP2) | ✅ Complete |
+| Latency-Based | Route to lowest-latency server (EMA smoothed) | ✅ Complete |
 
 ### Health Checks
 | Type | Description | Status |
@@ -297,25 +367,21 @@
 
 ### Low Priority
 - CNAME record support not yet implemented
-- Configuration file includes not yet implemented
 - Web UI dashboard not yet implemented
-- Geolocation routing pending
 
-### Sprint 5 Follow-up
-- Full end-to-end integration tests with running binary
+### Future Enhancements
 - Windows service support validation
 - Performance benchmarks for agent-overwatch architecture
+- Grafana dashboard templates (community contribution welcome)
 
-## Sprint 6 Preview (Production Readiness)
+## Sprint 7 Preview (Future)
 
-Based on roadmap, Sprint 6 will likely focus on:
-- Geolocation routing (GeoIP database integration)
-- Latency-based routing
+Based on roadmap, future sprints may focus on:
+- CNAME record support
 - Grafana dashboard templates
-- Operational runbooks
-- Configuration includes (multi-file config)
-- Windows support validation
-- Performance benchmarks
+- Web UI for configuration management
+- Windows service support
+- Additional routing algorithms (e.g., session affinity)
 
 ## Documentation Index
 
@@ -341,11 +407,13 @@ Based on roadmap, Sprint 6 will likely focus on:
 | Sprint 2: Core Features | ✅ Complete | Nov 2025 |
 | Sprint 3: Advanced Features | ✅ Complete | Dec 2025 |
 | Sprint 4: Distributed Architecture | ⚠️ Superseded | Dec 2025 |
-| Sprint 5: Agent-Overwatch Architecture | 🔄 In Progress | Dec 2025 |
-| Sprint 6: Production Readiness | 🔲 Planned | TBD |
+| Sprint 5: Agent-Overwatch Architecture | ✅ Complete | Dec 2025 |
+| Sprint 6: Production Readiness | ✅ Complete | Dec 2025 |
+| Sprint 7: Future Enhancements | 🔲 Planned | TBD |
 
 ---
 
 **Last Updated**: December 2025
+**Version**: 0.6.0
 **Sprint Master**: Logan Ross
 **Product Owner**: Logan Ross
