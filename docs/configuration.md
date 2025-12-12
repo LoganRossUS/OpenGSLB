@@ -379,7 +379,7 @@ domains:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | Required | Fully qualified domain name to respond to |
-| `routing_algorithm` | string | `round-robin` | Algorithm: `round-robin`, `weighted` |
+| `routing_algorithm` | string | `round-robin` | Algorithm: `round-robin`, `weighted`, `failover`, `geolocation`, `latency` |
 | `regions` | list | Required | List of region names to route traffic to |
 | `ttl` | integer | Uses `dns.default_ttl` | TTL for this domain's responses (overrides default) |
 
@@ -810,6 +810,241 @@ Monitor these metrics to track failover:
 - `opengslb_health_check_results_total{result="unhealthy"}` - Health check failures
 
 A spike in traffic to the secondary server indicates a failover event.
+
+## Geolocation Routing
+
+Geolocation routing directs traffic to servers based on the client's geographic location. OpenGSLB uses MaxMind GeoIP2/GeoLite2 databases to resolve client IP addresses to geographic regions.
+
+### Configuration
+
+```yaml
+domains:
+  - name: app.example.com
+    routing_algorithm: geolocation
+    regions:
+      - us-east-1
+      - eu-west-1
+      - ap-southeast-1
+
+geolocation:
+  database_path: "/var/lib/opengslb/geoip/GeoLite2-Country.mmdb"
+  default_region: us-east-1
+  ecs_enabled: true
+  custom_mappings:
+    - cidr: "10.0.0.0/8"
+      region: us-east-1
+    - cidr: "172.16.0.0/12"
+      region: eu-west-1
+```
+
+### Geolocation Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `database_path` | string | Required | Path to MaxMind GeoIP2/GeoLite2 database file (.mmdb) |
+| `default_region` | string | Required | Fallback region when geolocation lookup fails |
+| `ecs_enabled` | boolean | `true` | Enable EDNS Client Subnet support for accurate client location |
+| `custom_mappings` | list | (empty) | Custom CIDR-to-region mappings |
+
+### Custom CIDR Mappings
+
+Custom mappings override GeoIP lookups for specific IP ranges. This is useful for:
+- Internal networks that should route to specific regions
+- Known customer IP ranges with preferred regions
+- Overriding incorrect GeoIP data
+
+```yaml
+custom_mappings:
+  - cidr: "10.0.0.0/8"        # Internal US network
+    region: us-east-1
+  - cidr: "192.168.0.0/16"    # Internal EU network
+    region: eu-west-1
+  - cidr: "203.0.113.0/24"    # Customer's APAC network
+    region: ap-southeast-1
+```
+
+Custom mappings use longest-prefix matching—the most specific CIDR match wins.
+
+### Region Configuration for Geolocation
+
+Regions must specify which countries or continents they serve:
+
+```yaml
+regions:
+  - name: us-east-1
+    countries: ["US", "CA", "MX"]
+    continents: ["NA", "SA"]
+    servers:
+      - address: "10.0.1.10"
+        port: 8080
+
+  - name: eu-west-1
+    countries: ["GB", "DE", "FR", "NL", "BE"]
+    continents: ["EU"]
+    servers:
+      - address: "10.0.2.10"
+        port: 8080
+
+  - name: ap-southeast-1
+    countries: ["SG", "MY", "TH", "VN", "ID"]
+    continents: ["AS", "OC"]
+    servers:
+      - address: "10.0.3.10"
+        port: 8080
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `countries` | list | ISO 3166-1 alpha-2 country codes served by this region |
+| `continents` | list | Continent codes: AF, AN, AS, EU, NA, OC, SA |
+
+### EDNS Client Subnet (ECS) Support
+
+When `ecs_enabled: true`, OpenGSLB extracts client location from ECS information in DNS queries. This provides more accurate geolocation when queries come from recursive resolvers (like Google DNS or Cloudflare) that include client subnet data.
+
+### GeoIP Database Setup
+
+Download a MaxMind GeoLite2 database:
+
+```bash
+# Register at maxmind.com for a free license key
+# Download GeoLite2-Country.mmdb
+
+mkdir -p /var/lib/opengslb/geoip
+mv GeoLite2-Country.mmdb /var/lib/opengslb/geoip/
+chown opengslb:opengslb /var/lib/opengslb/geoip/GeoLite2-Country.mmdb
+```
+
+For production deployments, automate database updates using MaxMind's `geoipupdate` tool. See the GeoIP maintenance runbook in the operations documentation.
+
+### Monitoring Geolocation Routing
+
+Monitor these metrics:
+
+- `opengslb_geo_routing_decision{country="...",continent="...",region="..."}` - Routing decisions by location
+- `opengslb_geo_fallback{reason="..."}` - Fallback events and reasons
+- `opengslb_geo_custom_mapping_hit{region="..."}` - Custom CIDR mapping matches
+
+## Latency-Based Routing
+
+Latency-based routing directs traffic to the server with the lowest measured latency. This algorithm continuously measures latency during health checks and uses exponential moving average (EMA) smoothing to prevent routing flapping.
+
+### Configuration
+
+```yaml
+domains:
+  - name: app.example.com
+    routing_algorithm: latency
+    regions:
+      - us-east-1
+      - us-west-2
+
+latency_config:
+  smoothing_factor: 0.3
+  max_latency_ms: 500
+  min_samples: 3
+```
+
+### Latency Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `smoothing_factor` | float | `0.3` | EMA smoothing factor (0.0-1.0). Higher = more responsive, lower = more stable |
+| `max_latency_ms` | integer | `500` | Maximum acceptable latency in milliseconds. Servers exceeding this are excluded |
+| `min_samples` | integer | `3` | Minimum latency samples required before using server for routing |
+
+### How It Works
+
+1. **Latency measurement**: During each health check, OpenGSLB measures the TCP connection time to the backend
+2. **EMA smoothing**: Latency values are smoothed using exponential moving average to prevent routing flapping from transient spikes
+3. **Server selection**: The server with the lowest smoothed latency is selected
+4. **Threshold enforcement**: Servers with latency exceeding `max_latency_ms` are excluded from selection
+5. **Automatic fallback**: Falls back to round-robin when insufficient latency data is available
+
+### Smoothing Factor
+
+The smoothing factor controls how responsive the latency calculation is to new measurements:
+
+| Factor | Behavior |
+|--------|----------|
+| `0.1` | Very stable, slow to react to changes |
+| `0.3` | Balanced (default) |
+| `0.5` | Moderate responsiveness |
+| `0.8` | Highly responsive, may flap on spikes |
+
+Formula: `new_latency = (smoothing_factor * measured) + ((1 - smoothing_factor) * previous)`
+
+### Use Cases
+
+- **Global deployments**: Route users to the fastest regional server
+- **Multi-cloud**: Route to the cloud provider with best current performance
+- **Hybrid deployments**: Balance between on-premises and cloud based on network conditions
+
+### Example: Multi-Region Latency Routing
+
+```yaml
+dns:
+  default_ttl: 30
+
+regions:
+  - name: us-east-1
+    servers:
+      - address: "10.0.1.10"
+        port: 8080
+      - address: "10.0.1.11"
+        port: 8080
+    health_check:
+      type: http
+      interval: 10s
+      timeout: 5s
+      path: /health
+
+  - name: us-west-2
+    servers:
+      - address: "10.0.2.10"
+        port: 8080
+    health_check:
+      type: http
+      interval: 10s
+      timeout: 5s
+      path: /health
+
+  - name: eu-west-1
+    servers:
+      - address: "10.0.3.10"
+        port: 8080
+    health_check:
+      type: http
+      interval: 10s
+      timeout: 5s
+      path: /health
+
+domains:
+  - name: api.example.com
+    routing_algorithm: latency
+    regions:
+      - us-east-1
+      - us-west-2
+      - eu-west-1
+    ttl: 30
+
+latency_config:
+  smoothing_factor: 0.3
+  max_latency_ms: 200
+  min_samples: 5
+```
+
+### Monitoring Latency Routing
+
+Monitor these metrics:
+
+- `opengslb_latency_routing_decision{server="...",latency_ms="..."}` - Selected server and its latency
+- `opengslb_latency_rejection{server="...",reason="..."}` - Servers excluded due to high latency or insufficient samples
+- `opengslb_health_check_latency_seconds{server="..."}` - Raw health check latency measurements
+
+### Combining with Geolocation
+
+For optimal performance, consider using geolocation routing with latency as a secondary factor. Configure regions geographically, and latency routing will select the fastest server within the client's region.
 
 ## Configuration Hot-Reload
 

@@ -7,19 +7,16 @@ OpenGSLB is an enterprise-grade DNS-based load balancer that provides intelligen
 ## Key Features
 
 - **DNS-based Load Balancing**: Route traffic using DNS responses without proxying
-- **Multiple Routing Algorithms**: Round-robin, weighted, and failover routing
+- **Multiple Routing Algorithms**: Round-robin, weighted, failover, geolocation, and latency-based routing
+- **Geolocation Routing**: Route traffic based on client geographic location using MaxMind GeoIP2 databases with EDNS Client Subnet (ECS) support
+- **Latency-Based Routing**: Route to lowest-latency servers with exponential moving average (EMA) smoothing
 - **Health Checking**: HTTP, HTTPS, and TCP health checks with configurable thresholds
 - **Agent-Overwatch Architecture**: Distributed health monitoring with centralized DNS serving
 - **DNSSEC Support**: Cryptographic authentication of DNS responses
 - **Predictive Health**: CPU, memory, and error rate monitoring for proactive failover
 - **External Overrides**: API for CloudWatch, Watcher, or custom tool integration
-
-## Quick Links
-
-- [Quick Start Guide](README.md)
-- [Configuration Reference](docs/configuration.md)
-- [Architecture Decisions](docs/ARCHITECTURE_DECISIONS.md)
-- [Agent-Overwatch Deployment](docs/deployment/agent-overwatch.md)
+- **Multi-File Configuration**: Split configuration across multiple files with glob pattern support
+- **CLI Management Tool**: Command-line tool for status monitoring, overrides, and configuration validation
 
 ## Architecture Overview
 
@@ -86,3 +83,53 @@ OpenGSLB is dual-licensed:
 2. **Commercial License** - Available for proprietary integration
 
 See [LICENSE](https://github.com/LoganRossUS/OpenGSLB/blob/main/LICENSE) for details.
+
+```{toctree}
+:maxdepth: 2
+:caption: Getting Started
+
+configuration
+docker
+cli
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Architecture
+
+ARCHITECTURE_DECISIONS
+deployment/agent-overwatch
+gossip
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: API Reference
+
+api
+metrics
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Operations
+
+operations/index
+testing
+troubleshooting
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Security
+
+security/api-hardening
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Development
+
+PROGRESS
+roadmap/future-features
+```
