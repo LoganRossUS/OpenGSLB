@@ -85,6 +85,213 @@ declare AGENT_PREDICTIVE_ERROR_WINDOW="60s"
 declare AGENT_PREDICTIVE_ERROR_BLEED="30s"
 
 # =============================================================================
+# NAVIGATION SYSTEM
+# =============================================================================
+
+# Navigation state
+declare CURRENT_STEP=0
+declare NAVIGATION_ACTION=""  # "back", "menu", or ""
+declare -a STEP_HISTORY=()
+
+# Step definitions for Overwatch mode
+declare -a OVERWATCH_STEPS=(
+    "mode:Operation Mode"
+    "logging:Logging Configuration"
+    "metrics:Metrics Configuration"
+    "identity:Overwatch Identity"
+    "dns:DNS Server Configuration"
+    "gossip:Gossip Protocol"
+    "tokens:Agent Tokens"
+    "validation:Health Validation"
+    "stale:Stale Backend Handling"
+    "dnssec:DNSSEC Configuration"
+    "geolocation:Geolocation Configuration"
+    "api:Management API"
+    "datadir:Data Directory"
+    "regions:Regions Configuration"
+    "domains:Domains Configuration"
+    "review:Review & Generate"
+)
+
+# Step definitions for Agent mode
+declare -a AGENT_STEPS=(
+    "mode:Operation Mode"
+    "logging:Logging Configuration"
+    "metrics:Metrics Configuration"
+    "agent_identity:Agent Identity"
+    "agent_backends:Agent Backends"
+    "agent_gossip:Gossip Protocol"
+    "agent_heartbeat:Heartbeat Configuration"
+    "agent_predictive:Predictive Health"
+    "review:Review & Generate"
+)
+
+# Get current steps array based on mode
+get_steps() {
+    if [[ "$MODE" == "agent" ]]; then
+        echo "${AGENT_STEPS[@]}"
+    else
+        echo "${OVERWATCH_STEPS[@]}"
+    fi
+}
+
+# Check if input is a navigation command
+# Returns: 0 if navigation command, 1 if regular input
+# Sets NAVIGATION_ACTION to "back" or "menu" if detected
+check_navigation() {
+    local input="$1"
+    local lower_input="${input,,}"  # lowercase
+
+    NAVIGATION_ACTION=""
+
+    case "$lower_input" in
+        back|b|prev|previous)
+            NAVIGATION_ACTION="back"
+            return 0
+            ;;
+        menu|m|main|sections)
+            NAVIGATION_ACTION="menu"
+            return 0
+            ;;
+        help|h|\?)
+            NAVIGATION_ACTION="help"
+            return 0
+            ;;
+        quit|q|exit)
+            NAVIGATION_ACTION="quit"
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+# Show navigation help
+show_navigation_help() {
+    echo "" >&2
+    echo -e "${BOLD}${CYAN}Navigation Commands (available at any prompt):${NC}" >&2
+    echo -e "  ${YELLOW}back${NC} or ${YELLOW}b${NC}     - Go back to the previous section" >&2
+    echo -e "  ${YELLOW}menu${NC} or ${YELLOW}m${NC}     - Return to the main menu" >&2
+    echo -e "  ${YELLOW}help${NC} or ${YELLOW}h${NC}     - Show this help" >&2
+    echo -e "  ${YELLOW}quit${NC} or ${YELLOW}q${NC}     - Exit the wizard" >&2
+    echo "" >&2
+}
+
+# Show the main menu for section selection
+show_main_menu() {
+    local steps
+    if [[ "$MODE" == "agent" ]]; then
+        steps=("${AGENT_STEPS[@]}")
+    else
+        steps=("${OVERWATCH_STEPS[@]}")
+    fi
+
+    print_section "Configuration Sections"
+
+    echo -e "${BOLD}Select a section to configure:${NC}"
+    echo ""
+
+    local i=1
+    for step in "${steps[@]}"; do
+        local step_id="${step%%:*}"
+        local step_name="${step#*:}"
+        local status_icon="${RED}○${NC}"  # Not configured
+
+        # Check if section has been configured (basic check)
+        if is_section_configured "$step_id"; then
+            status_icon="${GREEN}●${NC}"  # Configured
+        fi
+
+        echo -e "  ${CYAN}$i)${NC} $status_icon $step_name"
+        ((i++))
+    done
+
+    echo ""
+    echo -e "  ${CYAN}0)${NC} Generate configuration and exit"
+    echo ""
+    echo -e "  ${GREEN}●${NC} = configured, ${RED}○${NC} = not yet configured"
+    echo ""
+
+    while true; do
+        read -r -p "Enter section number (0-$((i-1))): " choice
+
+        if check_navigation "$choice"; then
+            handle_navigation_action
+            return $?
+        fi
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 0 && choice < i )); then
+            if [[ "$choice" == "0" ]]; then
+                return 255  # Signal to generate and exit
+            fi
+            CURRENT_STEP=$((choice - 1))
+            return 0
+        fi
+
+        print_error "Please enter a number between 0 and $((i-1))"
+    done
+}
+
+# Check if a section has been configured
+is_section_configured() {
+    local section="$1"
+
+    case "$section" in
+        mode) [[ -n "$MODE" ]] ;;
+        logging) [[ -n "$LOG_LEVEL" ]] ;;
+        metrics) [[ -n "$METRICS_ENABLED" ]] ;;
+        identity) [[ -n "$OVERWATCH_NODE_ID" ]] ;;
+        dns) [[ -n "$DNS_LISTEN_ADDRESS" ]] ;;
+        gossip|agent_gossip) [[ -n "$GOSSIP_ENCRYPTION_KEY" ]] ;;
+        tokens) [[ ${#OVERWATCH_AGENT_TOKENS[@]} -gt 0 || "$MODE" == "agent" ]] ;;
+        validation) [[ -n "$VALIDATION_ENABLED" ]] ;;
+        stale) [[ -n "$STALE_THRESHOLD" ]] ;;
+        dnssec) [[ -n "$DNSSEC_ENABLED" ]] ;;
+        geolocation) true ;;  # Optional, always "configured"
+        api) [[ -n "$API_ENABLED" ]] ;;
+        datadir) [[ -n "$OVERWATCH_DATA_DIR" ]] ;;
+        regions) [[ ${#REGIONS[@]} -gt 0 ]] ;;
+        domains) [[ ${#DOMAINS[@]} -gt 0 ]] ;;
+        agent_identity) [[ -n "$AGENT_SERVICE_TOKEN" ]] ;;
+        agent_backends) [[ ${#AGENT_BACKENDS[@]} -gt 0 ]] ;;
+        agent_heartbeat) [[ -n "$AGENT_HEARTBEAT_INTERVAL" ]] ;;
+        agent_predictive) [[ -n "$AGENT_PREDICTIVE_ENABLED" ]] ;;
+        review) true ;;
+        *) false ;;
+    esac
+}
+
+# Handle navigation action
+handle_navigation_action() {
+    case "$NAVIGATION_ACTION" in
+        back)
+            if [[ $CURRENT_STEP -gt 0 ]]; then
+                ((CURRENT_STEP--))
+                return 0
+            else
+                print_warning "Already at the first section"
+                return 1
+            fi
+            ;;
+        menu)
+            return 254  # Signal to show menu
+            ;;
+        help)
+            show_navigation_help
+            return 1  # Stay on current prompt
+            ;;
+        quit)
+            echo ""
+            if ask_yes_no "Are you sure you want to exit? Unsaved changes will be lost" "n"; then
+                echo "Wizard cancelled."
+                exit 0
+            fi
+            return 1
+            ;;
+    esac
+    return 1
+}
+
+# =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
 
@@ -181,39 +388,78 @@ ask_yes_no() {
 
 # Prompt for input with default value
 # Shows clear prompt with default, outputs prompt to stderr
+# Returns 254 for menu, 253 for back navigation
 ask_input() {
     local prompt="$1"
     local default="$2"
     local result
 
-    if [[ -n "$default" ]]; then
-        echo -ne "${BOLD}$prompt${NC} [default: $default]: " >&2
-        read -r result
-        echo "${result:-$default}"
-    else
-        echo -ne "${BOLD}$prompt${NC}: " >&2
-        read -r result
-        echo "$result"
-    fi
+    while true; do
+        if [[ -n "$default" ]]; then
+            echo -ne "${BOLD}$prompt${NC} [default: $default] (or: back/menu/help): " >&2
+            read -r result
+
+            if check_navigation "$result"; then
+                if [[ "$NAVIGATION_ACTION" == "help" ]]; then
+                    show_navigation_help
+                    continue
+                fi
+                return $(handle_navigation_action; echo $?)
+            fi
+
+            echo "${result:-$default}"
+            return 0
+        else
+            echo -ne "${BOLD}$prompt${NC} (or: back/menu/help): " >&2
+            read -r result
+
+            if check_navigation "$result"; then
+                if [[ "$NAVIGATION_ACTION" == "help" ]]; then
+                    show_navigation_help
+                    continue
+                fi
+                handle_navigation_action
+                return $?
+            fi
+
+            echo "$result"
+            return 0
+        fi
+    done
 }
 
 # Prompt for required input (cannot be empty)
+# Supports navigation commands
 ask_required() {
     local prompt="$1"
     local result=""
 
-    while [[ -z "$result" ]]; do
-        echo -ne "${BOLD}$prompt${NC} (required): " >&2
+    while true; do
+        echo -ne "${BOLD}$prompt${NC} (required, or: back/menu/help): " >&2
         read -r result
+
+        if check_navigation "$result"; then
+            if [[ "$NAVIGATION_ACTION" == "help" ]]; then
+                show_navigation_help
+                continue
+            fi
+            handle_navigation_action
+            return $?
+        fi
+
         if [[ -z "$result" ]]; then
             print_error "This field is required. Please enter a value."
+            continue
         fi
+
+        echo "$result"
+        return 0
     done
-    echo "$result"
 }
 
 # Prompt for numeric input with validation
 # Shows the valid range in the prompt
+# Supports navigation commands
 ask_number() {
     local prompt="$1"
     local default="$2"
@@ -233,12 +479,31 @@ ask_number() {
 
     while true; do
         if [[ -n "$default" ]]; then
-            echo -ne "${BOLD}$prompt${NC}$range_hint [default: $default]: " >&2
+            echo -ne "${BOLD}$prompt${NC}$range_hint [default: $default] (or: back/menu): " >&2
             read -r result
+
+            if check_navigation "$result"; then
+                if [[ "$NAVIGATION_ACTION" == "help" ]]; then
+                    show_navigation_help
+                    continue
+                fi
+                handle_navigation_action
+                return $?
+            fi
+
             result="${result:-$default}"
         else
-            echo -ne "${BOLD}$prompt${NC}$range_hint: " >&2
+            echo -ne "${BOLD}$prompt${NC}$range_hint (or: back/menu): " >&2
             read -r result
+
+            if check_navigation "$result"; then
+                if [[ "$NAVIGATION_ACTION" == "help" ]]; then
+                    show_navigation_help
+                    continue
+                fi
+                handle_navigation_action
+                return $?
+            fi
         fi
 
         if ! [[ "$result" =~ ^[0-9]+$ ]]; then
@@ -257,11 +522,12 @@ ask_number() {
         fi
 
         echo "$result"
-        return
+        return 0
     done
 }
 
 # Prompt for float input with validation
+# Supports navigation commands
 ask_float() {
     local prompt="$1"
     local default="$2"
@@ -281,12 +547,31 @@ ask_float() {
 
     while true; do
         if [[ -n "$default" ]]; then
-            echo -ne "${BOLD}$prompt${NC}$range_hint [default: $default]: " >&2
+            echo -ne "${BOLD}$prompt${NC}$range_hint [default: $default] (or: back/menu): " >&2
             read -r result
+
+            if check_navigation "$result"; then
+                if [[ "$NAVIGATION_ACTION" == "help" ]]; then
+                    show_navigation_help
+                    continue
+                fi
+                handle_navigation_action
+                return $?
+            fi
+
             result="${result:-$default}"
         else
-            echo -ne "${BOLD}$prompt${NC}$range_hint: " >&2
+            echo -ne "${BOLD}$prompt${NC}$range_hint (or: back/menu): " >&2
             read -r result
+
+            if check_navigation "$result"; then
+                if [[ "$NAVIGATION_ACTION" == "help" ]]; then
+                    show_navigation_help
+                    continue
+                fi
+                handle_navigation_action
+                return $?
+            fi
         fi
 
         if ! [[ "$result" =~ ^[0-9]+\.?[0-9]*$ ]]; then
@@ -305,12 +590,13 @@ ask_float() {
         fi
 
         echo "$result"
-        return
+        return 0
     done
 }
 
 # Prompt for duration input (e.g., 30s, 5m, 1h)
 # Shows format hint in the prompt
+# Supports navigation commands
 ask_duration() {
     local prompt="$1"
     local default="$2"
@@ -318,12 +604,31 @@ ask_duration() {
 
     while true; do
         if [[ -n "$default" ]]; then
-            echo -ne "${BOLD}$prompt${NC} (format: 30s, 5m, 1h, 500ms) [default: $default]: " >&2
+            echo -ne "${BOLD}$prompt${NC} (format: 30s, 5m, 1h, 500ms) [default: $default] (or: back/menu): " >&2
             read -r result
+
+            if check_navigation "$result"; then
+                if [[ "$NAVIGATION_ACTION" == "help" ]]; then
+                    show_navigation_help
+                    continue
+                fi
+                handle_navigation_action
+                return $?
+            fi
+
             result="${result:-$default}"
         else
-            echo -ne "${BOLD}$prompt${NC} (format: 30s, 5m, 1h, 500ms): " >&2
+            echo -ne "${BOLD}$prompt${NC} (format: 30s, 5m, 1h, 500ms) (or: back/menu): " >&2
             read -r result
+
+            if check_navigation "$result"; then
+                if [[ "$NAVIGATION_ACTION" == "help" ]]; then
+                    show_navigation_help
+                    continue
+                fi
+                handle_navigation_action
+                return $?
+            fi
         fi
 
         if ! [[ "$result" =~ ^[0-9]+(ms|s|m|h)$ ]]; then
@@ -332,7 +637,7 @@ ask_duration() {
         fi
 
         echo "$result"
-        return
+        return 0
     done
 }
 
@@ -481,6 +786,7 @@ ask_host_port() {
 
 # Select from a list of options
 # NOTE: All display output goes to stderr so it's visible when called in $()
+# Supports navigation commands
 ask_choice() {
     local prompt="$1"
     shift
@@ -494,6 +800,7 @@ ask_choice() {
     for i in "${!options[@]}"; do
         echo -e "  ${CYAN}$((i+1)))${NC} ${options[$i]}" >&2
     done
+    echo -e "  ${YELLOW}Type 'back' to go back, 'menu' for main menu${NC}" >&2
     echo "" >&2
 
     while true; do
@@ -508,9 +815,18 @@ ask_choice() {
 
         read -r -p "Enter choice ($options_hint): " choice
 
+        if check_navigation "$choice"; then
+            if [[ "$NAVIGATION_ACTION" == "help" ]]; then
+                show_navigation_help
+                continue
+            fi
+            handle_navigation_action
+            return $?
+        fi
+
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
             echo "${options[$((choice-1))]}"
-            return
+            return 0
         fi
 
         print_error "Invalid choice. Please enter a number between 1 and ${#options[@]}" >&2
@@ -664,8 +980,8 @@ configure_gossip_common() {
 # OVERWATCH MODE CONFIGURATION
 # =============================================================================
 
-configure_overwatch() {
-    print_section "Step 2: Overwatch Identity"
+configure_overwatch_identity() {
+    print_section "Overwatch Identity"
 
     show_help_box "Overwatch Identity" \
         "Configure how this Overwatch node identifies itself." \
@@ -681,46 +997,38 @@ configure_overwatch() {
     local hostname_default
     hostname_default=$(hostname 2>/dev/null || echo "overwatch-1")
 
-    OVERWATCH_NODE_ID=$(ask_input "Node ID" "$hostname_default")
-    OVERWATCH_REGION=$(ask_input "Region (optional, e.g., us-east-1)" "")
+    local result
+    result=$(ask_input "Node ID" "$hostname_default")
+    local ret=$?
+    if [[ $ret -ne 0 ]]; then return $ret; fi
+    OVERWATCH_NODE_ID="$result"
+
+    result=$(ask_input "Region (optional, e.g., us-east-1)" "")
+    ret=$?
+    if [[ $ret -ne 0 ]]; then return $ret; fi
+    OVERWATCH_REGION="$result"
 
     print_success "Node ID: $OVERWATCH_NODE_ID"
     [[ -n "$OVERWATCH_REGION" ]] && print_success "Region: $OVERWATCH_REGION"
 
-    # DNS Configuration
-    configure_dns
+    return 0
+}
 
-    # Gossip Configuration
-    print_section "Step 3: Gossip Protocol"
+# Legacy function for backwards compatibility - calls all overwatch steps
+configure_overwatch() {
+    configure_overwatch_identity || return $?
+    configure_dns || return $?
     configure_gossip_common
-    configure_overwatch_gossip
-
-    # Agent Tokens
-    configure_agent_tokens
-
-    # Validation
-    configure_validation
-
-    # Stale Backend Handling
-    configure_stale
-
-    # DNSSEC
-    configure_dnssec
-
-    # Geolocation
-    configure_geolocation
-
-    # API
-    configure_api
-
-    # Data Directory
-    configure_data_dir
-
-    # Regions
-    configure_regions
-
-    # Domains
-    configure_domains
+    configure_overwatch_gossip || return $?
+    configure_agent_tokens || return $?
+    configure_validation || return $?
+    configure_stale || return $?
+    configure_dnssec || return $?
+    configure_geolocation || return $?
+    configure_api || return $?
+    configure_data_dir || return $?
+    configure_regions || return $?
+    configure_domains || return $?
 }
 
 configure_dns() {
@@ -1409,8 +1717,8 @@ configure_single_domain() {
 # AGENT MODE CONFIGURATION
 # =============================================================================
 
-configure_agent() {
-    print_section "Step 2: Agent Identity"
+configure_agent_identity() {
+    print_section "Agent Identity"
 
     show_help_box "Agent Identity" \
         "Configure how this agent identifies itself to Overwatch." \
@@ -1424,36 +1732,50 @@ configure_agent() {
         "  The geographic region this agent belongs to." \
         "  Must match a region configured in Overwatch."
 
+    local result ret
+
     while true; do
-        AGENT_SERVICE_TOKEN=$(ask_required "Service token")
-        if [[ ${#AGENT_SERVICE_TOKEN} -ge 16 ]]; then
+        result=$(ask_required "Service token")
+        ret=$?
+        if [[ $ret -ne 0 ]]; then return $ret; fi
+
+        if [[ ${#result} -ge 16 ]]; then
+            AGENT_SERVICE_TOKEN="$result"
             break
         fi
         print_error "Token must be at least 16 characters."
     done
 
-    AGENT_REGION=$(ask_required "Region (e.g., us-east-1)")
+    result=$(ask_required "Region (e.g., us-east-1)")
+    ret=$?
+    if [[ $ret -ne 0 ]]; then return $ret; fi
+    AGENT_REGION="$result"
 
     echo ""
     print_info "Agent certificate paths (for mTLS)"
-    AGENT_CERT_PATH=$(ask_input "Certificate path" "/var/lib/opengslb/agent.crt")
-    AGENT_KEY_PATH=$(ask_input "Private key path" "/var/lib/opengslb/agent.key")
+
+    result=$(ask_input "Certificate path" "/var/lib/opengslb/agent.crt")
+    ret=$?
+    if [[ $ret -ne 0 ]]; then return $ret; fi
+    AGENT_CERT_PATH="$result"
+
+    result=$(ask_input "Private key path" "/var/lib/opengslb/agent.key")
+    ret=$?
+    if [[ $ret -ne 0 ]]; then return $ret; fi
+    AGENT_KEY_PATH="$result"
 
     print_success "Agent identity configured"
+    return 0
+}
 
-    # Backends
-    configure_agent_backends
-
-    # Gossip
-    print_section "Step 3: Gossip Protocol"
+# Legacy function for backwards compatibility - calls all agent steps
+configure_agent() {
+    configure_agent_identity || return $?
+    configure_agent_backends || return $?
     configure_gossip_common
-    configure_agent_gossip
-
-    # Heartbeat
-    configure_heartbeat
-
-    # Predictive Health
-    configure_predictive_health
+    configure_agent_gossip || return $?
+    configure_heartbeat || return $?
+    configure_predictive_health || return $?
 }
 
 configure_agent_backends() {
@@ -2081,6 +2403,151 @@ show_summary() {
 }
 
 # =============================================================================
+# STEP EXECUTION
+# =============================================================================
+
+# Execute a step by its ID
+# Returns: 0 for success, 254 for menu, 253 for back
+run_step() {
+    local step_id="$1"
+    local ret=0
+
+    case "$step_id" in
+        mode)
+            select_mode
+            ret=$?
+            ;;
+        logging)
+            configure_logging
+            ret=$?
+            ;;
+        metrics)
+            configure_metrics
+            ret=$?
+            ;;
+        identity)
+            configure_overwatch_identity
+            ret=$?
+            ;;
+        dns)
+            configure_dns
+            ret=$?
+            ;;
+        gossip)
+            configure_gossip_common
+            configure_overwatch_gossip
+            ret=$?
+            ;;
+        tokens)
+            configure_agent_tokens
+            ret=$?
+            ;;
+        validation)
+            configure_validation
+            ret=$?
+            ;;
+        stale)
+            configure_stale
+            ret=$?
+            ;;
+        dnssec)
+            configure_dnssec
+            ret=$?
+            ;;
+        geolocation)
+            configure_geolocation
+            ret=$?
+            ;;
+        api)
+            configure_api
+            ret=$?
+            ;;
+        datadir)
+            configure_data_dir
+            ret=$?
+            ;;
+        regions)
+            configure_regions
+            ret=$?
+            ;;
+        domains)
+            configure_domains
+            ret=$?
+            ;;
+        agent_identity)
+            configure_agent_identity
+            ret=$?
+            ;;
+        agent_backends)
+            configure_agent_backends
+            ret=$?
+            ;;
+        agent_gossip)
+            configure_gossip_common
+            configure_agent_gossip
+            ret=$?
+            ;;
+        agent_heartbeat)
+            configure_heartbeat
+            ret=$?
+            ;;
+        agent_predictive)
+            configure_predictive_health
+            ret=$?
+            ;;
+        review)
+            show_summary
+            ret=$?
+            ;;
+        *)
+            print_error "Unknown step: $step_id"
+            ret=1
+            ;;
+    esac
+
+    return $ret
+}
+
+# Get the step ID for the current step
+get_current_step_id() {
+    local steps
+    if [[ "$MODE" == "agent" ]]; then
+        steps=("${AGENT_STEPS[@]}")
+    else
+        steps=("${OVERWATCH_STEPS[@]}")
+    fi
+
+    if (( CURRENT_STEP >= 0 && CURRENT_STEP < ${#steps[@]} )); then
+        local step="${steps[$CURRENT_STEP]}"
+        echo "${step%%:*}"
+    fi
+}
+
+# Get the step name for the current step
+get_current_step_name() {
+    local steps
+    if [[ "$MODE" == "agent" ]]; then
+        steps=("${AGENT_STEPS[@]}")
+    else
+        steps=("${OVERWATCH_STEPS[@]}")
+    fi
+
+    if (( CURRENT_STEP >= 0 && CURRENT_STEP < ${#steps[@]} )); then
+        local step="${steps[$CURRENT_STEP]}"
+        echo "${step#*:}"
+    fi
+}
+
+# Get total number of steps
+get_total_steps() {
+    if [[ "$MODE" == "agent" ]]; then
+        echo "${#AGENT_STEPS[@]}"
+    else
+        echo "${#OVERWATCH_STEPS[@]}"
+    fi
+}
+
+# =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
 
@@ -2096,6 +2563,13 @@ main() {
         echo "Arguments:"
         echo "  output-file   Path to write the configuration (default: ./opengslb-config.yaml)"
         echo ""
+        echo "Navigation:"
+        echo "  At any prompt, you can type:"
+        echo "    back  - Go back to the previous section"
+        echo "    menu  - Return to the main menu"
+        echo "    help  - Show navigation help"
+        echo "    quit  - Exit the wizard"
+        echo ""
         echo "Examples:"
         echo "  $0                           # Interactive wizard, outputs to ./opengslb-config.yaml"
         echo "  $0 /etc/opengslb/config.yaml # Output to specific location"
@@ -2110,6 +2584,8 @@ main() {
     echo "This wizard will guide you through creating a configuration file"
     echo "for OpenGSLB. It will explain each option and provide sensible defaults."
     echo ""
+    echo -e "${CYAN}Navigation:${NC} Type ${YELLOW}back${NC}, ${YELLOW}menu${NC}, ${YELLOW}help${NC}, or ${YELLOW}quit${NC} at any prompt."
+    echo ""
     echo "Output file: $OUTPUT_FILE"
     echo ""
 
@@ -2118,21 +2594,110 @@ main() {
         exit 0
     fi
 
-    # Mode selection
+    # First, we need to select mode
+    CURRENT_STEP=0
     select_mode
+    local mode_ret=$?
 
-    # Common configuration
-    configure_logging
-    configure_metrics
-
-    # Mode-specific configuration
-    if [[ "$MODE" == "overwatch" ]]; then
-        configure_overwatch
-    else
-        configure_agent
+    # If user quit during mode selection
+    if [[ $mode_ret -ne 0 ]]; then
+        echo "Wizard cancelled."
+        exit 0
     fi
 
-    # Summary
+    # Main navigation loop
+    CURRENT_STEP=1  # Start at step 1 (after mode)
+    local total_steps
+    local use_menu=false
+
+    while true; do
+        total_steps=$(get_total_steps)
+
+        # Check if we should show menu
+        if [[ "$use_menu" == "true" ]]; then
+            show_main_menu
+            local menu_ret=$?
+
+            if [[ $menu_ret -eq 255 ]]; then
+                # Generate and exit
+                break
+            elif [[ $menu_ret -eq 254 ]]; then
+                # Stay in menu (help was shown)
+                continue
+            fi
+            use_menu=false
+        fi
+
+        # Check if we've completed all steps
+        if (( CURRENT_STEP >= total_steps )); then
+            # Reached the end, ask what to do
+            echo ""
+            print_success "All sections have been configured!"
+            echo ""
+            echo "What would you like to do?"
+            echo "  1) Generate configuration file"
+            echo "  2) Go back to review/edit sections"
+            echo ""
+            read -r -p "Enter choice (1 or 2): " final_choice
+
+            case "$final_choice" in
+                1)
+                    break
+                    ;;
+                2)
+                    use_menu=true
+                    continue
+                    ;;
+                *)
+                    if check_navigation "$final_choice"; then
+                        if [[ "$NAVIGATION_ACTION" == "menu" ]]; then
+                            use_menu=true
+                        elif [[ "$NAVIGATION_ACTION" == "back" ]]; then
+                            ((CURRENT_STEP--))
+                        elif [[ "$NAVIGATION_ACTION" == "help" ]]; then
+                            show_navigation_help
+                        fi
+                    fi
+                    continue
+                    ;;
+            esac
+        fi
+
+        # Get current step info
+        local step_id=$(get_current_step_id)
+        local step_name=$(get_current_step_name)
+
+        # Show progress
+        echo ""
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${CYAN}  Step $((CURRENT_STEP + 1)) of $total_steps: $step_name${NC}"
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+        # Run the step
+        run_step "$step_id"
+        local step_ret=$?
+
+        # Handle step return value
+        case $step_ret in
+            0)
+                # Success, move to next step
+                ((CURRENT_STEP++))
+                ;;
+            254)
+                # Menu requested
+                use_menu=true
+                ;;
+            253)
+                # Back requested (already decremented in handle_navigation_action)
+                # Note: handle_navigation_action already decrements CURRENT_STEP
+                ;;
+            *)
+                # Some other error, stay on current step
+                ;;
+        esac
+    done
+
+    # Final summary and generation
     show_summary
 
     echo ""
