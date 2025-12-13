@@ -122,37 +122,38 @@ print_subsection() {
     echo ""
 }
 
+# All print functions output to stderr so they're visible in $() subshell contexts
 print_info() {
-    echo -e "${BLUE}ℹ${NC}  $1"
+    echo -e "${BLUE}ℹ${NC}  $1" >&2
 }
 
 print_success() {
-    echo -e "${GREEN}✓${NC}  $1"
+    echo -e "${GREEN}✓${NC}  $1" >&2
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠${NC}  $1"
+    echo -e "${YELLOW}⚠${NC}  $1" >&2
 }
 
 print_error() {
-    echo -e "${RED}✗${NC}  $1"
+    echo -e "${RED}✗${NC}  $1" >&2
 }
 
 print_help() {
-    echo -e "${CYAN}?${NC}  $1"
+    echo -e "${CYAN}?${NC}  $1" >&2
 }
 
-# Display contextual help box
+# Display contextual help box (outputs to stderr so visible in $() contexts)
 show_help_box() {
     local title="$1"
     shift
-    echo ""
-    echo -e "  ${BOLD}${YELLOW}┌─ $title ─────────────────────────────────────────────────${NC}"
+    echo "" >&2
+    echo -e "  ${BOLD}${YELLOW}┌─ $title ─────────────────────────────────────────────────${NC}" >&2
     for line in "$@"; do
-        echo -e "  ${YELLOW}│${NC} $line"
+        echo -e "  ${YELLOW}│${NC} $line" >&2
     done
-    echo -e "  ${BOLD}${YELLOW}└───────────────────────────────────────────────────────────────${NC}"
-    echo ""
+    echo -e "  ${BOLD}${YELLOW}└───────────────────────────────────────────────────────────────${NC}" >&2
+    echo "" >&2
 }
 
 # Prompt for yes/no with default
@@ -179,16 +180,19 @@ ask_yes_no() {
 }
 
 # Prompt for input with default value
+# Shows clear prompt with default, outputs prompt to stderr
 ask_input() {
     local prompt="$1"
     local default="$2"
     local result
 
     if [[ -n "$default" ]]; then
-        read -r -p "$prompt [$default]: " result
+        echo -ne "${BOLD}$prompt${NC} [default: $default]: " >&2
+        read -r result
         echo "${result:-$default}"
     else
-        read -r -p "$prompt: " result
+        echo -ne "${BOLD}$prompt${NC}: " >&2
+        read -r result
         echo "$result"
     fi
 }
@@ -199,7 +203,8 @@ ask_required() {
     local result=""
 
     while [[ -z "$result" ]]; do
-        read -r -p "$prompt (required): " result
+        echo -ne "${BOLD}$prompt${NC} (required): " >&2
+        read -r result
         if [[ -z "$result" ]]; then
             print_error "This field is required. Please enter a value."
         fi
@@ -208,19 +213,32 @@ ask_required() {
 }
 
 # Prompt for numeric input with validation
+# Shows the valid range in the prompt
 ask_number() {
     local prompt="$1"
     local default="$2"
     local min="${3:-}"
     local max="${4:-}"
     local result
+    local range_hint=""
+
+    # Build range hint for the prompt
+    if [[ -n "$min" && -n "$max" ]]; then
+        range_hint=" (range: $min-$max)"
+    elif [[ -n "$min" ]]; then
+        range_hint=" (min: $min)"
+    elif [[ -n "$max" ]]; then
+        range_hint=" (max: $max)"
+    fi
 
     while true; do
         if [[ -n "$default" ]]; then
-            read -r -p "$prompt [$default]: " result
+            echo -ne "${BOLD}$prompt${NC}$range_hint [default: $default]: " >&2
+            read -r result
             result="${result:-$default}"
         else
-            read -r -p "$prompt: " result
+            echo -ne "${BOLD}$prompt${NC}$range_hint: " >&2
+            read -r result
         fi
 
         if ! [[ "$result" =~ ^[0-9]+$ ]]; then
@@ -250,13 +268,25 @@ ask_float() {
     local min="${3:-}"
     local max="${4:-}"
     local result
+    local range_hint=""
+
+    # Build range hint for the prompt
+    if [[ -n "$min" && -n "$max" ]]; then
+        range_hint=" (range: $min-$max)"
+    elif [[ -n "$min" ]]; then
+        range_hint=" (min: $min)"
+    elif [[ -n "$max" ]]; then
+        range_hint=" (max: $max)"
+    fi
 
     while true; do
         if [[ -n "$default" ]]; then
-            read -r -p "$prompt [$default]: " result
+            echo -ne "${BOLD}$prompt${NC}$range_hint [default: $default]: " >&2
+            read -r result
             result="${result:-$default}"
         else
-            read -r -p "$prompt: " result
+            echo -ne "${BOLD}$prompt${NC}$range_hint: " >&2
+            read -r result
         fi
 
         if ! [[ "$result" =~ ^[0-9]+\.?[0-9]*$ ]]; then
@@ -280,6 +310,7 @@ ask_float() {
 }
 
 # Prompt for duration input (e.g., 30s, 5m, 1h)
+# Shows format hint in the prompt
 ask_duration() {
     local prompt="$1"
     local default="$2"
@@ -287,10 +318,12 @@ ask_duration() {
 
     while true; do
         if [[ -n "$default" ]]; then
-            read -r -p "$prompt [$default]: " result
+            echo -ne "${BOLD}$prompt${NC} (format: 30s, 5m, 1h, 500ms) [default: $default]: " >&2
+            read -r result
             result="${result:-$default}"
         else
-            read -r -p "$prompt: " result
+            echo -ne "${BOLD}$prompt${NC} (format: 30s, 5m, 1h, 500ms): " >&2
+            read -r result
         fi
 
         if ! [[ "$result" =~ ^[0-9]+(ms|s|m|h)$ ]]; then
@@ -307,7 +340,7 @@ ask_duration() {
 ask_port() {
     local prompt="$1"
     local default="$2"
-    ask_number "$prompt" "$default" 1 65535
+    ask_number "$prompt (port number)" "$default" 1 65535
 }
 
 # Validate IPv4 address
@@ -351,18 +384,20 @@ ask_ip_address() {
     local default="$2"
     local allow_hostname="${3:-false}"
     local result
+    local format_hint="IPv4 (e.g., 192.168.1.100) or IPv6 (e.g., 2001:db8::1)"
 
-    show_help_box "IP Address Format" \
-        "IPv4: e.g., 192.168.1.100, 10.0.0.1" \
-        "IPv6: e.g., 2001:db8::1, ::1, fe80::1" \
-        "You can use either format based on your network setup."
+    if [[ "$allow_hostname" == "true" ]]; then
+        format_hint="$format_hint or hostname"
+    fi
 
     while true; do
         if [[ -n "$default" ]]; then
-            read -r -p "$prompt [$default]: " result
+            echo -ne "${BOLD}$prompt${NC}\n  Format: $format_hint\n  [default: $default]: " >&2
+            read -r result
             result="${result:-$default}"
         else
-            read -r -p "$prompt: " result
+            echo -ne "${BOLD}$prompt${NC}\n  Format: $format_hint\n  Enter value: " >&2
+            read -r result
         fi
 
         if [[ -z "$result" ]]; then
@@ -380,7 +415,7 @@ ask_ip_address() {
             return
         fi
 
-        print_error "Invalid IP address format. Please enter a valid IPv4 or IPv6 address."
+        print_error "Invalid format. Please enter a valid IPv4, IPv6 address$([ "$allow_hostname" == "true" ] && echo ", or hostname")."
     done
 }
 
@@ -390,22 +425,19 @@ ask_cidr() {
     local default="$2"
     local result
 
-    show_help_box "CIDR Notation" \
-        "IPv4 CIDR: e.g., 10.0.0.0/8, 192.168.1.0/24" \
-        "IPv6 CIDR: e.g., 2001:db8::/32, fe80::/10" \
-        "The number after / is the prefix length (subnet mask)."
-
     while true; do
         if [[ -n "$default" ]]; then
-            read -r -p "$prompt [$default]: " result
+            echo -ne "${BOLD}$prompt${NC}\n  Format: IPv4 CIDR (e.g., 10.0.0.0/8) or IPv6 CIDR (e.g., 2001:db8::/32)\n  [default: $default]: " >&2
+            read -r result
             result="${result:-$default}"
         else
-            read -r -p "$prompt: " result
+            echo -ne "${BOLD}$prompt${NC}\n  Format: IPv4 CIDR (e.g., 10.0.0.0/8) or IPv6 CIDR (e.g., 2001:db8::/32)\n  Enter value: " >&2
+            read -r result
         fi
 
         if [[ -z "$result" ]]; then
-            print_error "Please enter a CIDR."
-            continue
+            echo ""
+            return
         fi
 
         # Basic CIDR validation
@@ -414,7 +446,7 @@ ask_cidr() {
             return
         fi
 
-        print_error "Invalid CIDR format. Please use format like 10.0.0.0/8 or 2001:db8::/32"
+        print_error "Invalid CIDR format. Use format like 10.0.0.0/8 or 2001:db8::/32"
     done
 }
 
@@ -426,10 +458,12 @@ ask_host_port() {
 
     while true; do
         if [[ -n "$default" ]]; then
-            read -r -p "$prompt [$default]: " result
+            echo -ne "${BOLD}$prompt${NC}\n  Format: :port, ip:port, [ipv6]:port, or hostname:port\n  Examples: :53, 0.0.0.0:8080, [::1]:9090, server.local:7946\n  [default: $default]: " >&2
+            read -r result
             result="${result:-$default}"
         else
-            read -r -p "$prompt: " result
+            echo -ne "${BOLD}$prompt${NC}\n  Format: :port, ip:port, [ipv6]:port, or hostname:port\n  Examples: :53, 0.0.0.0:8080, [::1]:9090, server.local:7946\n  Enter value: " >&2
+            read -r result
         fi
 
         # Allow formats: :port, ip:port, [ipv6]:port, hostname:port
@@ -446,29 +480,40 @@ ask_host_port() {
 }
 
 # Select from a list of options
+# NOTE: All display output goes to stderr so it's visible when called in $()
 ask_choice() {
     local prompt="$1"
     shift
     local options=("$@")
     local choice
 
-    echo ""
-    echo "$prompt"
-    echo ""
+    # Display menu to stderr so it's visible (stdout gets captured by $())
+    echo "" >&2
+    echo -e "${BOLD}$prompt${NC}" >&2
+    echo "" >&2
     for i in "${!options[@]}"; do
-        echo "  $((i+1))) ${options[$i]}"
+        echo -e "  ${CYAN}$((i+1)))${NC} ${options[$i]}" >&2
     done
-    echo ""
+    echo "" >&2
 
     while true; do
-        read -r -p "Enter choice (1-${#options[@]}): " choice
+        # Build a helpful prompt showing the options inline
+        local options_hint=""
+        for i in "${!options[@]}"; do
+            if [[ -n "$options_hint" ]]; then
+                options_hint+=", "
+            fi
+            options_hint+="$((i+1))=${options[$i]}"
+        done
+
+        read -r -p "Enter choice ($options_hint): " choice
 
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
             echo "${options[$((choice-1))]}"
             return
         fi
 
-        print_error "Please enter a number between 1 and ${#options[@]}"
+        print_error "Invalid choice. Please enter a number between 1 and ${#options[@]}" >&2
     done
 }
 
@@ -1281,18 +1326,31 @@ configure_single_domain() {
     # Select regions
     echo ""
     print_info "Select which regions this domain should route to."
-    print_info "Available regions:"
+    print_info "You can add multiple regions. Press Enter without input when done."
+    echo ""
 
+    # Build region options display
+    local region_options=""
     for i in "${!REGIONS[@]}"; do
         local region_name
         region_name=$(echo "${REGIONS[$i]}" | cut -d'|' -f1)
-        echo "  $((i+1))) $region_name"
+        echo -e "  ${CYAN}$((i+1)))${NC} $region_name"
+        if [[ -n "$region_options" ]]; then
+            region_options+=", "
+        fi
+        region_options+="$((i+1))=$region_name"
     done
+    echo ""
 
     local selected_regions=()
     while true; do
         local region_choice
-        region_choice=$(ask_input "Enter region number (or empty to finish)" "")
+        local selected_display=""
+        if [[ ${#selected_regions[@]} -gt 0 ]]; then
+            selected_display=" [Selected: ${selected_regions[*]}]"
+        fi
+
+        read -r -p "Add region ($region_options) or Enter to finish$selected_display: " region_choice
 
         if [[ -z "$region_choice" ]]; then
             break
@@ -1301,10 +1359,22 @@ configure_single_domain() {
         if [[ "$region_choice" =~ ^[0-9]+$ ]] && (( region_choice >= 1 && region_choice <= ${#REGIONS[@]} )); then
             local region_name
             region_name=$(echo "${REGIONS[$((region_choice-1))]}" | cut -d'|' -f1)
-            selected_regions+=("$region_name")
-            print_success "Added region: $region_name"
+            # Check if already selected
+            local already_selected=false
+            for existing in "${selected_regions[@]}"; do
+                if [[ "$existing" == "$region_name" ]]; then
+                    already_selected=true
+                    break
+                fi
+            done
+            if [[ "$already_selected" == "true" ]]; then
+                print_warning "Region '$region_name' is already selected"
+            else
+                selected_regions+=("$region_name")
+                print_success "Added region: $region_name"
+            fi
         else
-            print_error "Invalid selection"
+            print_error "Invalid selection. Enter a number from 1 to ${#REGIONS[@]}"
         fi
     done
 
