@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/loganrossus/OpenGSLB/pkg/config"
@@ -64,6 +65,7 @@ type DataProvider interface {
 type Server struct {
 	config     ServerConfig
 	httpServer *http.Server
+	mu         sync.Mutex
 	logger     *slog.Logger
 	handlers   *Handlers
 	startTime  time.Time
@@ -110,13 +112,17 @@ func (s *Server) Start(ctx context.Context) error {
 	// Wrap with ACL middleware
 	handler = s.aclMiddleware(handler)
 
-	s.httpServer = &http.Server{
+	httpServer := &http.Server{
 		Addr:         s.config.Address,
 		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
+
+	s.mu.Lock()
+	s.httpServer = httpServer
+	s.mu.Unlock()
 
 	s.logger.Info("starting Overlord API server",
 		"address", s.config.Address,
@@ -126,12 +132,12 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start server in a way that respects context cancellation
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- s.httpServer.ListenAndServe()
+		errCh <- httpServer.ListenAndServe()
 	}()
 
 	select {
 	case <-ctx.Done():
-		return s.httpServer.Shutdown(context.Background())
+		return httpServer.Shutdown(context.Background())
 	case err := <-errCh:
 		if err == http.ErrServerClosed {
 			return nil
@@ -142,11 +148,15 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Shutdown gracefully stops the Overlord API server.
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s.httpServer == nil {
+	s.mu.Lock()
+	httpServer := s.httpServer
+	s.mu.Unlock()
+
+	if httpServer == nil {
 		return nil
 	}
 	s.logger.Info("stopping Overlord API server")
-	return s.httpServer.Shutdown(ctx)
+	return httpServer.Shutdown(ctx)
 }
 
 // registerRoutes registers all API routes.

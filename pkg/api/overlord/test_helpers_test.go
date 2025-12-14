@@ -122,8 +122,37 @@ func (m *mockDataProvider) GetValidator() *overwatch.Validator {
 	return nil
 }
 
+// resetGlobalState clears all shared state between tests to prevent race conditions.
+func resetGlobalState() {
+	// Reset validation jobs
+	validationJobsMu.Lock()
+	validationJobs = make(map[string]*ValidationJob)
+	validationJobsMu.Unlock()
+
+	// Reset override store
+	overrideStoreMu.Lock()
+	overrideStore = make(map[string]Override)
+	overrideStoreMu.Unlock()
+
+	// Reset gossip node store
+	gossipNodeStoreMu.Lock()
+	gossipNodeStore = make(map[string]GossipNode)
+	gossipNodeStoreMu.Unlock()
+
+	// Reset geo mapping store
+	geoMappingStoreMu.Lock()
+	geoMappingStore = make(map[string]GeoMapping)
+	geoMappingStoreMu.Unlock()
+
+	// Reset DNSSEC key store
+	dnssecKeyStoreMu.Lock()
+	dnssecKeyStore = make(map[string]DNSKey)
+	dnssecKeyStoreMu.Unlock()
+}
+
 // testHandlers creates a Handlers instance with mock dependencies for testing.
 func testHandlers() *Handlers {
+	resetGlobalState()
 	return &Handlers{
 		dataProvider: newMockDataProvider(),
 		auditLogger:  NewAuditLogger(nil),
