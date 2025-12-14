@@ -456,6 +456,7 @@ func (a *Application) initializeAPIServer() error {
 		"address", a.config.API.Address,
 		"allowed_networks", a.config.API.AllowedNetworks,
 	)
+
 	return nil
 }
 

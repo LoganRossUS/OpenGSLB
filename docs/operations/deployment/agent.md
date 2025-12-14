@@ -46,7 +46,7 @@ Before starting, gather the following from your Overwatch administrator:
 
 ```bash
 # Set version
-VERSION="0.6.0"
+VERSION="1.0.0"
 
 # Download for your platform
 curl -Lo opengslb https://github.com/loganrossus/OpenGSLB/releases/download/v${VERSION}/opengslb-linux-amd64

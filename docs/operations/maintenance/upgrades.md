@@ -44,7 +44,7 @@ sudo cp -r /var/lib/opengslb /var/lib/opengslb.backup
 sudo cp /etc/opengslb/overwatch.yaml /etc/opengslb/overwatch.yaml.backup
 
 # 2. Download new version
-VERSION="0.6.0"
+VERSION="1.0.0"
 curl -Lo /tmp/opengslb https://github.com/loganrossus/OpenGSLB/releases/download/v${VERSION}/opengslb-linux-amd64
 chmod +x /tmp/opengslb
 
@@ -76,7 +76,7 @@ For multiple Overwatches:
 #!/bin/bash
 # rolling-upgrade.sh
 
-VERSION="0.6.0"
+VERSION="1.0.0"
 OVERWATCHES="overwatch-1 overwatch-2 overwatch-3"
 PAUSE_SECONDS=60
 
@@ -150,7 +150,7 @@ Agents can be upgraded independently of Overwatches (within same major version).
 
 ```bash
 # 1. Download new version
-VERSION="0.6.0"
+VERSION="1.0.0"
 curl -Lo /tmp/opengslb https://github.com/loganrossus/OpenGSLB/releases/download/v${VERSION}/opengslb-linux-amd64
 chmod +x /tmp/opengslb
 
@@ -212,7 +212,7 @@ For many agents, use automation tools:
 ## Upgrading CLI Tool
 
 ```bash
-VERSION="0.6.0"
+VERSION="1.0.0"
 curl -Lo /tmp/opengslb-cli https://github.com/loganrossus/OpenGSLB/releases/download/v${VERSION}/opengslb-cli-linux-amd64
 chmod +x /tmp/opengslb-cli
 sudo mv /tmp/opengslb-cli /usr/local/bin/opengslb-cli
