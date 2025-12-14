@@ -1,5 +1,3 @@
-version: "2"
-
 run:
   timeout: 5m
   modules-download-mode: readonly
@@ -7,16 +5,14 @@ run:
 linters:
   enable:
     - errcheck
+    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
-    - misspell
-
-formatters:
-  enable:
     - gofmt
     - goimports
+    - misspell
 
 linters-settings:
   errcheck:
