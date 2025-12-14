@@ -272,7 +272,7 @@
 
 ## Metrics
 
-### Code Coverage (Sprint 5)
+### Code Coverage (Sprint 6)
 - pkg/agent: ~90%
 - pkg/overwatch: ~88%
 - pkg/config: 92%
@@ -280,11 +280,13 @@
 - pkg/health: 90%
 - pkg/routing: 93%
 - pkg/metrics: 85%
-- Overall: ~89%
+- pkg/api/overlord: ~60%
+- Overall: ~85%
 
 ### Test Results
-- Unit tests: All passing (162 tests)
+- Unit tests: All passing (200+ tests)
 - Integration tests: Existing tests passing
+- Overlord API tests: 15 test files, comprehensive handler coverage
 
 ## Architecture Decisions Made
 
@@ -359,15 +361,35 @@
 | Prometheus Metrics | ✅ Complete |
 | Hot Reload (SIGHUP) | ✅ Complete |
 | Health Status API | ✅ Complete |
+| Overlord Dashboard API | ✅ Complete |
 | Docker Deployment | ✅ Complete |
 | Graceful Shutdown | ✅ Complete |
 | Mandatory Gossip Encryption | ✅ Complete |
+
+### Overlord Dashboard API ✅
+- [x] Complete REST API for dashboard frontend (`pkg/api/overlord`)
+- [x] Domain management endpoints (CRUD)
+- [x] Server/Backend management endpoints (CRUD)
+- [x] Region management endpoints (CRUD)
+- [x] Node management (Overwatch and Agent nodes)
+- [x] Override management endpoints
+- [x] Metrics and monitoring endpoints
+- [x] Health validation endpoints
+- [x] Gossip protocol management endpoints
+- [x] Geolocation configuration endpoints
+- [x] DNSSEC key management endpoints
+- [x] Audit logging with export (CSV/JSON)
+- [x] Configuration management endpoints
+- [x] Routing test and flow endpoints
+- [x] CORS support for frontend integration
+- [x] ACL middleware for network restrictions
+- [x] Unit tests (~60% coverage)
 
 ## Known Issues / Technical Debt
 
 ### Low Priority
 - CNAME record support not yet implemented
-- Web UI dashboard not yet implemented
+- Web UI dashboard frontend not yet implemented (API backend ready)
 
 ### Future Enhancements
 - Windows service support validation

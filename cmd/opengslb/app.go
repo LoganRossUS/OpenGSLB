@@ -17,6 +17,7 @@ import (
 
 	"github.com/loganrossus/OpenGSLB/pkg/agent"
 	"github.com/loganrossus/OpenGSLB/pkg/api"
+	"github.com/loganrossus/OpenGSLB/pkg/api/overlord"
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/dns"
 	"github.com/loganrossus/OpenGSLB/pkg/health"
@@ -47,6 +48,10 @@ type Application struct {
 	overwatchValidator *overwatch.Validator
 	gossipHandler      *overwatch.GossipHandler
 	overwatchStore     store.Store
+
+	// Overlord API server for dashboard
+	overlordServer       *overlord.Server
+	overlordDataProvider *overlord.DefaultDataProvider
 
 	// Agent mode components (Story 2)
 	agentInstance *agent.Agent
@@ -456,6 +461,40 @@ func (a *Application) initializeAPIServer() error {
 		"address", a.config.API.Address,
 		"allowed_networks", a.config.API.AllowedNetworks,
 	)
+
+	// Initialize Overlord API server for dashboard
+	if err := a.initializeOverlordServer(); err != nil {
+		return fmt.Errorf("failed to initialize Overlord API server: %w", err)
+	}
+
+	return nil
+}
+
+// initializeOverlordServer creates and configures the Overlord API server for the dashboard.
+func (a *Application) initializeOverlordServer() error {
+	// Create data provider
+	a.overlordDataProvider = overlord.NewDefaultDataProvider(
+		a.config,
+		a.backendRegistry,
+		a.overwatchValidator,
+	)
+
+	// Configure Overlord API server
+	overlordCfg := overlord.DefaultServerConfig()
+	overlordCfg.Address = ":3001" // Overlord dashboard API port
+	overlordCfg.Logger = a.logger
+	overlordCfg.AllowedOrigins = []string{"*"} // Allow all origins for development
+
+	server, err := overlord.NewServer(overlordCfg, a.overlordDataProvider)
+	if err != nil {
+		return fmt.Errorf("failed to create Overlord API server: %w", err)
+	}
+
+	a.overlordServer = server
+
+	a.logger.Info("Overlord API server initialized",
+		"address", overlordCfg.Address,
+	)
 	return nil
 }
 
@@ -554,6 +593,16 @@ func (a *Application) startOverwatchMode(ctx context.Context) error {
 				a.logger.Error("API server error", "error", err)
 			}
 		}()
+	}
+
+	// Start Overlord API server for dashboard
+	if a.overlordServer != nil {
+		go func() {
+			if err := a.overlordServer.Start(ctx); err != nil {
+				a.logger.Error("Overlord API server error", "error", err)
+			}
+		}()
+		a.logger.Info("Overlord API server started", "address", ":3001")
 	}
 
 	// Start DNS server (blocks until shutdown)
@@ -659,6 +708,17 @@ func (a *Application) shutdownOverwatchMode(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := a.apiServer.Shutdown(shutdownCtx); err != nil {
 			a.logger.Error("error stopping API server", "error", err)
+			shutdownErr = err
+		}
+		cancel()
+	}
+
+	// Stop Overlord API server
+	if a.overlordServer != nil {
+		a.logger.Debug("stopping Overlord API server")
+		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := a.overlordServer.Shutdown(shutdownCtx); err != nil {
+			a.logger.Error("error stopping Overlord API server", "error", err)
 			shutdownErr = err
 		}
 		cancel()

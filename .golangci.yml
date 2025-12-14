@@ -17,7 +17,7 @@ linters:
 linters-settings:
   errcheck:
     check-type-assertions: true
-  
+
   misspell:
     locale: US
 
