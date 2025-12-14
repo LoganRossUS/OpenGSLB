@@ -18,42 +18,6 @@ With coverage:
 make test-coverage
 ```
 
-### Test Coverage by Package
-
-| Package | Coverage | Description |
-|---------|----------|-------------|
-| pkg/config | 92% | Configuration loading and validation |
-| pkg/dns | 87% | DNS server and record handling |
-| pkg/health | 90% | Health check framework |
-| pkg/routing | 93% | Routing algorithms |
-| pkg/agent | ~90% | Agent mode functionality |
-| pkg/overwatch | ~88% | Overwatch mode functionality |
-| pkg/api/dashboard | ~60% | Overlord dashboard API |
-| pkg/metrics | 85% | Prometheus metrics |
-
-**Target Coverage:** 89%
-
-### Dashboard API Tests
-
-The Overlord dashboard API has comprehensive unit tests covering:
-
-- **Handler Tests** (`handlers_*_test.go`): Tests for each API endpoint
-- **Server Tests** (`server_test.go`): Server initialization, CORS, ACL middleware
-- **Audit Tests** (`audit_test.go`): Audit logging functionality
-- **Type Tests**: Response type validation
-
-Run Dashboard API tests specifically:
-
-```bash
-go test -v ./pkg/api/dashboard/...
-```
-
-With coverage:
-
-```bash
-go test -cover ./pkg/api/dashboard/...
-```
-
 ## Integration Tests
 
 Integration tests require Docker and validate the full system against mock services.

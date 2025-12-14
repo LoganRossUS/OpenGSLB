@@ -17,7 +17,6 @@ import (
 
 	"github.com/loganrossus/OpenGSLB/pkg/agent"
 	"github.com/loganrossus/OpenGSLB/pkg/api"
-	"github.com/loganrossus/OpenGSLB/pkg/api/dashboard"
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/dns"
 	"github.com/loganrossus/OpenGSLB/pkg/health"
@@ -48,10 +47,6 @@ type Application struct {
 	overwatchValidator *overwatch.Validator
 	gossipHandler      *overwatch.GossipHandler
 	overwatchStore     store.Store
-
-	// Dashboard API server for dashboard
-	dashboardServer       *dashboard.Server
-	dashboardDataProvider *dashboard.DefaultDataProvider
 
 	// Agent mode components (Story 2)
 	agentInstance *agent.Agent
@@ -462,39 +457,6 @@ func (a *Application) initializeAPIServer() error {
 		"allowed_networks", a.config.API.AllowedNetworks,
 	)
 
-	// Initialize Dashboard API server for dashboard
-	if err := a.initializeDashboardServer(); err != nil {
-		return fmt.Errorf("failed to initialize Dashboard API server: %w", err)
-	}
-
-	return nil
-}
-
-// initializeDashboardServer creates and configures the Dashboard API server for the dashboard.
-func (a *Application) initializeDashboardServer() error {
-	// Create data provider
-	a.dashboardDataProvider = dashboard.NewDefaultDataProvider(
-		a.config,
-		a.backendRegistry,
-		a.overwatchValidator,
-	)
-
-	// Configure Dashboard API server
-	dashboardCfg := dashboard.DefaultServerConfig()
-	dashboardCfg.Address = ":3001" // Dashboard API port
-	dashboardCfg.Logger = a.logger
-	dashboardCfg.AllowedOrigins = []string{"*"} // Allow all origins for development
-
-	server, err := dashboard.NewServer(dashboardCfg, a.dashboardDataProvider)
-	if err != nil {
-		return fmt.Errorf("failed to create Dashboard API server: %w", err)
-	}
-
-	a.dashboardServer = server
-
-	a.logger.Info("Dashboard API server initialized",
-		"address", dashboardCfg.Address,
-	)
 	return nil
 }
 
@@ -593,16 +555,6 @@ func (a *Application) startOverwatchMode(ctx context.Context) error {
 				a.logger.Error("API server error", "error", err)
 			}
 		}()
-	}
-
-	// Start Dashboard API server for dashboard
-	if a.dashboardServer != nil {
-		go func() {
-			if err := a.dashboardServer.Start(ctx); err != nil {
-				a.logger.Error("Dashboard API server error", "error", err)
-			}
-		}()
-		a.logger.Info("Dashboard API server started", "address", ":3001")
 	}
 
 	// Start DNS server (blocks until shutdown)
@@ -708,17 +660,6 @@ func (a *Application) shutdownOverwatchMode(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := a.apiServer.Shutdown(shutdownCtx); err != nil {
 			a.logger.Error("error stopping API server", "error", err)
-			shutdownErr = err
-		}
-		cancel()
-	}
-
-	// Stop Dashboard API server
-	if a.dashboardServer != nil {
-		a.logger.Debug("stopping Dashboard API server")
-		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if err := a.dashboardServer.Shutdown(shutdownCtx); err != nil {
-			a.logger.Error("error stopping Dashboard API server", "error", err)
 			shutdownErr = err
 		}
 		cancel()
