@@ -1101,18 +1101,18 @@ Poll `/api/v1/overwatch/stats` and alert on:
 
 ---
 
-## Overlord Dashboard API
+## Dashboard API
 
-The Overlord Dashboard API is a separate REST API designed to support a frontend dashboard for managing OpenGSLB. It runs on a configurable port (default: 3001) and provides comprehensive endpoints for all OpenGSLB management operations.
+The Dashboard API is a separate REST API designed to support a frontend dashboard for managing OpenGSLB. It runs on a configurable port (default: 3001) and provides comprehensive endpoints for all OpenGSLB management operations.
 
 **Base URL:** `http://localhost:3001/api`
 
 ### Configuration
 
-The Overlord API is configured separately from the main health API:
+The Dashboard API is configured separately from the main health API:
 
 ```yaml
-overlord:
+dashboard:
   enabled: true
   address: ":3001"
   allowed_origins:
@@ -1263,7 +1263,7 @@ overlord:
 
 ### Response Format
 
-All Overlord API responses use JSON format:
+All Dashboard API responses use JSON format:
 
 **Success Response:**
 ```json
@@ -1284,7 +1284,7 @@ All Overlord API responses use JSON format:
 
 ### CORS Support
 
-The Overlord API supports CORS for frontend integration. Configure `allowed_origins` to specify which origins can access the API.
+The Dashboard API supports CORS for frontend integration. Configure `allowed_origins` to specify which origins can access the API.
 
 ### Audit Logging
 

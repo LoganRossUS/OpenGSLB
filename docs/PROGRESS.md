@@ -280,13 +280,13 @@
 - pkg/health: 90%
 - pkg/routing: 93%
 - pkg/metrics: 85%
-- pkg/api/overlord: ~60%
+- pkg/api/dashboard: ~60%
 - Overall: ~85%
 
 ### Test Results
 - Unit tests: All passing (200+ tests)
 - Integration tests: Existing tests passing
-- Overlord API tests: 15 test files, comprehensive handler coverage
+- Dashboard API tests: 15 test files, comprehensive handler coverage
 
 ## Architecture Decisions Made
 
@@ -361,13 +361,13 @@
 | Prometheus Metrics | ✅ Complete |
 | Hot Reload (SIGHUP) | ✅ Complete |
 | Health Status API | ✅ Complete |
-| Overlord Dashboard API | ✅ Complete |
+| Dashboard API | ✅ Complete |
 | Docker Deployment | ✅ Complete |
 | Graceful Shutdown | ✅ Complete |
 | Mandatory Gossip Encryption | ✅ Complete |
 
-### Overlord Dashboard API ✅
-- [x] Complete REST API for dashboard frontend (`pkg/api/overlord`)
+### Dashboard API ✅
+- [x] Complete REST API for dashboard frontend (`pkg/api/dashboard`)
 - [x] Domain management endpoints (CRUD)
 - [x] Server/Backend management endpoints (CRUD)
 - [x] Region management endpoints (CRUD)

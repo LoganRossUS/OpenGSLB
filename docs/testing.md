@@ -28,12 +28,12 @@ make test-coverage
 | pkg/routing | 93% | Routing algorithms |
 | pkg/agent | ~90% | Agent mode functionality |
 | pkg/overwatch | ~88% | Overwatch mode functionality |
-| pkg/api/overlord | ~60% | Overlord dashboard API |
+| pkg/api/dashboard | ~60% | Overlord dashboard API |
 | pkg/metrics | 85% | Prometheus metrics |
 
 **Target Coverage:** 89%
 
-### Overlord API Tests
+### Dashboard API Tests
 
 The Overlord dashboard API has comprehensive unit tests covering:
 
@@ -42,16 +42,16 @@ The Overlord dashboard API has comprehensive unit tests covering:
 - **Audit Tests** (`audit_test.go`): Audit logging functionality
 - **Type Tests**: Response type validation
 
-Run Overlord API tests specifically:
+Run Dashboard API tests specifically:
 
 ```bash
-go test -v ./pkg/api/overlord/...
+go test -v ./pkg/api/dashboard/...
 ```
 
 With coverage:
 
 ```bash
-go test -cover ./pkg/api/overlord/...
+go test -cover ./pkg/api/dashboard/...
 ```
 
 ## Integration Tests
