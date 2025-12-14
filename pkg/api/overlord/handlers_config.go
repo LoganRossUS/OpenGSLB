@@ -15,7 +15,7 @@ import (
 
 // Preferences store
 var (
-	preferencesStore   = Preferences{
+	preferencesStore = Preferences{
 		Theme:         "system",
 		Language:      "en",
 		DefaultTTL:    30,

@@ -1098,3 +1098,199 @@ Poll `/api/v1/overwatch/stats` and alert on:
 - `stale_backends > 0` - agents not reporting
 - `disagreement_count > 0` - agent/validation mismatch
 - `unhealthy_backends / total_backends > 0.5` - high failure rate
+
+---
+
+## Overlord Dashboard API
+
+The Overlord Dashboard API is a separate REST API designed to support a frontend dashboard for managing OpenGSLB. It runs on a configurable port (default: 3001) and provides comprehensive endpoints for all OpenGSLB management operations.
+
+**Base URL:** `http://localhost:3001/api`
+
+### Configuration
+
+The Overlord API is configured separately from the main health API:
+
+```yaml
+overlord:
+  enabled: true
+  address: ":3001"
+  allowed_origins:
+    - "http://localhost:3000"  # Frontend development server
+  allowed_networks:
+    - "127.0.0.1/32"
+    - "10.0.0.0/8"
+```
+
+### Available Endpoints
+
+#### Health & System
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/health` | System health check |
+
+#### Domain Management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/domains` | List all configured domains |
+| POST | `/api/domains` | Create a new domain |
+| GET | `/api/domains/{name}` | Get domain details |
+| PUT | `/api/domains/{name}` | Update a domain |
+| DELETE | `/api/domains/{name}` | Delete a domain |
+| GET | `/api/domains/{name}/backends` | Get backends for a domain |
+
+#### Server/Backend Management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/servers` | List all servers/backends |
+| POST | `/api/servers` | Register a new server |
+| GET | `/api/servers/{id}` | Get server details |
+| PUT | `/api/servers/{id}` | Update server configuration |
+| DELETE | `/api/servers/{id}` | Remove a server |
+| GET | `/api/servers/{id}/health-check` | Get health check results |
+| POST | `/api/servers/{id}/health-check` | Trigger immediate health check |
+
+#### Region Management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/regions` | List all regions |
+| POST | `/api/regions` | Create a new region |
+| GET | `/api/regions/{name}` | Get region details |
+| PUT | `/api/regions/{name}` | Update region configuration |
+| DELETE | `/api/regions/{name}` | Delete a region |
+
+#### Node Management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/nodes/overwatch` | List Overwatch nodes |
+| POST | `/api/nodes/overwatch` | Register Overwatch node |
+| GET | `/api/nodes/overwatch/{id}` | Get Overwatch node details |
+| DELETE | `/api/nodes/overwatch/{id}` | Remove Overwatch node |
+| GET | `/api/nodes/agent` | List Agent nodes |
+| POST | `/api/nodes/agent` | Register Agent node |
+| GET | `/api/nodes/agent/{id}` | Get Agent node details |
+| DELETE | `/api/nodes/agent/{id}` | Remove Agent node |
+| GET | `/api/nodes/agent/{id}/certificate` | Get Agent certificate |
+
+#### Override Management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/overrides` | List all active overrides |
+| POST | `/api/overrides` | Create a new override |
+| GET | `/api/overrides/{id}` | Get override details |
+| PUT | `/api/overrides/{id}` | Update an override |
+| DELETE | `/api/overrides/{id}` | Delete an override |
+
+#### Metrics & Monitoring
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/metrics/overview` | System metrics overview |
+| GET | `/api/metrics/history` | Historical metrics data |
+| GET | `/api/metrics/per-node` | Per-node metrics |
+| GET | `/api/metrics/per-region` | Per-region metrics |
+| GET | `/api/metrics/health-summary` | Health summary statistics |
+| GET | `/api/metrics/routing-distribution` | Routing distribution stats |
+| GET | `/api/metrics/routing-flows` | Routing flow visualization data |
+| GET | `/api/metrics/routing-decisions` | Recent routing decisions |
+
+#### Health Validation
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/health/validate` | Trigger health validation |
+| GET | `/api/health/validation/{id}` | Get validation status |
+| GET | `/api/health/status` | Overall health status |
+
+#### Gossip Protocol
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/gossip/nodes` | List gossip cluster nodes |
+| GET | `/api/gossip/nodes/{id}` | Get gossip node details |
+| GET | `/api/gossip/config` | Get gossip configuration |
+| PUT | `/api/gossip/config` | Update gossip configuration |
+| POST | `/api/gossip/config/generate-key` | Generate new encryption key |
+
+#### Geolocation
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/geo-mappings` | List custom geo mappings |
+| POST | `/api/geo-mappings` | Create geo mapping |
+| GET | `/api/geo-mappings/{id}` | Get geo mapping details |
+| PUT | `/api/geo-mappings/{id}` | Update geo mapping |
+| DELETE | `/api/geo-mappings/{id}` | Delete geo mapping |
+| GET | `/api/geolocation/config` | Get geolocation configuration |
+| PUT | `/api/geolocation/config` | Update geolocation configuration |
+| GET | `/api/geolocation/lookup` | Test IP geolocation lookup |
+
+#### DNSSEC Management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/dnssec/status` | Get DNSSEC status |
+| GET | `/api/dnssec/keys` | List DNSSEC keys |
+| POST | `/api/dnssec/keys/generate` | Generate new DNSSEC key |
+| GET | `/api/dnssec/keys/{id}` | Get key details |
+| PUT | `/api/dnssec/keys/{id}` | Update key |
+| DELETE | `/api/dnssec/keys/{id}` | Delete key |
+| POST | `/api/dnssec/sync` | Trigger key synchronization |
+| GET | `/api/dnssec/sync/status` | Get sync status |
+
+#### Audit Logging
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/audit-logs` | List audit log entries |
+| GET | `/api/audit-logs/stats` | Get audit statistics |
+| GET | `/api/audit-logs/export` | Export audit logs (CSV/JSON) |
+| GET | `/api/audit-logs/{id}` | Get specific audit entry |
+
+#### Configuration
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/preferences` | Get user preferences |
+| PUT | `/api/preferences` | Update preferences |
+| GET | `/api/config/api-settings` | Get API configuration |
+| PUT | `/api/config/api-settings` | Update API configuration |
+| GET | `/api/config/validation` | Get validation settings |
+| PUT | `/api/config/validation` | Update validation settings |
+| GET | `/api/config/stale-handling` | Get stale handling config |
+| PUT | `/api/config/stale-handling` | Update stale handling config |
+
+#### Routing
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/routing/algorithms` | List available algorithms |
+| POST | `/api/routing/test` | Test routing for an IP |
+| GET | `/api/routing/decisions` | Recent routing decisions |
+| GET | `/api/routing/flows` | Routing flow data |
+
+### Response Format
+
+All Overlord API responses use JSON format:
+
+**Success Response:**
+```json
+{
+  "domains": [...],
+  "total": 5
+}
+```
+
+**Error Response:**
+```json
+{
+  "error": true,
+  "message": "domain not found",
+  "code": "DOMAIN_NOT_FOUND"
+}
+```
+
+### CORS Support
+
+The Overlord API supports CORS for frontend integration. Configure `allowed_origins` to specify which origins can access the API.
+
+### Audit Logging
+
+All mutating operations (POST, PUT, DELETE) are logged in the audit trail with:
+- User (from `X-User` header or "api" default)
+- Action performed
+- Resource affected
+- IP address
+- Timestamp

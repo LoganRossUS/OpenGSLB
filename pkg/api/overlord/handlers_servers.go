@@ -327,13 +327,13 @@ func (h *Handlers) deleteServer(w http.ResponseWriter, r *http.Request, id strin
 	if service != "" {
 		_, found = registry.GetBackend(service, address, port)
 		if found {
-			registry.Deregister(service, address, port)
+			_ = registry.Deregister(service, address, port)
 		}
 	} else {
 		backends := registry.GetAllBackends()
 		for _, b := range backends {
 			if b.Address == address && b.Port == port {
-				registry.Deregister(b.Service, address, port)
+				_ = registry.Deregister(b.Service, address, port)
 				found = true
 				break
 			}

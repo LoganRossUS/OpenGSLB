@@ -243,9 +243,10 @@ func (h *Handlers) listAgentNodes(w http.ResponseWriter, r *http.Request) {
 			agent, exists := agentMap[b.AgentID]
 			if !exists {
 				status := "healthy"
-				if b.EffectiveStatus == "stale" {
+				switch b.EffectiveStatus {
+				case "stale":
 					status = "stale"
-				} else if b.EffectiveStatus == "unhealthy" {
+				case "unhealthy":
 					status = "suspect"
 				}
 
@@ -345,9 +346,10 @@ func (h *Handlers) getAgentNode(w http.ResponseWriter, r *http.Request, id strin
 		if b.AgentID == id {
 			if agent == nil {
 				status := "healthy"
-				if b.EffectiveStatus == "stale" {
+				switch b.EffectiveStatus {
+				case "stale":
 					status = "stale"
-				} else if b.EffectiveStatus == "unhealthy" {
+				case "unhealthy":
 					status = "suspect"
 				}
 
@@ -432,7 +434,7 @@ func (h *Handlers) deleteAgentNode(w http.ResponseWriter, r *http.Request, id st
 	for _, b := range backends {
 		if b.AgentID == id {
 			found = true
-			registry.Deregister(b.Service, b.Address, b.Port)
+			_ = registry.Deregister(b.Service, b.Address, b.Port)
 		}
 	}
 

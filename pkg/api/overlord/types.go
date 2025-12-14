@@ -188,15 +188,15 @@ type RegionHealthResponse struct {
 
 // OverwatchNode represents an Overwatch node in the cluster.
 type OverwatchNode struct {
-	NodeID             string    `json:"nodeId"`
-	Region             string    `json:"region"`
-	Status             string    `json:"status"`
-	LastSeen           time.Time `json:"lastSeen"`
-	Version            string    `json:"version,omitempty"`
-	Address            string    `json:"address"`
-	BackendsManaged    int       `json:"backendsManaged"`
-	DNSQueriesPerSec   float64   `json:"dnsQueriesPerSecond,omitempty"`
-	Uptime             int64     `json:"uptime,omitempty"`
+	NodeID           string    `json:"nodeId"`
+	Region           string    `json:"region"`
+	Status           string    `json:"status"`
+	LastSeen         time.Time `json:"lastSeen"`
+	Version          string    `json:"version,omitempty"`
+	Address          string    `json:"address"`
+	BackendsManaged  int       `json:"backendsManaged"`
+	DNSQueriesPerSec float64   `json:"dnsQueriesPerSecond,omitempty"`
+	Uptime           int64     `json:"uptime,omitempty"`
 }
 
 // OverwatchNodesResponse is the response for GET /api/nodes/overwatch.
@@ -317,21 +317,21 @@ type ValidationStartResponse struct {
 
 // ValidationResult represents a single backend validation result.
 type ValidationResult struct {
-	BackendID string  `json:"backendId"`
-	Healthy   bool    `json:"healthy"`
-	Latency   int     `json:"latency,omitempty"`
-	Error     string  `json:"error,omitempty"`
+	BackendID string `json:"backendId"`
+	Healthy   bool   `json:"healthy"`
+	Latency   int    `json:"latency,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // ValidationStatus is the response for GET /api/health/validation/:id.
 type ValidationStatus struct {
-	ValidationID        string             `json:"validationId"`
-	Status              string             `json:"status"`
-	BackendsValidated   int                `json:"backendsValidated"`
-	ValidationsPassed   int                `json:"validationsPassed"`
-	ValidationsFailed   int                `json:"validationsFailed"`
-	Duration            int                `json:"duration,omitempty"`
-	Results             []ValidationResult `json:"results,omitempty"`
+	ValidationID      string             `json:"validationId"`
+	Status            string             `json:"status"`
+	BackendsValidated int                `json:"backendsValidated"`
+	ValidationsPassed int                `json:"validationsPassed"`
+	ValidationsFailed int                `json:"validationsFailed"`
+	Duration          int                `json:"duration,omitempty"`
+	Results           []ValidationResult `json:"results,omitempty"`
 }
 
 // HealthStatusResponse is the response for GET /api/health/status.
@@ -503,7 +503,7 @@ type AuditLog struct {
 	ID          int64                  `json:"id"`
 	Timestamp   time.Time              `json:"timestamp"`
 	User        string                 `json:"user"`
-	Action      string                 `json:"action"` // "CREATE", "UPDATE", "DELETE"
+	Action      string                 `json:"action"`   // "CREATE", "UPDATE", "DELETE"
 	Category    string                 `json:"category"` // "domain", "server", "override", etc.
 	Resource    string                 `json:"resource"`
 	Description string                 `json:"description"`
@@ -539,19 +539,19 @@ type AuditLogsStats struct {
 
 // SystemStats represents system-wide statistics.
 type SystemStats struct {
-	TotalBackends       int     `json:"totalBackends"`
-	HealthyBackends     int     `json:"healthyBackends"`
-	UnhealthyBackends   int     `json:"unhealthyBackends"`
-	StaleBackends       int     `json:"staleBackends"`
-	ActiveOverrides     int     `json:"activeOverrides"`
-	TotalAgents         int     `json:"totalAgents"`
-	ActiveAgents        int     `json:"activeAgents"`
-	TotalOverwatches    int     `json:"totalOverwatches"`
-	ActiveOverwatches   int     `json:"activeOverwatches"`
-	TotalDomains        int     `json:"totalDomains"`
-	TotalRegions        int     `json:"totalRegions"`
-	DNSQueriesLast24h   int64   `json:"dnsQueriesLast24h"`
-	AvgLatencyMs        float64 `json:"avgLatencyMs"`
+	TotalBackends     int     `json:"totalBackends"`
+	HealthyBackends   int     `json:"healthyBackends"`
+	UnhealthyBackends int     `json:"unhealthyBackends"`
+	StaleBackends     int     `json:"staleBackends"`
+	ActiveOverrides   int     `json:"activeOverrides"`
+	TotalAgents       int     `json:"totalAgents"`
+	ActiveAgents      int     `json:"activeAgents"`
+	TotalOverwatches  int     `json:"totalOverwatches"`
+	ActiveOverwatches int     `json:"activeOverwatches"`
+	TotalDomains      int     `json:"totalDomains"`
+	TotalRegions      int     `json:"totalRegions"`
+	DNSQueriesLast24h int64   `json:"dnsQueriesLast24h"`
+	AvgLatencyMs      float64 `json:"avgLatencyMs"`
 }
 
 // MetricsOverviewResponse is the response for GET /api/metrics/overview.

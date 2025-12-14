@@ -80,7 +80,7 @@ func (h *Handlers) listDomains(w http.ResponseWriter, r *http.Request) {
 			TTL:              d.TTL,
 			HealthyBackends:  healthyBackends,
 			TotalBackends:    totalBackends,
-			Enabled:          true, // Domains in config are enabled by default
+			Enabled:          true,                                // Domains in config are enabled by default
 			CreatedAt:        time.Now().Add(-7 * 24 * time.Hour), // Placeholder
 			UpdatedAt:        time.Now().Add(-1 * time.Hour),      // Placeholder
 		})

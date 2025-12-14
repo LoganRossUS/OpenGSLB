@@ -175,11 +175,11 @@ func (h *Handlers) handleAuditLogsExport(w http.ResponseWriter, r *http.Request)
 		writer := csv.NewWriter(&buf)
 
 		// Write header
-		writer.Write([]string{"ID", "Timestamp", "User", "Action", "Category", "Resource", "Description", "Severity", "IP Address"})
+		_ = writer.Write([]string{"ID", "Timestamp", "User", "Action", "Category", "Resource", "Description", "Severity", "IP Address"})
 
 		// Write records
 		for _, entry := range entries {
-			writer.Write([]string{
+			_ = writer.Write([]string{
 				fmt.Sprintf("%d", entry.ID),
 				entry.Timestamp.Format(time.RFC3339),
 				entry.User,
@@ -193,7 +193,7 @@ func (h *Handlers) handleAuditLogsExport(w http.ResponseWriter, r *http.Request)
 		}
 
 		writer.Flush()
-		w.Write(buf.Bytes())
+		_, _ = w.Write(buf.Bytes())
 		return
 	}
 
@@ -216,5 +216,5 @@ func (h *Handlers) handleAuditLogsExport(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=audit-logs.json")
-	json.NewEncoder(w).Encode(AuditLogsResponse{Logs: logs, Total: len(logs)})
+	_ = json.NewEncoder(w).Encode(AuditLogsResponse{Logs: logs, Total: len(logs)})
 }

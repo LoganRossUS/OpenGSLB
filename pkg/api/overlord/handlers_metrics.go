@@ -88,11 +88,8 @@ func (h *Handlers) handleMetricsHistory(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Parse query parameters
-	interval := r.URL.Query().Get("interval")
-	if interval == "" {
-		interval = "1h"
-	}
+	// Parse query parameters (interval reserved for future use)
+	_ = r.URL.Query().Get("interval")
 
 	// Generate sample historical data
 	// In production, this would query actual metrics storage

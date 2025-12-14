@@ -121,7 +121,7 @@ func (h *Handlers) handleDNSSECKeysGenerate(w http.ResponseWriter, r *http.Reque
 
 	// Generate key ID and key tag
 	keyIDBytes := make([]byte, 4)
-	rand.Read(keyIDBytes)
+	_, _ = rand.Read(keyIDBytes)
 	keyID := hex.EncodeToString(keyIDBytes)
 	keyTag := uint16(keyIDBytes[0])<<8 | uint16(keyIDBytes[1])
 

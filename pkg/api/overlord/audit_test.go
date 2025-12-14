@@ -134,19 +134,19 @@ func TestAuditLogger_GetLogs_Filter(t *testing.T) {
 	}
 
 	// Filter by user
-	entries, total = logger.GetLogs("", "", "", "admin", 10, 0, nil, nil)
+	_, total = logger.GetLogs("", "", "", "admin", 10, 0, nil, nil)
 	if total != 2 {
 		t.Errorf("expected 2 entries from 'admin', got %d", total)
 	}
 
 	// Filter by action
-	entries, total = logger.GetLogs("", "CREATE", "", "", 10, 0, nil, nil)
+	_, total = logger.GetLogs("", "CREATE", "", "", 10, 0, nil, nil)
 	if total != 1 {
 		t.Errorf("expected 1 entry with action 'CREATE', got %d", total)
 	}
 
 	// Filter by severity
-	entries, total = logger.GetLogs("", "", "warning", "", 10, 0, nil, nil)
+	_, total = logger.GetLogs("", "", "warning", "", 10, 0, nil, nil)
 	if total != 1 {
 		t.Errorf("expected 1 entry with severity 'warning', got %d", total)
 	}
@@ -171,7 +171,7 @@ func TestAuditLogger_GetLogs_TimeFilter(t *testing.T) {
 
 	// Filter by start date in the past (should return the entry)
 	past := time.Now().Add(-time.Hour)
-	entries, total = logger.GetLogs("", "", "", "", 10, 0, &past, nil)
+	_, total = logger.GetLogs("", "", "", "", 10, 0, &past, nil)
 	if total != 1 {
 		t.Errorf("expected 1 entry from past, got %d", total)
 	}

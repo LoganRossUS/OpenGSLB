@@ -204,7 +204,7 @@ func (h *Handlers) deleteOverride(w http.ResponseWriter, r *http.Request, id str
 				backendID := fmt.Sprintf("%s:%d", b.Address, b.Port)
 				if backendID == id && b.OverrideStatus != nil {
 					// Clear override in registry
-					registry.ClearOverride(b.Service, b.Address, b.Port)
+					_ = registry.ClearOverride(b.Service, b.Address, b.Port)
 					exists = true
 					override = Override{
 						ID:      id,
@@ -227,7 +227,7 @@ func (h *Handlers) deleteOverride(w http.ResponseWriter, r *http.Request, id str
 	if registry != nil {
 		address, port := parseAddressPort(override.Address)
 		if address != "" {
-			registry.ClearOverride(override.Service, address, port)
+			_ = registry.ClearOverride(override.Service, address, port)
 		}
 	}
 

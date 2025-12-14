@@ -16,10 +16,10 @@ import (
 // DefaultDataProvider implements DataProvider for the Overlord API.
 // It provides access to OpenGSLB's configuration and runtime state.
 type DefaultDataProvider struct {
-	config      *config.Config
-	configMu    sync.RWMutex
-	registry    *overwatch.Registry
-	validator   *overwatch.Validator
+	config    *config.Config
+	configMu  sync.RWMutex
+	registry  *overwatch.Registry
+	validator *overwatch.Validator
 }
 
 // NewDefaultDataProvider creates a new DefaultDataProvider.

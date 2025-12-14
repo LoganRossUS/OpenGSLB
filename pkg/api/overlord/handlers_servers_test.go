@@ -170,10 +170,10 @@ func TestHandleServers_MethodNotAllowed(t *testing.T) {
 
 func TestParseServerID(t *testing.T) {
 	tests := []struct {
-		id          string
-		expService  string
-		expAddress  string
-		expPort     int
+		id         string
+		expService string
+		expAddress string
+		expPort    int
 	}{
 		{"10.0.1.10:80", "", "10.0.1.10", 80},
 		{"web:10.0.1.10:80", "web", "10.0.1.10", 80},

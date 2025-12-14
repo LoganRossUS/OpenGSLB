@@ -65,11 +65,11 @@ type AuditEntry struct {
 
 // AuditLogger provides audit logging functionality.
 type AuditLogger struct {
-	logger    *slog.Logger
-	entries   []AuditEntry
-	mu        sync.RWMutex
-	nextID    int64
-	maxSize   int // Maximum number of entries to keep in memory
+	logger  *slog.Logger
+	entries []AuditEntry
+	mu      sync.RWMutex
+	nextID  int64
+	maxSize int // Maximum number of entries to keep in memory
 }
 
 // NewAuditLogger creates a new audit logger.
