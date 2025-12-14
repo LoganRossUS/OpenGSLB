@@ -58,7 +58,7 @@ sudo systemctl stop opengslb-overwatch
 sudo cp /usr/local/bin/opengslb.backup /usr/local/bin/opengslb
 
 # Option B: Download previous version
-PREVIOUS_VERSION="0.5.0"
+PREVIOUS_VERSION="0.6.0"
 curl -Lo /tmp/opengslb https://github.com/loganrossus/OpenGSLB/releases/download/v${PREVIOUS_VERSION}/opengslb-linux-amd64
 chmod +x /tmp/opengslb
 sudo mv /tmp/opengslb /usr/local/bin/opengslb
@@ -89,7 +89,7 @@ curl http://localhost:9090/api/v1/ready
 #!/bin/bash
 # rolling-rollback.sh
 
-PREVIOUS_VERSION="0.5.0"
+PREVIOUS_VERSION="0.6.0"
 OVERWATCHES="overwatch-1 overwatch-2 overwatch-3"
 PAUSE_SECONDS=60
 
@@ -139,7 +139,7 @@ Use only when service is completely broken:
 #!/bin/bash
 # emergency-rollback.sh
 
-PREVIOUS_VERSION="0.5.0"
+PREVIOUS_VERSION="0.6.0"
 OVERWATCHES="overwatch-1 overwatch-2 overwatch-3"
 
 # Download binary
@@ -213,7 +213,7 @@ docker-compose up -d
 sudo systemctl stop opengslb-agent
 
 # 2. Restore previous binary
-PREVIOUS_VERSION="0.5.0"
+PREVIOUS_VERSION="0.6.0"
 curl -Lo /tmp/opengslb https://github.com/loganrossus/OpenGSLB/releases/download/v${PREVIOUS_VERSION}/opengslb-linux-amd64
 chmod +x /tmp/opengslb
 sudo mv /tmp/opengslb /usr/local/bin/opengslb

@@ -170,7 +170,7 @@ Application version information. Always set to 1.
 
 **Example:**
 ```
-opengslb_app_info{version="0.2.0"} 1
+opengslb_app_info{version="1.0.0"} 1
 ```
 
 #### `opengslb_config_load_timestamp_seconds`
