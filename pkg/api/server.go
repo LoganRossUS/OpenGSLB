@@ -20,6 +20,8 @@ type ServerConfig struct {
 	AllowedNetworks   []string
 	TrustProxyHeaders bool
 	Logger            *slog.Logger
+	CORSConfig        *CORSConfig
+	EnableCORS        bool
 }
 
 // OverwatchAPIHandlers interface for Overwatch-specific API endpoints.
@@ -40,6 +42,18 @@ type Server struct {
 	overrideHandlers  *OverrideHandlers
 	dnssecHandlers    *DNSSECHandlers
 	geoHandlers       *GeoHandlers
+
+	// Dashboard/Overlord API handlers
+	simpleHealthHandlers *SimpleHealthHandlers
+	domainHandlers       *DomainHandlers
+	serverHandlers       *ServerHandlers
+	regionHandlers       *RegionHandlers
+	nodeHandlers         *NodeHandlers
+	gossipHandlers       *GossipHandlers
+	auditHandlers        *AuditHandlers
+	metricsHandlers      *MetricsHandlers
+	configHandlers       *ConfigHandlers
+	routingHandlers      *RoutingHandlers
 }
 
 // NewServer creates a new API server.
@@ -75,6 +89,56 @@ func (s *Server) SetDNSSECHandlers(dh *DNSSECHandlers) {
 // SetGeoHandlers sets the geo handlers for geolocation API endpoints.
 func (s *Server) SetGeoHandlers(gh *GeoHandlers) {
 	s.geoHandlers = gh
+}
+
+// SetSimpleHealthHandlers sets the simple health handlers.
+func (s *Server) SetSimpleHealthHandlers(h *SimpleHealthHandlers) {
+	s.simpleHealthHandlers = h
+}
+
+// SetDomainHandlers sets the domain handlers.
+func (s *Server) SetDomainHandlers(h *DomainHandlers) {
+	s.domainHandlers = h
+}
+
+// SetServerHandlers sets the server handlers.
+func (s *Server) SetServerHandlers(h *ServerHandlers) {
+	s.serverHandlers = h
+}
+
+// SetRegionHandlers sets the region handlers.
+func (s *Server) SetRegionHandlers(h *RegionHandlers) {
+	s.regionHandlers = h
+}
+
+// SetNodeHandlers sets the node handlers.
+func (s *Server) SetNodeHandlers(h *NodeHandlers) {
+	s.nodeHandlers = h
+}
+
+// SetGossipHandlers sets the gossip handlers.
+func (s *Server) SetGossipHandlers(h *GossipHandlers) {
+	s.gossipHandlers = h
+}
+
+// SetAuditHandlers sets the audit handlers.
+func (s *Server) SetAuditHandlers(h *AuditHandlers) {
+	s.auditHandlers = h
+}
+
+// SetMetricsHandlers sets the metrics handlers.
+func (s *Server) SetMetricsHandlers(h *MetricsHandlers) {
+	s.metricsHandlers = h
+}
+
+// SetConfigHandlers sets the config handlers.
+func (s *Server) SetConfigHandlers(h *ConfigHandlers) {
+	s.configHandlers = h
+}
+
+// SetRoutingHandlers sets the routing handlers.
+func (s *Server) SetRoutingHandlers(h *RoutingHandlers) {
+	s.routingHandlers = h
 }
 
 // Start starts the API server.
@@ -121,15 +185,93 @@ func (s *Server) Start(ctx context.Context) error {
 		s.logger.Debug("geolocation API endpoints registered")
 	}
 
+	// Simple health endpoint (for Overlord dashboard)
+	if s.simpleHealthHandlers != nil {
+		mux.HandleFunc("/api/health", s.simpleHealthHandlers.HandleHealth)
+		s.logger.Debug("simple health API endpoint registered")
+	}
+
+	// Domain management endpoints
+	if s.domainHandlers != nil {
+		mux.HandleFunc("/api/v1/domains", s.withACL(s.domainHandlers.HandleDomains))
+		mux.HandleFunc("/api/v1/domains/", s.withACL(s.domainHandlers.HandleDomains))
+		s.logger.Debug("domain API endpoints registered")
+	}
+
+	// Server management endpoints
+	if s.serverHandlers != nil {
+		mux.HandleFunc("/api/v1/servers", s.withACL(s.serverHandlers.HandleServers))
+		mux.HandleFunc("/api/v1/servers/", s.withACL(s.serverHandlers.HandleServers))
+		s.logger.Debug("server API endpoints registered")
+	}
+
+	// Region management endpoints
+	if s.regionHandlers != nil {
+		mux.HandleFunc("/api/v1/regions", s.withACL(s.regionHandlers.HandleRegions))
+		mux.HandleFunc("/api/v1/regions/", s.withACL(s.regionHandlers.HandleRegions))
+		s.logger.Debug("region API endpoints registered")
+	}
+
+	// Node management endpoints (Overwatch and Agent nodes)
+	if s.nodeHandlers != nil {
+		mux.HandleFunc("/api/v1/nodes/", s.withACL(s.nodeHandlers.HandleNodes))
+		s.logger.Debug("node API endpoints registered")
+	}
+
+	// Gossip protocol endpoints
+	if s.gossipHandlers != nil {
+		mux.HandleFunc("/api/v1/gossip/", s.withACL(s.gossipHandlers.HandleGossip))
+		s.logger.Debug("gossip API endpoints registered")
+	}
+
+	// Audit log endpoints
+	if s.auditHandlers != nil {
+		mux.HandleFunc("/api/v1/audit-logs", s.withACL(s.auditHandlers.HandleAuditLogs))
+		mux.HandleFunc("/api/v1/audit-logs/", s.withACL(s.auditHandlers.HandleAuditLogs))
+		s.logger.Debug("audit log API endpoints registered")
+	}
+
+	// Metrics endpoints
+	if s.metricsHandlers != nil {
+		mux.HandleFunc("/api/v1/metrics", s.withACL(s.metricsHandlers.HandleMetrics))
+		mux.HandleFunc("/api/v1/metrics/", s.withACL(s.metricsHandlers.HandleMetrics))
+		s.logger.Debug("metrics API endpoints registered")
+	}
+
+	// Config and preferences endpoints
+	if s.configHandlers != nil {
+		mux.HandleFunc("/api/v1/preferences", s.withACL(s.configHandlers.HandlePreferences))
+		mux.HandleFunc("/api/v1/config", s.withACL(s.configHandlers.HandleConfig))
+		mux.HandleFunc("/api/v1/config/", s.withACL(s.configHandlers.HandleConfig))
+		s.logger.Debug("config API endpoints registered")
+	}
+
+	// Routing endpoints
+	if s.routingHandlers != nil {
+		mux.HandleFunc("/api/v1/routing/", s.withACL(s.routingHandlers.HandleRouting))
+		s.logger.Debug("routing API endpoints registered")
+	}
+
 	// ADR-015: Cluster endpoints removed
 	// The following endpoints no longer exist:
 	// - /api/v1/cluster/status
 	// - /api/v1/cluster/join
 	// - /api/v1/cluster/remove
 
+	// Apply CORS middleware if enabled
+	var handler http.Handler = mux
+	if s.config.EnableCORS {
+		corsConfig := DefaultCORSConfig()
+		if s.config.CORSConfig != nil {
+			corsConfig = *s.config.CORSConfig
+		}
+		handler = CORSMiddleware(corsConfig, mux)
+		s.logger.Debug("CORS middleware enabled")
+	}
+
 	s.httpServer = &http.Server{
 		Addr:         s.config.Address,
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
