@@ -1,6 +1,6 @@
 # OpenGSLB API Reference
 
-OpenGSLB provides a REST API for health status monitoring, external health overrides, DNSSEC key management, and Overwatch agent management.
+OpenGSLB provides a comprehensive REST API for health status monitoring, external health overrides, DNSSEC key management, Overwatch agent management, domain/server/region configuration, metrics, audit logging, and routing.
 
 **Base URL:** `http://localhost:8080/api/v1`
 
@@ -8,12 +8,78 @@ OpenGSLB provides a REST API for health status monitoring, external health overr
 
 - [Security & Authentication](#security--authentication)
 - [Configuration](#configuration)
+- [Simple Health Check](#simple-health-check)
+  - [GET /api/health](#get-apihealth)
 - [Core Health Endpoints](#core-health-endpoints)
   - [GET /api/v1/health/servers](#get-apiv1healthservers)
   - [GET /api/v1/health/regions](#get-apiv1healthregions)
 - [Liveness & Readiness Probes](#liveness--readiness-probes)
   - [GET /api/v1/ready](#get-apiv1ready)
   - [GET /api/v1/live](#get-apiv1live)
+- [Domain API](#domain-api)
+  - [GET /api/v1/domains](#get-apiv1domains)
+  - [GET /api/v1/domains/{name}](#get-apiv1domainsname)
+  - [POST /api/v1/domains](#post-apiv1domains)
+  - [PUT /api/v1/domains/{name}](#put-apiv1domainsname)
+  - [DELETE /api/v1/domains/{name}](#delete-apiv1domainsname)
+  - [GET /api/v1/domains/{name}/backends](#get-apiv1domainsnamebackends)
+- [Server API](#server-api)
+  - [GET /api/v1/servers](#get-apiv1servers)
+  - [GET /api/v1/servers/{id}](#get-apiv1serversid)
+  - [POST /api/v1/servers](#post-apiv1servers)
+  - [PUT /api/v1/servers/{id}](#put-apiv1serversid)
+  - [DELETE /api/v1/servers/{id}](#delete-apiv1serversid)
+  - [GET /api/v1/servers/{id}/health-check](#get-apiv1serversidhealth-check)
+  - [PUT /api/v1/servers/{id}/health-check](#put-apiv1serversidhealth-check)
+- [Region API](#region-api)
+  - [GET /api/v1/regions](#get-apiv1regions)
+  - [GET /api/v1/regions/{id}](#get-apiv1regionsid)
+  - [POST /api/v1/regions](#post-apiv1regions)
+  - [PUT /api/v1/regions/{id}](#put-apiv1regionsid)
+  - [DELETE /api/v1/regions/{id}](#delete-apiv1regionsid)
+- [Node API](#node-api)
+  - [GET /api/v1/nodes/overwatch](#get-apiv1nodesoverwatch)
+  - [GET /api/v1/nodes/overwatch/{id}](#get-apiv1nodesoverwatchid)
+  - [GET /api/v1/nodes/agent](#get-apiv1nodesagent)
+  - [POST /api/v1/nodes/agent](#post-apiv1nodesagent)
+  - [GET /api/v1/nodes/agent/{id}](#get-apiv1nodesagentid)
+  - [DELETE /api/v1/nodes/agent/{id}](#delete-apiv1nodesagentid)
+  - [GET /api/v1/nodes/agent/{id}/certificate](#get-apiv1nodesagentidcertificate)
+  - [POST /api/v1/nodes/agent/{id}/certificate](#post-apiv1nodesagentidcertificate)
+  - [DELETE /api/v1/nodes/agent/{id}/certificate](#delete-apiv1nodesagentidcertificate)
+- [Gossip API](#gossip-api)
+  - [GET /api/v1/gossip/nodes](#get-apiv1gossipnodes)
+  - [GET /api/v1/gossip/nodes/{id}](#get-apiv1gossipnodesid)
+  - [GET /api/v1/gossip/config](#get-apiv1gossipconfig)
+  - [PUT /api/v1/gossip/config](#put-apiv1gossipconfig)
+  - [POST /api/v1/gossip/generate-key](#post-apiv1gossipgenerate-key)
+- [Audit Log API](#audit-log-api)
+  - [GET /api/v1/audit-logs](#get-apiv1audit-logs)
+  - [GET /api/v1/audit-logs/{id}](#get-apiv1audit-logsid)
+  - [GET /api/v1/audit-logs/stats](#get-apiv1audit-logsstats)
+  - [GET /api/v1/audit-logs/export](#get-apiv1audit-logsexport)
+- [Metrics API](#metrics-api)
+  - [GET /api/v1/metrics/overview](#get-apiv1metricsoverview)
+  - [GET /api/v1/metrics/history](#get-apiv1metricshistory)
+  - [GET /api/v1/metrics/nodes/{id}](#get-apiv1metricsnodesid)
+  - [GET /api/v1/metrics/regions/{id}](#get-apiv1metricsregionsid)
+  - [GET /api/v1/metrics/routing](#get-apiv1metricsrouting)
+- [Config API](#config-api)
+  - [GET /api/v1/preferences](#get-apiv1preferences)
+  - [PUT /api/v1/preferences](#put-apiv1preferences)
+  - [GET /api/v1/config/system](#get-apiv1configsystem)
+  - [GET /api/v1/config/dns](#get-apiv1configdns)
+  - [PUT /api/v1/config/dns](#put-apiv1configdns)
+  - [GET /api/v1/config/health-check](#get-apiv1confighealth-check)
+  - [PUT /api/v1/config/health-check](#put-apiv1confighealth-check)
+  - [GET /api/v1/config/logging](#get-apiv1configlogging)
+  - [PUT /api/v1/config/logging](#put-apiv1configlogging)
+- [Routing API](#routing-api)
+  - [GET /api/v1/routing/algorithms](#get-apiv1routingalgorithms)
+  - [GET /api/v1/routing/algorithms/{id}](#get-apiv1routingalgorithmsid)
+  - [POST /api/v1/routing/test](#post-apiv1routingtest)
+  - [GET /api/v1/routing/decisions](#get-apiv1routingdecisions)
+  - [GET /api/v1/routing/flows](#get-apiv1routingflows)
 - [Override API](#override-api)
   - [GET /api/v1/overrides](#get-apiv1overrides)
   - [GET /api/v1/overrides/{service}/{address}](#get-apiv1overridesserviceaddress)
@@ -24,6 +90,11 @@ OpenGSLB provides a REST API for health status monitoring, external health overr
   - [GET /api/v1/dnssec/ds](#get-apiv1dnssecds)
   - [GET /api/v1/dnssec/keys](#get-apiv1dnsseckeys)
   - [POST /api/v1/dnssec/sync](#post-apiv1dnssecsync)
+- [Geolocation API](#geolocation-api)
+  - [GET /api/v1/geo/mappings](#get-apiv1geomappings)
+  - [PUT /api/v1/geo/mappings](#put-apiv1geomappings)
+  - [DELETE /api/v1/geo/mappings/{cidr}](#delete-apiv1geomappingscidr)
+  - [GET /api/v1/geo/test](#get-apiv1geotest)
 - [Overwatch API](#overwatch-api)
   - [GET /api/v1/overwatch/backends](#get-apiv1overwatchbackends)
   - [GET /api/v1/overwatch/stats](#get-apiv1overwatchstats)
@@ -48,9 +119,21 @@ The API exposes internal infrastructure details including server addresses, heal
 
 | Endpoint | ACL Protected |
 |----------|---------------|
+| `/api/health` | **No** |
 | `/api/v1/health/*` | Yes |
+| `/api/v1/domains/*` | Yes |
+| `/api/v1/servers/*` | Yes |
+| `/api/v1/regions/*` | Yes |
+| `/api/v1/nodes/*` | Yes |
+| `/api/v1/gossip/*` | Yes |
+| `/api/v1/audit-logs/*` | Yes |
+| `/api/v1/metrics/*` | Yes |
+| `/api/v1/preferences` | Yes |
+| `/api/v1/config/*` | Yes |
+| `/api/v1/routing/*` | Yes |
 | `/api/v1/overrides/*` | Yes |
 | `/api/v1/dnssec/*` | Yes |
+| `/api/v1/geo/*` | Yes |
 | `/api/v1/overwatch/*` | Yes |
 | `/api/v1/ready` | **No** |
 | `/api/v1/live` | **No** |
@@ -74,6 +157,24 @@ api:
     - "127.0.0.1/32"
     - "::1/128"
   trust_proxy_headers: false
+  enable_cors: false
+  cors:
+    allowed_origins:
+      - "*"
+    allowed_methods:
+      - "GET"
+      - "POST"
+      - "PUT"
+      - "PATCH"
+      - "DELETE"
+      - "OPTIONS"
+    allowed_headers:
+      - "Accept"
+      - "Authorization"
+      - "Content-Type"
+      - "X-Requested-With"
+    allow_credentials: false
+    max_age: 86400
 ```
 
 | Field | Type | Default | Description |
@@ -82,6 +183,42 @@ api:
 | `address` | string | `127.0.0.1:8080` | Listen address (IP:port) |
 | `allowed_networks` | []string | `["127.0.0.1/32", "::1/128"]` | CIDR networks allowed to connect |
 | `trust_proxy_headers` | bool | `false` | Trust X-Forwarded-For headers |
+| `enable_cors` | bool | `false` | Enable CORS middleware for cross-origin requests |
+| `cors.allowed_origins` | []string | `["*"]` | Origins allowed to access the API |
+| `cors.allowed_methods` | []string | See example | HTTP methods allowed |
+| `cors.allowed_headers` | []string | See example | Request headers allowed |
+| `cors.allow_credentials` | bool | `false` | Allow credentials in requests |
+| `cors.max_age` | int | `86400` | Preflight cache duration in seconds |
+
+---
+
+## Simple Health Check
+
+### GET /api/health
+
+Simple health endpoint with version and uptime information. This endpoint is **not** ACL protected.
+
+**ACL Protected:** No
+
+**Response:** `200 OK`
+
+```json
+{
+  "status": "healthy",
+  "version": "1.0.0",
+  "uptime_seconds": 86400,
+  "timestamp": "2025-01-15T10:30:00Z"
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | Health status: `healthy`, `degraded`, `unhealthy` |
+| `version` | string | Application version |
+| `uptime_seconds` | int | Seconds since application start |
+| `timestamp` | string | ISO 8601 timestamp |
 
 ---
 
@@ -234,6 +371,1328 @@ Liveness probe. Returns 200 if the process is running.
 ```json
 {
   "alive": true
+}
+```
+
+---
+
+## Domain API
+
+Manage DNS domain configurations.
+
+### GET /api/v1/domains
+
+List all configured domains.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "domains": [
+    {
+      "id": "d1",
+      "name": "api.example.com",
+      "ttl": 300,
+      "routing_policy": "weighted",
+      "health_check_id": "hc1",
+      "dnssec_enabled": true,
+      "enabled": true,
+      "description": "Main API endpoint",
+      "tags": ["production"],
+      "backend_count": 3,
+      "healthy_backends": 2,
+      "created_at": "2025-01-01T10:00:00Z",
+      "updated_at": "2025-01-15T10:00:00Z"
+    }
+  ],
+  "total": 1,
+  "generated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET /api/v1/domains/{name}
+
+Get a specific domain by name.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "domain": {
+    "id": "d1",
+    "name": "api.example.com",
+    "ttl": 300,
+    "routing_policy": "weighted",
+    "dnssec_enabled": true,
+    "enabled": true,
+    "settings": {
+      "geo_routing_enabled": true,
+      "failover_enabled": true,
+      "failover_threshold": 2,
+      "load_balancing_method": "round-robin"
+    }
+  }
+}
+```
+
+---
+
+### POST /api/v1/domains
+
+Create a new domain.
+
+**ACL Protected:** Yes
+
+**Request Body:**
+
+```json
+{
+  "name": "api.example.com",
+  "ttl": 300,
+  "routing_policy": "weighted",
+  "dnssec_enabled": true,
+  "enabled": true,
+  "description": "Main API endpoint"
+}
+```
+
+**Response:** `201 Created`
+
+---
+
+### PUT /api/v1/domains/{name}
+
+Update an existing domain.
+
+**ACL Protected:** Yes
+
+**Request Body:**
+
+```json
+{
+  "ttl": 600,
+  "enabled": false
+}
+```
+
+**Response:** `200 OK`
+
+---
+
+### DELETE /api/v1/domains/{name}
+
+Delete a domain.
+
+**ACL Protected:** Yes
+
+**Response:** `204 No Content`
+
+---
+
+### GET /api/v1/domains/{name}/backends
+
+Get backends for a domain.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "backends": [
+    {
+      "id": "b1",
+      "address": "10.0.1.10",
+      "port": 80,
+      "weight": 100,
+      "priority": 1,
+      "region": "us-east-1",
+      "healthy": true,
+      "enabled": true,
+      "last_check": "2025-01-15T10:30:00Z"
+    }
+  ],
+  "total": 1,
+  "generated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+---
+
+## Server API
+
+Manage backend server configurations.
+
+### GET /api/v1/servers
+
+List all configured servers.
+
+**ACL Protected:** Yes
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `region` | string | Filter by region |
+| `enabled` | bool | Filter by enabled status |
+| `healthy` | bool | Filter by health status |
+
+**Response:** `200 OK`
+
+```json
+{
+  "servers": [
+    {
+      "id": "s1",
+      "name": "web-server-1",
+      "address": "10.0.1.10",
+      "port": 80,
+      "protocol": "http",
+      "weight": 100,
+      "priority": 1,
+      "region": "us-east-1",
+      "enabled": true,
+      "healthy": true,
+      "status": {
+        "healthy": true,
+        "last_check": "2025-01-15T10:30:00Z",
+        "consecutive_failures": 0,
+        "consecutive_successes": 5
+      }
+    }
+  ],
+  "total": 1,
+  "generated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+---
+
+### POST /api/v1/servers
+
+Create a new server.
+
+**ACL Protected:** Yes
+
+**Request Body:**
+
+```json
+{
+  "name": "web-server-1",
+  "address": "10.0.1.10",
+  "port": 80,
+  "protocol": "http",
+  "weight": 100,
+  "region": "us-east-1",
+  "enabled": true,
+  "health_check": {
+    "enabled": true,
+    "type": "http",
+    "path": "/health",
+    "interval": "30s",
+    "timeout": "5s",
+    "healthy_threshold": 2,
+    "unhealthy_threshold": 3
+  }
+}
+```
+
+**Response:** `201 Created`
+
+---
+
+### GET /api/v1/servers/{id}
+
+Get a specific server.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### PUT /api/v1/servers/{id}
+
+Update a server.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### DELETE /api/v1/servers/{id}
+
+Delete a server.
+
+**ACL Protected:** Yes
+
+**Response:** `204 No Content`
+
+---
+
+### GET /api/v1/servers/{id}/health-check
+
+Get health check configuration for a server.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "server_id": "s1",
+  "health_check": {
+    "enabled": true,
+    "type": "http",
+    "path": "/health",
+    "interval": "30s",
+    "timeout": "5s",
+    "healthy_threshold": 2,
+    "unhealthy_threshold": 3,
+    "expected_status": 200
+  }
+}
+```
+
+---
+
+### PUT /api/v1/servers/{id}/health-check
+
+Update health check configuration.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+## Region API
+
+Manage geographic region configurations.
+
+### GET /api/v1/regions
+
+List all configured regions.
+
+**ACL Protected:** Yes
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `enabled` | bool | Filter by enabled status |
+| `continent` | string | Filter by continent |
+
+**Response:** `200 OK`
+
+```json
+{
+  "regions": [
+    {
+      "id": "r1",
+      "name": "US East",
+      "code": "us-east-1",
+      "description": "Virginia region",
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "continent": "NA",
+      "countries": ["US"],
+      "enabled": true,
+      "priority": 1,
+      "server_count": 5,
+      "healthy_servers": 4
+    }
+  ],
+  "total": 1,
+  "generated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+---
+
+### POST /api/v1/regions
+
+Create a new region.
+
+**ACL Protected:** Yes
+
+**Request Body:**
+
+```json
+{
+  "name": "US East",
+  "code": "us-east-1",
+  "description": "Virginia region",
+  "latitude": 37.7749,
+  "longitude": -122.4194,
+  "continent": "NA",
+  "enabled": true,
+  "priority": 1
+}
+```
+
+**Response:** `201 Created`
+
+---
+
+### GET /api/v1/regions/{id}
+
+Get a specific region.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### PUT /api/v1/regions/{id}
+
+Update a region.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### DELETE /api/v1/regions/{id}
+
+Delete a region.
+
+**ACL Protected:** Yes
+
+**Response:** `204 No Content`
+
+---
+
+## Node API
+
+Manage Overwatch and Agent nodes.
+
+### GET /api/v1/nodes/overwatch
+
+List all Overwatch nodes.
+
+**ACL Protected:** Yes
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by status: `online`, `offline`, `degraded` |
+| `region` | string | Filter by region |
+
+**Response:** `200 OK`
+
+```json
+{
+  "nodes": [
+    {
+      "id": "ow1",
+      "name": "overwatch-east-1",
+      "address": "10.0.1.100",
+      "port": 53,
+      "api_port": 8080,
+      "region": "us-east-1",
+      "status": "online",
+      "version": "1.0.0",
+      "uptime_seconds": 86400,
+      "last_seen": "2025-01-15T10:30:00Z",
+      "queries_total": 1000000,
+      "queries_per_sec": 500.5,
+      "dnssec_enabled": true
+    }
+  ],
+  "total": 1,
+  "generated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET /api/v1/nodes/overwatch/{id}
+
+Get a specific Overwatch node.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### GET /api/v1/nodes/agent
+
+List all Agent nodes.
+
+**ACL Protected:** Yes
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by status: `online`, `offline`, `pending` |
+| `region` | string | Filter by region |
+
+**Response:** `200 OK`
+
+```json
+{
+  "nodes": [
+    {
+      "id": "ag1",
+      "name": "agent-east-1",
+      "address": "10.0.2.100",
+      "port": 8443,
+      "region": "us-east-1",
+      "status": "online",
+      "version": "1.0.0",
+      "uptime_seconds": 86400,
+      "last_seen": "2025-01-15T10:30:00Z",
+      "checks_total": 500000,
+      "checks_per_sec": 100.5,
+      "active_checks": 50,
+      "target_count": 25,
+      "certificate_expiry": "2026-01-15T10:30:00Z",
+      "registered_at": "2025-01-01T10:00:00Z"
+    }
+  ],
+  "total": 1,
+  "generated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+---
+
+### POST /api/v1/nodes/agent
+
+Register a new Agent node.
+
+**ACL Protected:** Yes
+
+**Request Body:**
+
+```json
+{
+  "name": "agent-east-1",
+  "address": "10.0.2.100",
+  "port": 8443,
+  "region": "us-east-1",
+  "version": "1.0.0"
+}
+```
+
+**Response:** `201 Created`
+
+---
+
+### GET /api/v1/nodes/agent/{id}
+
+Get a specific Agent node.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### DELETE /api/v1/nodes/agent/{id}
+
+Deregister an Agent node.
+
+**ACL Protected:** Yes
+
+**Response:** `204 No Content`
+
+---
+
+### GET /api/v1/nodes/agent/{id}/certificate
+
+Get certificate information for an Agent.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "certificate": {
+    "agent_id": "ag1",
+    "serial": "ABC123",
+    "not_before": "2025-01-01T10:00:00Z",
+    "not_after": "2026-01-01T10:00:00Z",
+    "fingerprint": "SHA256:...",
+    "status": "valid",
+    "issued_at": "2025-01-01T10:00:00Z"
+  }
+}
+```
+
+---
+
+### POST /api/v1/nodes/agent/{id}/certificate
+
+Reissue certificate for an Agent.
+
+**ACL Protected:** Yes
+
+**Response:** `201 Created`
+
+---
+
+### DELETE /api/v1/nodes/agent/{id}/certificate
+
+Revoke certificate for an Agent.
+
+**ACL Protected:** Yes
+
+**Response:** `204 No Content`
+
+---
+
+## Gossip API
+
+Manage gossip protocol cluster communication.
+
+### GET /api/v1/gossip/nodes
+
+List all nodes in the gossip cluster.
+
+**ACL Protected:** Yes
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by status: `alive`, `suspect`, `dead` |
+| `region` | string | Filter by region |
+
+**Response:** `200 OK`
+
+```json
+{
+  "nodes": [
+    {
+      "id": "node1",
+      "name": "overwatch-1",
+      "address": "10.0.1.100",
+      "port": 7946,
+      "status": "alive",
+      "state": "leader",
+      "region": "us-east-1",
+      "version": "1.0.0",
+      "rtt_ms": 5,
+      "last_seen": "2025-01-15T10:30:00Z",
+      "joined_at": "2025-01-01T10:00:00Z"
+    }
+  ],
+  "total": 3,
+  "healthy": 3,
+  "generated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET /api/v1/gossip/nodes/{id}
+
+Get a specific gossip node.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### GET /api/v1/gossip/config
+
+Get gossip protocol configuration.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "config": {
+    "enabled": true,
+    "bind_address": "0.0.0.0",
+    "bind_port": 7946,
+    "cluster_name": "opengslb",
+    "encryption_enabled": true,
+    "gossip_interval_ms": 200,
+    "probe_interval_ms": 1000,
+    "probe_timeout_ms": 500,
+    "seeds": ["10.0.1.101:7946", "10.0.1.102:7946"]
+  }
+}
+```
+
+---
+
+### PUT /api/v1/gossip/config
+
+Update gossip protocol configuration.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### POST /api/v1/gossip/generate-key
+
+Generate a new encryption key for gossip protocol.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "key": "base64-encoded-key",
+  "algorithm": "AES-256-GCM",
+  "bits": 256
+}
+```
+
+---
+
+## Audit Log API
+
+Access audit logs for compliance and troubleshooting.
+
+### GET /api/v1/audit-logs
+
+List audit log entries with pagination and filtering.
+
+**ACL Protected:** Yes
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `start_time` | string | ISO 8601 start time |
+| `end_time` | string | ISO 8601 end time |
+| `actions` | string | Comma-separated list of actions |
+| `resources` | string | Comma-separated list of resources |
+| `actors` | string | Comma-separated list of actors |
+| `status` | string | Filter by status: `success`, `failure` |
+| `limit` | int | Results per page (default: 100) |
+| `offset` | int | Pagination offset |
+
+**Response:** `200 OK`
+
+```json
+{
+  "entries": [
+    {
+      "id": "e1",
+      "timestamp": "2025-01-15T10:30:00Z",
+      "action": "create",
+      "resource": "domain",
+      "resource_id": "d1",
+      "actor": "admin",
+      "actor_type": "user",
+      "actor_ip": "192.168.1.50",
+      "status": "success",
+      "duration_ms": 50
+    }
+  ],
+  "total": 100,
+  "limit": 100,
+  "offset": 0,
+  "generated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET /api/v1/audit-logs/{id}
+
+Get a specific audit log entry.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### GET /api/v1/audit-logs/stats
+
+Get audit log statistics.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "stats": {
+    "total_entries": 10000,
+    "entries_last_24h": 500,
+    "entries_last_7d": 3000,
+    "by_action": {
+      "create": 1000,
+      "update": 5000,
+      "delete": 500
+    },
+    "by_resource": {
+      "domain": 2000,
+      "server": 3000
+    },
+    "by_status": {
+      "success": 9500,
+      "failure": 500
+    },
+    "retention_days": 90
+  },
+  "generated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET /api/v1/audit-logs/export
+
+Export audit logs in CSV or JSON format.
+
+**ACL Protected:** Yes
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `format` | string | Export format: `json`, `csv` (default: json) |
+| (plus all filter params from GET /api/v1/audit-logs) |
+
+**Response:** `200 OK` with `Content-Disposition: attachment`
+
+---
+
+## Metrics API
+
+System and performance metrics.
+
+### GET /api/v1/metrics/overview
+
+Get system metrics overview.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "overview": {
+    "timestamp": "2025-01-15T10:30:00Z",
+    "uptime_seconds": 86400,
+    "queries_total": 1000000,
+    "queries_per_sec": 500.5,
+    "health_checks_total": 500000,
+    "health_checks_per_sec": 100.5,
+    "active_domains": 50,
+    "active_servers": 200,
+    "healthy_servers": 180,
+    "unhealthy_servers": 20,
+    "active_regions": 5,
+    "overwatch_nodes": 3,
+    "agent_nodes": 10,
+    "dnssec_enabled": true,
+    "gossip_enabled": true,
+    "response_times": {
+      "avg_ms": 5.5,
+      "p50_ms": 3.0,
+      "p95_ms": 10.0,
+      "p99_ms": 25.0,
+      "max_ms": 100.0
+    },
+    "error_rate": 0.01,
+    "cache_hit_rate": 0.85,
+    "memory": {
+      "used_bytes": 500000000,
+      "available_bytes": 1500000000,
+      "total_bytes": 2000000000,
+      "percent": 25.0
+    },
+    "cpu": {
+      "used_percent": 15.5,
+      "cores": 8
+    }
+  }
+}
+```
+
+---
+
+### GET /api/v1/metrics/history
+
+Get historical metrics data.
+
+**ACL Protected:** Yes
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `start_time` | string | ISO 8601 start time |
+| `end_time` | string | ISO 8601 end time |
+| `duration` | string | Duration shorthand: `1h`, `24h`, `7d` |
+| `metrics` | string | Comma-separated list of metrics |
+| `resolution` | string | Data resolution: `1m`, `5m`, `1h`, `1d` |
+| `node_id` | string | Filter by node |
+| `region_id` | string | Filter by region |
+
+**Response:** `200 OK`
+
+```json
+{
+  "data_points": [
+    {
+      "timestamp": "2025-01-15T10:00:00Z",
+      "values": {
+        "queries_per_sec": 500.5,
+        "error_rate": 0.01
+      }
+    }
+  ],
+  "total": 60,
+  "generated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET /api/v1/metrics/nodes/{id}
+
+Get metrics for a specific node.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### GET /api/v1/metrics/regions/{id}
+
+Get metrics for a specific region.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### GET /api/v1/metrics/routing
+
+Get routing decision statistics.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "stats": {
+    "timestamp": "2025-01-15T10:30:00Z",
+    "total_decisions": 1000000,
+    "by_algorithm": {
+      "weighted": 500000,
+      "geo": 300000,
+      "failover": 200000
+    },
+    "by_region": {
+      "us-east-1": 400000,
+      "us-west-2": 300000,
+      "eu-west-1": 300000
+    },
+    "geo_routing_hits": 300000,
+    "failover_events": 500,
+    "avg_decision_time_us": 50.5
+  }
+}
+```
+
+---
+
+## Config API
+
+System configuration and user preferences.
+
+### GET /api/v1/preferences
+
+Get user preferences for the dashboard.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "preferences": {
+    "theme": "dark",
+    "language": "en",
+    "timezone": "UTC",
+    "date_format": "YYYY-MM-DD",
+    "time_format": "HH:mm:ss",
+    "refresh_interval_seconds": 30,
+    "notifications_enabled": true,
+    "default_view": "overview",
+    "updated_at": "2025-01-15T10:30:00Z"
+  }
+}
+```
+
+---
+
+### PUT /api/v1/preferences
+
+Update user preferences.
+
+**ACL Protected:** Yes
+
+**Request Body:**
+
+```json
+{
+  "theme": "light",
+  "refresh_interval_seconds": 60
+}
+```
+
+**Response:** `200 OK`
+
+---
+
+### GET /api/v1/config/system
+
+Get system configuration (read-only).
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "config": {
+    "version": "1.0.0",
+    "build_info": {
+      "version": "1.0.0",
+      "git_commit": "abc123",
+      "build_date": "2025-01-01",
+      "go_version": "1.21"
+    },
+    "mode": "overwatch",
+    "node_id": "ow1",
+    "node_name": "overwatch-1",
+    "region": "us-east-1",
+    "features": ["dnssec", "gossip", "geo"],
+    "start_time": "2025-01-15T00:00:00Z"
+  }
+}
+```
+
+---
+
+### GET /api/v1/config/dns
+
+Get DNS configuration.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "config": {
+    "listen_address": "0.0.0.0",
+    "listen_port": 53,
+    "enable_tcp": true,
+    "enable_udp": true,
+    "enable_dot": false,
+    "enable_doh": false,
+    "max_udp_size": 4096,
+    "default_ttl": 300,
+    "cache_enabled": true,
+    "cache_size": 10000,
+    "rate_limit_enabled": true,
+    "rate_limit_qps": 1000
+  }
+}
+```
+
+---
+
+### PUT /api/v1/config/dns
+
+Update DNS configuration.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### GET /api/v1/config/health-check
+
+Get health check configuration.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "config": {
+    "default_interval_seconds": 30,
+    "default_timeout_seconds": 5,
+    "healthy_threshold": 2,
+    "unhealthy_threshold": 3,
+    "max_concurrent_checks": 100,
+    "default_protocol": "http"
+  }
+}
+```
+
+---
+
+### PUT /api/v1/config/health-check
+
+Update health check configuration.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### GET /api/v1/config/logging
+
+Get logging configuration.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "config": {
+    "level": "info",
+    "format": "json",
+    "output": "stdout",
+    "enable_audit": true,
+    "audit_retention_days": 90
+  }
+}
+```
+
+---
+
+### PUT /api/v1/config/logging
+
+Update logging configuration.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+## Routing API
+
+Traffic routing algorithms and testing.
+
+### GET /api/v1/routing/algorithms
+
+List available routing algorithms.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+```json
+{
+  "algorithms": [
+    {
+      "id": "weighted",
+      "name": "Weighted Round Robin",
+      "description": "Distribute traffic based on server weights",
+      "type": "weighted",
+      "enabled": true,
+      "default": true
+    },
+    {
+      "id": "geo",
+      "name": "Geographic Routing",
+      "description": "Route to nearest region based on client location",
+      "type": "geo",
+      "enabled": true,
+      "default": false
+    },
+    {
+      "id": "failover",
+      "name": "Active-Passive Failover",
+      "description": "Route to primary, failover to secondary on failure",
+      "type": "failover",
+      "enabled": true,
+      "default": false
+    }
+  ],
+  "total": 3,
+  "generated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET /api/v1/routing/algorithms/{id}
+
+Get a specific routing algorithm.
+
+**ACL Protected:** Yes
+
+**Response:** `200 OK`
+
+---
+
+### POST /api/v1/routing/test
+
+Test routing for a given request.
+
+**ACL Protected:** Yes
+
+**Request Body:**
+
+```json
+{
+  "domain": "api.example.com",
+  "client_ip": "8.8.8.8",
+  "query_type": "A"
+}
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "result": {
+    "domain": "api.example.com",
+    "client_ip": "8.8.8.8",
+    "client_region": "us-east-1",
+    "client_country": "US",
+    "algorithm": "geo",
+    "selected_backend": {
+      "address": "10.0.1.10",
+      "port": 80,
+      "region": "us-east-1",
+      "weight": 100,
+      "priority": 1,
+      "healthy": true
+    },
+    "alternatives": [],
+    "factors": [
+      {
+        "name": "geo_distance",
+        "type": "geo",
+        "value": "500km",
+        "weight": 1.0,
+        "impact": "positive"
+      }
+    ],
+    "decision": "success",
+    "decision_time_us": 50,
+    "ttl": 300,
+    "timestamp": "2025-01-15T10:30:00Z"
+  }
+}
+```
+
+---
+
+### GET /api/v1/routing/decisions
+
+Get recent routing decisions.
+
+**ACL Protected:** Yes
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `start_time` | string | ISO 8601 start time |
+| `end_time` | string | ISO 8601 end time |
+| `domain` | string | Filter by domain |
+| `algorithm` | string | Filter by algorithm |
+| `region` | string | Filter by selected region |
+| `outcome` | string | Filter by outcome: `success`, `failover`, `fallback` |
+| `limit` | int | Results per page |
+| `offset` | int | Pagination offset |
+
+**Response:** `200 OK`
+
+```json
+{
+  "decisions": [
+    {
+      "id": "rd1",
+      "timestamp": "2025-01-15T10:30:00Z",
+      "domain": "api.example.com",
+      "client_ip": "8.8.8.8",
+      "client_region": "us-east-1",
+      "algorithm": "geo",
+      "selected_server": "10.0.1.10:80",
+      "selected_region": "us-east-1",
+      "decision_time_us": 50,
+      "outcome": "success"
+    }
+  ],
+  "total": 1000,
+  "limit": 100,
+  "offset": 0,
+  "generated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET /api/v1/routing/flows
+
+Get traffic flow information between regions.
+
+**ACL Protected:** Yes
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `start_time` | string | ISO 8601 start time |
+| `end_time` | string | ISO 8601 end time |
+| `source_region` | string | Filter by source region |
+| `dest_region` | string | Filter by destination region |
+
+**Response:** `200 OK`
+
+```json
+{
+  "flows": [
+    {
+      "source_region": "us-east-1",
+      "destination_region": "us-west-2",
+      "request_count": 100000,
+      "bytes_transferred": 1000000000,
+      "avg_latency_ms": 50.5,
+      "error_rate": 0.01,
+      "timestamp": "2025-01-15T10:30:00Z"
+    }
+  ],
+  "total": 10,
+  "generated_at": "2025-01-15T10:30:00Z"
 }
 ```
 
