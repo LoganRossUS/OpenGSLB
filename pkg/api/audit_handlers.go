@@ -269,7 +269,9 @@ func (h *AuditHandlers) handleExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
 	w.WriteHeader(http.StatusOK)
-	w.Write(data)
+	if _, err := w.Write(data); err != nil {
+		h.logger.Error("failed to write export data", "error", err)
+	}
 }
 
 // parseAuditFilter parses query parameters into an AuditFilter.
