@@ -456,7 +456,7 @@ func (a *Application) initializeAPIServer() error {
 		a.logger.Debug("domain API handlers registered")
 
 		// Server handlers - provides backend server information from the registry
-		serverProvider := api.NewRegistryServerProvider(a.backendRegistry, a.logger)
+		serverProvider := api.NewRegistryServerProvider(a.backendRegistry, a.config, a.logger)
 		server.SetServerHandlers(api.NewServerHandlers(serverProvider, a.logger))
 		a.logger.Debug("server API handlers registered")
 
