@@ -54,15 +54,51 @@ func NewRegistryDomainProvider(registry RegistryInterface, cfg *config.Config, l
 
 // ListDomains returns all configured domains.
 func (p *RegistryDomainProvider) ListDomains() []Domain {
-	backends := p.registry.GetAllBackends()
+	// Start with domains from config file
+	domainMap := make(map[string]Domain)
 
-	// Group backends by service (domain)
+	// Add domains from config
+	if p.config != nil {
+		for _, d := range p.config.Domains {
+			// Count backends from config regions
+			backendCount := 0
+			for _, regionName := range d.Regions {
+				for _, r := range p.config.Regions {
+					if r.Name == regionName {
+						backendCount += len(r.Servers)
+					}
+				}
+			}
+
+			ttl := d.TTL
+			if ttl == 0 {
+				ttl = config.DefaultTTL
+			}
+
+			routingPolicy := d.RoutingAlgorithm
+			if routingPolicy == "" {
+				routingPolicy = config.DefaultRoutingAlgorithm
+			}
+
+			domainMap[d.Name] = Domain{
+				ID:              d.Name,
+				Name:            d.Name,
+				TTL:             ttl,
+				RoutingPolicy:   routingPolicy,
+				Enabled:         true,
+				BackendCount:    backendCount,
+				HealthyBackends: backendCount, // Assume healthy until checked
+			}
+		}
+	}
+
+	// Add/update with data from backend registry (dynamic agent registrations)
+	backends := p.registry.GetAllBackends()
 	serviceMap := make(map[string][]*overwatch.Backend)
 	for _, b := range backends {
 		serviceMap[b.Service] = append(serviceMap[b.Service], b)
 	}
 
-	domains := make([]Domain, 0, len(serviceMap))
 	for service, serviceBackends := range serviceMap {
 		healthyCount := 0
 		for _, b := range serviceBackends {
@@ -71,15 +107,28 @@ func (p *RegistryDomainProvider) ListDomains() []Domain {
 			}
 		}
 
-		domains = append(domains, Domain{
-			ID:              service,
-			Name:            service,
-			TTL:             config.DefaultTTL,
-			RoutingPolicy:   config.DefaultRoutingAlgorithm,
-			Enabled:         true,
-			BackendCount:    len(serviceBackends),
-			HealthyBackends: healthyCount,
-		})
+		// Update existing or add new
+		existing, ok := domainMap[service]
+		if ok {
+			existing.BackendCount = len(serviceBackends)
+			existing.HealthyBackends = healthyCount
+			domainMap[service] = existing
+		} else {
+			domainMap[service] = Domain{
+				ID:              service,
+				Name:            service,
+				TTL:             config.DefaultTTL,
+				RoutingPolicy:   config.DefaultRoutingAlgorithm,
+				Enabled:         true,
+				BackendCount:    len(serviceBackends),
+				HealthyBackends: healthyCount,
+			}
+		}
+	}
+
+	domains := make([]Domain, 0, len(domainMap))
+	for _, d := range domainMap {
+		domains = append(domains, d)
 	}
 
 	return domains
@@ -87,6 +136,57 @@ func (p *RegistryDomainProvider) ListDomains() []Domain {
 
 // GetDomain returns a domain by name.
 func (p *RegistryDomainProvider) GetDomain(name string) (*Domain, error) {
+	// First check config
+	if p.config != nil {
+		for _, d := range p.config.Domains {
+			if d.Name == name {
+				// Count backends from config regions
+				backendCount := 0
+				for _, regionName := range d.Regions {
+					for _, r := range p.config.Regions {
+						if r.Name == regionName {
+							backendCount += len(r.Servers)
+						}
+					}
+				}
+
+				ttl := d.TTL
+				if ttl == 0 {
+					ttl = config.DefaultTTL
+				}
+
+				routingPolicy := d.RoutingAlgorithm
+				if routingPolicy == "" {
+					routingPolicy = config.DefaultRoutingAlgorithm
+				}
+
+				// Check registry for dynamic health info
+				backends := p.registry.GetBackends(name)
+				healthyCount := backendCount
+				if len(backends) > 0 {
+					backendCount = len(backends)
+					healthyCount = 0
+					for _, b := range backends {
+						if b.EffectiveStatus == overwatch.StatusHealthy {
+							healthyCount++
+						}
+					}
+				}
+
+				return &Domain{
+					ID:              name,
+					Name:            name,
+					TTL:             ttl,
+					RoutingPolicy:   routingPolicy,
+					Enabled:         true,
+					BackendCount:    backendCount,
+					HealthyBackends: healthyCount,
+				}, nil
+			}
+		}
+	}
+
+	// Check registry
 	backends := p.registry.GetBackends(name)
 	if len(backends) == 0 {
 		return nil, ErrNotFound
@@ -127,23 +227,64 @@ func (p *RegistryDomainProvider) DeleteDomain(_ string) error {
 
 // GetDomainBackends returns the backends for a domain.
 func (p *RegistryDomainProvider) GetDomainBackends(name string) ([]DomainBackend, error) {
-	backends := p.registry.GetBackends(name)
-	if len(backends) == 0 {
-		return nil, ErrNotFound
+	result := make([]DomainBackend, 0)
+
+	// First check config for static backends
+	if p.config != nil {
+		for _, d := range p.config.Domains {
+			if d.Name == name {
+				// Find backends from associated regions
+				for _, regionName := range d.Regions {
+					for _, r := range p.config.Regions {
+						if r.Name == regionName {
+							for _, s := range r.Servers {
+								result = append(result, DomainBackend{
+									ID:      fmt.Sprintf("%s:%s:%d", name, s.Address, s.Port),
+									Address: s.Address,
+									Port:    s.Port,
+									Weight:  s.Weight,
+									Region:  regionName,
+									Healthy: true, // Assume healthy until checked
+									Enabled: true,
+								})
+							}
+						}
+					}
+				}
+				break
+			}
+		}
 	}
 
-	result := make([]DomainBackend, 0, len(backends))
+	// Add/update with dynamic registry data
+	backends := p.registry.GetBackends(name)
 	for _, b := range backends {
-		result = append(result, DomainBackend{
-			ID:        fmt.Sprintf("%s:%s:%d", b.Service, b.Address, b.Port),
-			Address:   b.Address,
-			Port:      b.Port,
-			Weight:    b.Weight,
-			Region:    b.Region,
-			Healthy:   b.EffectiveStatus == overwatch.StatusHealthy,
-			Enabled:   true,
-			LastCheck: b.ValidationLastCheck,
-		})
+		found := false
+		for i, existing := range result {
+			if existing.Address == b.Address && existing.Port == b.Port {
+				// Update with dynamic health info
+				result[i].Healthy = b.EffectiveStatus == overwatch.StatusHealthy
+				result[i].LastCheck = b.ValidationLastCheck
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, DomainBackend{
+				ID:        fmt.Sprintf("%s:%s:%d", b.Service, b.Address, b.Port),
+				Address:   b.Address,
+				Port:      b.Port,
+				Weight:    b.Weight,
+				Region:    b.Region,
+				Healthy:   b.EffectiveStatus == overwatch.StatusHealthy,
+				Enabled:   true,
+				LastCheck: b.ValidationLastCheck,
+			})
+		}
+	}
+
+	if len(result) == 0 {
+		return nil, ErrNotFound
 	}
 
 	return result, nil
@@ -152,27 +293,56 @@ func (p *RegistryDomainProvider) GetDomainBackends(name string) ([]DomainBackend
 // RegistryServerProvider implements BackendServerProvider using the backend registry.
 type RegistryServerProvider struct {
 	registry RegistryInterface
+	config   *config.Config
 	logger   *slog.Logger
 }
 
 // NewRegistryServerProvider creates a new RegistryServerProvider.
-func NewRegistryServerProvider(registry RegistryInterface, logger *slog.Logger) *RegistryServerProvider {
+func NewRegistryServerProvider(registry RegistryInterface, cfg *config.Config, logger *slog.Logger) *RegistryServerProvider {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &RegistryServerProvider{
 		registry: registry,
+		config:   cfg,
 		logger:   logger,
 	}
 }
 
 // ListServers returns all configured backend servers.
 func (p *RegistryServerProvider) ListServers() []BackendServer {
-	backends := p.registry.GetAllBackends()
+	serverMap := make(map[string]BackendServer)
 
-	servers := make([]BackendServer, 0, len(backends))
+	// Add servers from config
+	if p.config != nil {
+		for _, r := range p.config.Regions {
+			for _, s := range r.Servers {
+				id := fmt.Sprintf("%s:%d", s.Address, s.Port)
+				serverMap[id] = BackendServer{
+					ID:       id,
+					Name:     fmt.Sprintf("%s-%s", r.Name, s.Address),
+					Address:  s.Address,
+					Port:     s.Port,
+					Protocol: "tcp",
+					Weight:   s.Weight,
+					Region:   r.Name,
+					Enabled:  true,
+					Healthy:  true, // Assume healthy until checked
+				}
+			}
+		}
+	}
+
+	// Add/update with dynamic registry data
+	backends := p.registry.GetAllBackends()
 	for _, b := range backends {
-		servers = append(servers, p.backendToServer(b))
+		id := fmt.Sprintf("%s:%d", b.Address, b.Port)
+		serverMap[id] = p.backendToServer(b)
+	}
+
+	servers := make([]BackendServer, 0, len(serverMap))
+	for _, s := range serverMap {
+		servers = append(servers, s)
 	}
 
 	return servers
@@ -180,8 +350,30 @@ func (p *RegistryServerProvider) ListServers() []BackendServer {
 
 // GetServer returns a server by ID.
 func (p *RegistryServerProvider) GetServer(id string) (*BackendServer, error) {
-	backends := p.registry.GetAllBackends()
+	// Check config first
+	if p.config != nil {
+		for _, r := range p.config.Regions {
+			for _, s := range r.Servers {
+				configID := fmt.Sprintf("%s:%d", s.Address, s.Port)
+				if configID == id {
+					return &BackendServer{
+						ID:       id,
+						Name:     fmt.Sprintf("%s-%s", r.Name, s.Address),
+						Address:  s.Address,
+						Port:     s.Port,
+						Protocol: "tcp",
+						Weight:   s.Weight,
+						Region:   r.Name,
+						Enabled:  true,
+						Healthy:  true,
+					}, nil
+				}
+			}
+		}
+	}
 
+	// Check registry
+	backends := p.registry.GetAllBackends()
 	for _, b := range backends {
 		serverID := fmt.Sprintf("%s:%s:%d", b.Service, b.Address, b.Port)
 		if serverID == id {
@@ -279,13 +471,32 @@ func NewConfigRegionProvider(cfg *config.Config, registry RegistryInterface, log
 
 // ListRegions returns all configured regions.
 func (p *ConfigRegionProvider) ListRegions() []Region {
-	// Extract unique regions from backends
-	backends := p.registry.GetAllBackends()
 	regionMap := make(map[string]struct {
 		serverCount    int
 		healthyServers int
+		countries      []string
+		continents     []string
 	})
 
+	// First add regions from config
+	if p.config != nil {
+		for _, r := range p.config.Regions {
+			regionMap[r.Name] = struct {
+				serverCount    int
+				healthyServers int
+				countries      []string
+				continents     []string
+			}{
+				serverCount:    len(r.Servers),
+				healthyServers: len(r.Servers), // Assume healthy until checked
+				countries:      r.Countries,
+				continents:     r.Continents,
+			}
+		}
+	}
+
+	// Update with dynamic backend registry data
+	backends := p.registry.GetAllBackends()
 	for _, b := range backends {
 		region := b.Region
 		if region == "" {
@@ -309,10 +520,19 @@ func (p *ConfigRegionProvider) ListRegions() []Region {
 			Enabled:        true,
 			ServerCount:    stats.serverCount,
 			HealthyServers: stats.healthyServers,
+			Countries:      stats.countries,
+			Continent:      firstOrEmpty(stats.continents),
 		})
 	}
 
 	return regions
+}
+
+func firstOrEmpty(s []string) string {
+	if len(s) > 0 {
+		return s[0]
+	}
+	return ""
 }
 
 // GetRegion returns a region by ID.
