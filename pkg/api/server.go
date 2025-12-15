@@ -255,23 +255,8 @@ func (s *Server) Start(ctx context.Context) error {
 		s.logger.Debug("routing API endpoints registered")
 	}
 
-	// Create and configure discovery handlers for walkable API
+	// Create discovery handlers for walkable API
 	s.discoveryHandlers = NewDiscoveryHandlers()
-	s.discoveryHandlers.SetHasHealth(s.handlers != nil)
-	s.discoveryHandlers.SetHasSimpleHealth(s.simpleHealthHandlers != nil)
-	s.discoveryHandlers.SetHasOverwatch(s.overwatchHandlers != nil)
-	s.discoveryHandlers.SetHasOverrides(s.overrideHandlers != nil)
-	s.discoveryHandlers.SetHasDNSSEC(s.dnssecHandlers != nil)
-	s.discoveryHandlers.SetHasGeo(s.geoHandlers != nil)
-	s.discoveryHandlers.SetHasDomains(s.domainHandlers != nil)
-	s.discoveryHandlers.SetHasServers(s.serverHandlers != nil)
-	s.discoveryHandlers.SetHasRegions(s.regionHandlers != nil)
-	s.discoveryHandlers.SetHasNodes(s.nodeHandlers != nil)
-	s.discoveryHandlers.SetHasGossip(s.gossipHandlers != nil)
-	s.discoveryHandlers.SetHasAuditLogs(s.auditHandlers != nil)
-	s.discoveryHandlers.SetHasMetrics(s.metricsHandlers != nil)
-	s.discoveryHandlers.SetHasConfig(s.configHandlers != nil)
-	s.discoveryHandlers.SetHasRouting(s.routingHandlers != nil)
 
 	// Discovery endpoints for walkable API (no ACL - publicly accessible)
 	mux.HandleFunc("/api/v1/health", s.discoveryHandlers.HandleHealthRoot)
