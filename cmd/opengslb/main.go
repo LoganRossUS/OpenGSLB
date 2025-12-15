@@ -114,6 +114,14 @@ func main() {
 			"regions", len(cfg.Regions),
 			"domains", len(cfg.Domains),
 		)
+		// Log API configuration for debugging binding issues
+		if cfg.API.Enabled {
+			logger.Info("API configuration loaded",
+				"api_address", cfg.API.Address,
+				"api_allowed_networks", cfg.API.AllowedNetworks,
+				"api_trust_proxy", cfg.API.TrustProxyHeaders,
+			)
+		}
 	}
 
 	// Create and initialize application

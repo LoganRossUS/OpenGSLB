@@ -19,6 +19,7 @@ import (
 	"github.com/loganrossus/OpenGSLB/pkg/api"
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/dns"
+	"github.com/loganrossus/OpenGSLB/pkg/gossip"
 	"github.com/loganrossus/OpenGSLB/pkg/health"
 	"github.com/loganrossus/OpenGSLB/pkg/metrics"
 	"github.com/loganrossus/OpenGSLB/pkg/overwatch"
@@ -46,15 +47,15 @@ type Application struct {
 	backendRegistry    *overwatch.Registry
 	overwatchValidator *overwatch.Validator
 	gossipHandler      *overwatch.GossipHandler
+	gossipReceiver     *gossip.MemberlistReceiver
 	overwatchStore     store.Store
 
 	// Agent mode components (Story 2)
 	agentInstance *agent.Agent
+	gossipSender  *gossip.MemberlistSender
 
-	// Gossip - used in both modes but differently (Story 4 will add)
-	// gossipManager *gossip.Manager
-
-	// shutdownCh is closed when the application is shutting down.
+	// Application lifecycle
+	startTime  time.Time
 	shutdownCh chan struct{}
 }
 
@@ -66,6 +67,7 @@ func NewApplication(cfg *config.Config, logger *slog.Logger) *Application {
 	return &Application{
 		config:     cfg,
 		logger:     logger,
+		startTime:  time.Now(),
 		shutdownCh: make(chan struct{}),
 	}
 }
@@ -101,13 +103,37 @@ func (a *Application) initializeAgentMode() error {
 		"backends", len(a.config.Agent.Backends),
 	)
 
+	// Initialize gossip sender if configured
+	var gossipSender agent.GossipSender
+	if a.config.Agent.Gossip.EncryptionKey != "" && len(a.config.Agent.Gossip.OverwatchNodes) > 0 {
+		sender, err := gossip.NewMemberlistSender(gossip.SenderConfig{
+			NodeName:       "", // Will be set from identity after agent creation
+			BindAddress:    "0.0.0.0:0",
+			OverwatchNodes: a.config.Agent.Gossip.OverwatchNodes,
+			EncryptionKey:  a.config.Agent.Gossip.EncryptionKey,
+			Region:         a.config.Agent.Identity.Region,
+			Logger:         a.logger,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create gossip sender: %w", err)
+		}
+		a.gossipSender = sender
+		gossipSender = sender
+		a.logger.Info("gossip sender initialized",
+			"overwatch_nodes", a.config.Agent.Gossip.OverwatchNodes,
+		)
+	} else {
+		a.logger.Warn("gossip not configured - agent will not communicate with Overwatch nodes",
+			"has_encryption_key", a.config.Agent.Gossip.EncryptionKey != "",
+			"overwatch_nodes", len(a.config.Agent.Gossip.OverwatchNodes),
+		)
+	}
+
 	// Create the agent instance
-	// Note: Gossip will be added in Story 4 - for now we pass nil
-	// which causes the agent to use a no-op gossip sender
 	agentInstance, err := agent.NewAgent(agent.AgentConfig{
 		Config: a.config,
 		Logger: a.logger,
-		Gossip: nil, // Story 4 will provide real gossip implementation
+		Gossip: gossipSender,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create agent: %w", err)
@@ -349,11 +375,39 @@ func (a *Application) initializeValidator() error {
 }
 
 // initializeGossipHandler creates and configures the gossip message handler.
-// Note: The actual gossip receiver will be added in Story 4.
 func (a *Application) initializeGossipHandler() error {
 	a.gossipHandler = overwatch.NewGossipHandler(a.backendRegistry, a.logger)
 
-	a.logger.Info("gossip handler initialized (awaiting Story 4 for receiver)")
+	// Initialize gossip receiver if configured
+	if a.config.Overwatch.Gossip.EncryptionKey != "" {
+		bindAddr := a.config.Overwatch.Gossip.BindAddress
+		if bindAddr == "" {
+			bindAddr = "0.0.0.0:7946"
+		}
+
+		receiver, err := gossip.NewMemberlistReceiver(gossip.ReceiverConfig{
+			NodeName:       a.config.Overwatch.Identity.NodeID,
+			BindAddress:    bindAddr,
+			EncryptionKey:  a.config.Overwatch.Gossip.EncryptionKey,
+			ProbeInterval:  a.config.Overwatch.Gossip.ProbeInterval,
+			ProbeTimeout:   a.config.Overwatch.Gossip.ProbeTimeout,
+			GossipInterval: a.config.Overwatch.Gossip.GossipInterval,
+			Logger:         a.logger,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create gossip receiver: %w", err)
+		}
+		a.gossipReceiver = receiver
+		a.logger.Info("gossip receiver initialized",
+			"bind_address", bindAddr,
+		)
+	} else {
+		a.logger.Warn("gossip not configured - Overwatch will not receive agent updates",
+			"has_encryption_key", a.config.Overwatch.Gossip.EncryptionKey != "",
+		)
+	}
+
+	a.logger.Info("gossip handler initialized")
 	return nil
 }
 
@@ -448,6 +502,63 @@ func (a *Application) initializeAPIServer() error {
 		overwatchHandlers := overwatch.NewAPIHandlers(a.backendRegistry, a.overwatchValidator)
 		server.SetOverwatchHandlers(overwatchHandlers)
 		a.logger.Debug("overwatch API handlers registered")
+
+		// Set up dashboard/management API handlers
+		// Domain handlers - provides domain/service information from the registry
+		domainProvider := api.NewRegistryDomainProvider(a.backendRegistry, a.config, a.logger)
+		server.SetDomainHandlers(api.NewDomainHandlers(domainProvider, a.logger))
+		a.logger.Debug("domain API handlers registered")
+
+		// Server handlers - provides backend server information from the registry
+		serverProvider := api.NewRegistryServerProvider(a.backendRegistry, a.config, a.logger)
+		server.SetServerHandlers(api.NewServerHandlers(serverProvider, a.logger))
+		a.logger.Debug("server API handlers registered")
+
+		// Region handlers - provides region information derived from backends
+		regionProvider := api.NewConfigRegionProvider(a.config, a.backendRegistry, a.logger)
+		server.SetRegionHandlers(api.NewRegionHandlers(regionProvider, a.logger))
+		a.logger.Debug("region API handlers registered")
+
+		// Node handlers - provides Overwatch and Agent node information
+		nodeProvider := api.NewStubNodeProvider(a.backendRegistry, a.logger)
+		server.SetNodeHandlers(api.NewNodeHandlers(nodeProvider, a.logger))
+		a.logger.Debug("node API handlers registered")
+
+		// Gossip handlers - provides gossip cluster information
+		gossipProvider := api.NewStubGossipProvider(a.logger)
+		server.SetGossipHandlers(api.NewGossipHandlers(gossipProvider, a.logger))
+		a.logger.Debug("gossip API handlers registered")
+
+		// Audit handlers - provides audit log information
+		auditProvider := api.NewStubAuditProvider(a.logger)
+		server.SetAuditHandlers(api.NewAuditHandlers(auditProvider, a.logger))
+		a.logger.Debug("audit API handlers registered")
+
+		// Metrics handlers - provides system metrics
+		metricsProvider := api.NewOverwatchMetricsProvider(api.OverwatchMetricsConfig{
+			Registry:      a.backendRegistry,
+			Config:        a.config,
+			HealthManager: a.healthManager,
+			StartTime:     a.startTime,
+			Logger:        a.logger,
+		})
+		server.SetMetricsHandlers(api.NewMetricsHandlers(metricsProvider, a.logger))
+		a.logger.Debug("metrics API handlers registered")
+
+		// Config handlers - provides system configuration
+		configProvider := api.NewConfigBasedConfigProvider(a.config, a.logger)
+		server.SetConfigHandlers(api.NewConfigHandlers(configProvider, a.logger))
+		a.logger.Debug("config API handlers registered")
+
+		// Routing handlers - provides routing algorithm information
+		routingProvider := api.NewStubRoutingProvider(a.logger)
+		server.SetRoutingHandlers(api.NewRoutingHandlers(routingProvider, a.logger))
+		a.logger.Debug("routing API handlers registered")
+
+		// Override handlers - provides health override management
+		overrideManager := api.NewOverrideManager(a.overwatchStore, a.logger)
+		server.SetOverrideHandlers(api.NewOverrideHandlers(overrideManager, a.logger))
+		a.logger.Debug("override API handlers registered")
 	}
 
 	a.apiServer = server
@@ -526,8 +637,21 @@ func (a *Application) startOverwatchMode(ctx context.Context) error {
 		a.logger.Info("external validator started")
 	}
 
-	// Note: Gossip receiver will be started in Story 4
-	// For now, the gossip handler is ready but has no incoming messages
+	// Start gossip receiver and handler
+	if a.gossipReceiver != nil {
+		if err := a.gossipReceiver.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start gossip receiver: %w", err)
+		}
+		a.logger.Info("gossip receiver started",
+			"bind_address", a.config.Overwatch.Gossip.BindAddress,
+		)
+
+		// Start the gossip handler to process messages
+		if err := a.gossipHandler.Start(a.gossipReceiver); err != nil {
+			return fmt.Errorf("failed to start gossip handler: %w", err)
+		}
+		a.logger.Info("gossip handler started")
+	}
 
 	// Start metrics server
 	if a.metricsServer != nil {
@@ -611,6 +735,14 @@ func (a *Application) shutdownAgentMode(ctx context.Context) error {
 		return err
 	}
 
+	// Stop gossip sender (agent.Stop() will have sent deregistration)
+	if a.gossipSender != nil {
+		a.logger.Debug("stopping gossip sender")
+		if err := a.gossipSender.Stop(); err != nil {
+			a.logger.Error("error stopping gossip sender", "error", err)
+		}
+	}
+
 	a.logger.Info("agent stopped", "agent_id", a.agentInstance.GetIdentity().AgentID)
 	return nil
 }
@@ -619,11 +751,20 @@ func (a *Application) shutdownAgentMode(ctx context.Context) error {
 func (a *Application) shutdownOverwatchMode(ctx context.Context) error {
 	var shutdownErr error
 
-	// Stop gossip handler (Story 3)
+	// Stop gossip handler first
 	if a.gossipHandler != nil {
 		a.logger.Debug("stopping gossip handler")
 		if err := a.gossipHandler.Stop(); err != nil {
 			a.logger.Error("error stopping gossip handler", "error", err)
+			shutdownErr = err
+		}
+	}
+
+	// Stop gossip receiver
+	if a.gossipReceiver != nil {
+		a.logger.Debug("stopping gossip receiver")
+		if err := a.gossipReceiver.Stop(); err != nil {
+			a.logger.Error("error stopping gossip receiver", "error", err)
 			shutdownErr = err
 		}
 	}
