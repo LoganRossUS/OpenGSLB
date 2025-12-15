@@ -448,6 +448,57 @@ func (a *Application) initializeAPIServer() error {
 		overwatchHandlers := overwatch.NewAPIHandlers(a.backendRegistry, a.overwatchValidator)
 		server.SetOverwatchHandlers(overwatchHandlers)
 		a.logger.Debug("overwatch API handlers registered")
+
+		// Set up dashboard/management API handlers
+		// Domain handlers - provides domain/service information from the registry
+		domainProvider := api.NewRegistryDomainProvider(a.backendRegistry, a.config, a.logger)
+		server.SetDomainHandlers(api.NewDomainHandlers(domainProvider, a.logger))
+		a.logger.Debug("domain API handlers registered")
+
+		// Server handlers - provides backend server information from the registry
+		serverProvider := api.NewRegistryServerProvider(a.backendRegistry, a.logger)
+		server.SetServerHandlers(api.NewServerHandlers(serverProvider, a.logger))
+		a.logger.Debug("server API handlers registered")
+
+		// Region handlers - provides region information derived from backends
+		regionProvider := api.NewConfigRegionProvider(a.config, a.backendRegistry, a.logger)
+		server.SetRegionHandlers(api.NewRegionHandlers(regionProvider, a.logger))
+		a.logger.Debug("region API handlers registered")
+
+		// Node handlers - provides Overwatch and Agent node information
+		nodeProvider := api.NewStubNodeProvider(a.backendRegistry, a.logger)
+		server.SetNodeHandlers(api.NewNodeHandlers(nodeProvider, a.logger))
+		a.logger.Debug("node API handlers registered")
+
+		// Gossip handlers - provides gossip cluster information
+		gossipProvider := api.NewStubGossipProvider(a.logger)
+		server.SetGossipHandlers(api.NewGossipHandlers(gossipProvider, a.logger))
+		a.logger.Debug("gossip API handlers registered")
+
+		// Audit handlers - provides audit log information
+		auditProvider := api.NewStubAuditProvider(a.logger)
+		server.SetAuditHandlers(api.NewAuditHandlers(auditProvider, a.logger))
+		a.logger.Debug("audit API handlers registered")
+
+		// Metrics handlers - provides system metrics
+		metricsProvider := api.NewStubMetricsProvider(a.backendRegistry, a.logger)
+		server.SetMetricsHandlers(api.NewMetricsHandlers(metricsProvider, a.logger))
+		a.logger.Debug("metrics API handlers registered")
+
+		// Config handlers - provides system configuration
+		configProvider := api.NewConfigBasedConfigProvider(a.config, a.logger)
+		server.SetConfigHandlers(api.NewConfigHandlers(configProvider, a.logger))
+		a.logger.Debug("config API handlers registered")
+
+		// Routing handlers - provides routing algorithm information
+		routingProvider := api.NewStubRoutingProvider(a.logger)
+		server.SetRoutingHandlers(api.NewRoutingHandlers(routingProvider, a.logger))
+		a.logger.Debug("routing API handlers registered")
+
+		// Override handlers - provides health override management
+		overrideManager := api.NewOverrideManager(a.overwatchStore, a.logger)
+		server.SetOverrideHandlers(api.NewOverrideHandlers(overrideManager, a.logger))
+		a.logger.Debug("override API handlers registered")
 	}
 
 	a.apiServer = server
