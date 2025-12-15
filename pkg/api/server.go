@@ -54,6 +54,9 @@ type Server struct {
 	metricsHandlers      *MetricsHandlers
 	configHandlers       *ConfigHandlers
 	routingHandlers      *RoutingHandlers
+
+	// Discovery handlers for walkable API
+	discoveryHandlers *DiscoveryHandlers
 }
 
 // NewServer creates a new API server.
@@ -251,6 +254,37 @@ func (s *Server) Start(ctx context.Context) error {
 		mux.HandleFunc("/api/v1/routing/", s.withACL(s.routingHandlers.HandleRouting))
 		s.logger.Debug("routing API endpoints registered")
 	}
+
+	// Create and configure discovery handlers for walkable API
+	s.discoveryHandlers = NewDiscoveryHandlers()
+	s.discoveryHandlers.SetHasHealth(s.handlers != nil)
+	s.discoveryHandlers.SetHasSimpleHealth(s.simpleHealthHandlers != nil)
+	s.discoveryHandlers.SetHasOverwatch(s.overwatchHandlers != nil)
+	s.discoveryHandlers.SetHasOverrides(s.overrideHandlers != nil)
+	s.discoveryHandlers.SetHasDNSSEC(s.dnssecHandlers != nil)
+	s.discoveryHandlers.SetHasGeo(s.geoHandlers != nil)
+	s.discoveryHandlers.SetHasDomains(s.domainHandlers != nil)
+	s.discoveryHandlers.SetHasServers(s.serverHandlers != nil)
+	s.discoveryHandlers.SetHasRegions(s.regionHandlers != nil)
+	s.discoveryHandlers.SetHasNodes(s.nodeHandlers != nil)
+	s.discoveryHandlers.SetHasGossip(s.gossipHandlers != nil)
+	s.discoveryHandlers.SetHasAuditLogs(s.auditHandlers != nil)
+	s.discoveryHandlers.SetHasMetrics(s.metricsHandlers != nil)
+	s.discoveryHandlers.SetHasConfig(s.configHandlers != nil)
+	s.discoveryHandlers.SetHasRouting(s.routingHandlers != nil)
+
+	// Discovery endpoints for walkable API (no ACL - publicly accessible)
+	mux.HandleFunc("/api/v1/health", s.discoveryHandlers.HandleHealthRoot)
+	mux.HandleFunc("/api/v1/health/", s.discoveryHandlers.HandleHealthRoot)
+	mux.HandleFunc("/api/v1/geo", s.discoveryHandlers.HandleGeoRoot)
+	mux.HandleFunc("/api/v1/geo/", s.discoveryHandlers.HandleGeoRoot)
+	mux.HandleFunc("/api/v1/overwatch", s.discoveryHandlers.HandleOverwatchRoot)
+	mux.HandleFunc("/api/v1/overwatch/", s.discoveryHandlers.HandleOverwatchRoot)
+	mux.HandleFunc("/api/v1", s.discoveryHandlers.HandleV1Root)
+	mux.HandleFunc("/api/v1/", s.discoveryHandlers.HandleV1Root)
+	mux.HandleFunc("/api", s.discoveryHandlers.HandleAPIRoot)
+	mux.HandleFunc("/api/", s.discoveryHandlers.HandleAPIRoot)
+	s.logger.Debug("API discovery endpoints registered")
 
 	// ADR-015: Cluster endpoints removed
 	// The following endpoints no longer exist:
