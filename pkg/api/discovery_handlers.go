@@ -33,20 +33,20 @@ type APIVersionResponse struct {
 // DiscoveryHandlers handles API discovery endpoints.
 type DiscoveryHandlers struct {
 	// Track which handler groups are registered
-	hasOverwatch   bool
-	hasOverrides   bool
-	hasDNSSEC      bool
-	hasGeo         bool
-	hasDomains     bool
-	hasServers     bool
-	hasRegions     bool
-	hasNodes       bool
-	hasGossip      bool
-	hasAuditLogs   bool
-	hasMetrics     bool
-	hasConfig      bool
-	hasRouting     bool
-	hasHealth      bool
+	hasOverwatch    bool
+	hasOverrides    bool
+	hasDNSSEC       bool
+	hasGeo          bool
+	hasDomains      bool
+	hasServers      bool
+	hasRegions      bool
+	hasNodes        bool
+	hasGossip       bool
+	hasAuditLogs    bool
+	hasMetrics      bool
+	hasConfig       bool
+	hasRouting      bool
+	hasHealth       bool
 	hasSimpleHealth bool
 }
 
