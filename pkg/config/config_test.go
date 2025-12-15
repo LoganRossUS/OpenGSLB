@@ -967,6 +967,81 @@ func TestValidate_APIValidConfig(t *testing.T) {
 	}
 }
 
+func TestLoad_APIAddressPreserved(t *testing.T) {
+	// Test that custom API address is preserved and not overwritten by defaults
+	// This is a regression test for an issue where API always bound to 127.0.0.1
+	testCases := []struct {
+		name            string
+		configAddress   string
+		expectedAddress string
+	}{
+		{"all interfaces", "0.0.0.0:8080", "0.0.0.0:8080"},
+		{"specific IP", "192.168.1.100:9000", "192.168.1.100:9000"},
+		{"localhost explicit", "127.0.0.1:8080", "127.0.0.1:8080"},
+		{"port only", ":8080", ":8080"},
+		{"empty uses default", "", "127.0.0.1:8080"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var yaml string
+			if tc.configAddress == "" {
+				yaml = `mode: overwatch
+overwatch:
+  gossip:
+    encryption_key: ZHm5cOaWanWFhtVCFAsF+QK7IuwT99ixwziikJjLHW8=
+api:
+  enabled: true
+  allowed_networks:
+    - "0.0.0.0/0"
+regions:
+  - name: test
+    servers:
+      - address: 127.0.0.1
+        port: 80
+    health_check:
+      type: tcp
+domains:
+  - name: test.local
+    regions:
+      - test
+`
+			} else {
+				yaml = `mode: overwatch
+overwatch:
+  gossip:
+    encryption_key: ZHm5cOaWanWFhtVCFAsF+QK7IuwT99ixwziikJjLHW8=
+api:
+  enabled: true
+  address: "` + tc.configAddress + `"
+  allowed_networks:
+    - "0.0.0.0/0"
+regions:
+  - name: test
+    servers:
+      - address: 127.0.0.1
+        port: 80
+    health_check:
+      type: tcp
+domains:
+  - name: test.local
+    regions:
+      - test
+`
+			}
+
+			cfg, err := Parse([]byte(yaml))
+			if err != nil {
+				t.Fatalf("failed to parse config: %v", err)
+			}
+
+			if cfg.API.Address != tc.expectedAddress {
+				t.Errorf("API address = %q, expected %q", cfg.API.Address, tc.expectedAddress)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // Metrics Validation Tests
 // =============================================================================
