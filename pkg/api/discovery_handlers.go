@@ -31,74 +31,12 @@ type APIVersionResponse struct {
 }
 
 // DiscoveryHandlers handles API discovery endpoints.
-type DiscoveryHandlers struct {
-	// Track which handler groups are registered
-	hasOverwatch    bool
-	hasOverrides    bool
-	hasDNSSEC       bool
-	hasGeo          bool
-	hasDomains      bool
-	hasServers      bool
-	hasRegions      bool
-	hasNodes        bool
-	hasGossip       bool
-	hasAuditLogs    bool
-	hasMetrics      bool
-	hasConfig       bool
-	hasRouting      bool
-	hasHealth       bool
-	hasSimpleHealth bool
-}
+type DiscoveryHandlers struct{}
 
 // NewDiscoveryHandlers creates a new DiscoveryHandlers instance.
 func NewDiscoveryHandlers() *DiscoveryHandlers {
 	return &DiscoveryHandlers{}
 }
-
-// SetHasOverwatch marks that overwatch endpoints are available.
-func (h *DiscoveryHandlers) SetHasOverwatch(has bool) { h.hasOverwatch = has }
-
-// SetHasOverrides marks that override endpoints are available.
-func (h *DiscoveryHandlers) SetHasOverrides(has bool) { h.hasOverrides = has }
-
-// SetHasDNSSEC marks that DNSSEC endpoints are available.
-func (h *DiscoveryHandlers) SetHasDNSSEC(has bool) { h.hasDNSSEC = has }
-
-// SetHasGeo marks that geolocation endpoints are available.
-func (h *DiscoveryHandlers) SetHasGeo(has bool) { h.hasGeo = has }
-
-// SetHasDomains marks that domain endpoints are available.
-func (h *DiscoveryHandlers) SetHasDomains(has bool) { h.hasDomains = has }
-
-// SetHasServers marks that server endpoints are available.
-func (h *DiscoveryHandlers) SetHasServers(has bool) { h.hasServers = has }
-
-// SetHasRegions marks that region endpoints are available.
-func (h *DiscoveryHandlers) SetHasRegions(has bool) { h.hasRegions = has }
-
-// SetHasNodes marks that node endpoints are available.
-func (h *DiscoveryHandlers) SetHasNodes(has bool) { h.hasNodes = has }
-
-// SetHasGossip marks that gossip endpoints are available.
-func (h *DiscoveryHandlers) SetHasGossip(has bool) { h.hasGossip = has }
-
-// SetHasAuditLogs marks that audit log endpoints are available.
-func (h *DiscoveryHandlers) SetHasAuditLogs(has bool) { h.hasAuditLogs = has }
-
-// SetHasMetrics marks that metrics endpoints are available.
-func (h *DiscoveryHandlers) SetHasMetrics(has bool) { h.hasMetrics = has }
-
-// SetHasConfig marks that config endpoints are available.
-func (h *DiscoveryHandlers) SetHasConfig(has bool) { h.hasConfig = has }
-
-// SetHasRouting marks that routing endpoints are available.
-func (h *DiscoveryHandlers) SetHasRouting(has bool) { h.hasRouting = has }
-
-// SetHasHealth marks that health endpoints are available.
-func (h *DiscoveryHandlers) SetHasHealth(has bool) { h.hasHealth = has }
-
-// SetHasSimpleHealth marks that simple health endpoint is available.
-func (h *DiscoveryHandlers) SetHasSimpleHealth(has bool) { h.hasSimpleHealth = has }
 
 // HandleAPIRoot handles GET /api - returns available API versions.
 func (h *DiscoveryHandlers) HandleAPIRoot(w http.ResponseWriter, r *http.Request) {
@@ -118,15 +56,11 @@ func (h *DiscoveryHandlers) HandleAPIRoot(w http.ResponseWriter, r *http.Request
 			Path:        "/api/v1",
 			Description: "OpenGSLB API version 1",
 		},
-	}
-
-	// Include /api/health if simple health is registered
-	if h.hasSimpleHealth {
-		versions = append(versions, APIEndpoint{
+		{
 			Path:        "/api/health",
 			Description: "Simple health check endpoint",
 			Methods:     []string{"GET"},
-		})
+		},
 	}
 
 	resp := APIVersionResponse{
@@ -150,136 +84,89 @@ func (h *DiscoveryHandlers) HandleV1Root(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	endpoints := []APIEndpoint{}
-
-	// Health endpoints are always available
-	if h.hasHealth {
-		endpoints = append(endpoints, APIEndpoint{
+	// List all available API endpoints for discoverability
+	endpoints := []APIEndpoint{
+		{
 			Path:        "/api/v1/health",
 			Description: "Health status endpoints",
-		})
-	}
-
-	// Liveness and readiness probes
-	endpoints = append(endpoints,
-		APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/ready",
 			Description: "Readiness probe",
 			Methods:     []string{"GET"},
 		},
-		APIEndpoint{
+		{
 			Path:        "/api/v1/live",
 			Description: "Liveness probe",
 			Methods:     []string{"GET"},
 		},
-	)
-
-	// Conditional endpoints based on what handlers are registered
-	if h.hasDomains {
-		endpoints = append(endpoints, APIEndpoint{
+		{
 			Path:        "/api/v1/domains",
 			Description: "Domain management",
 			Methods:     []string{"GET", "POST"},
-		})
-	}
-
-	if h.hasServers {
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/servers",
 			Description: "Server management",
 			Methods:     []string{"GET", "POST"},
-		})
-	}
-
-	if h.hasRegions {
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/regions",
 			Description: "Region management",
 			Methods:     []string{"GET", "POST"},
-		})
-	}
-
-	if h.hasNodes {
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/nodes",
 			Description: "Node management (Overwatch and Agent nodes)",
 			Methods:     []string{"GET"},
-		})
-	}
-
-	if h.hasGossip {
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/gossip",
 			Description: "Gossip protocol management",
 			Methods:     []string{"GET"},
-		})
-	}
-
-	if h.hasAuditLogs {
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/audit-logs",
 			Description: "Audit log retrieval",
 			Methods:     []string{"GET"},
-		})
-	}
-
-	if h.hasMetrics {
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/metrics",
 			Description: "System metrics",
 			Methods:     []string{"GET"},
-		})
-	}
-
-	if h.hasConfig {
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/config",
 			Description: "Configuration management",
 			Methods:     []string{"GET", "PUT"},
-		})
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/preferences",
 			Description: "User preferences",
 			Methods:     []string{"GET", "PUT"},
-		})
-	}
-
-	if h.hasRouting {
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/routing",
 			Description: "Routing algorithms and decisions",
 			Methods:     []string{"GET", "POST"},
-		})
-	}
-
-	if h.hasOverrides {
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/overrides",
 			Description: "Health check overrides",
 			Methods:     []string{"GET", "PUT", "DELETE"},
-		})
-	}
-
-	if h.hasDNSSEC {
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/dnssec",
 			Description: "DNSSEC management",
-			Methods:     []string{"GET", "POST"},
-		})
-	}
-
-	if h.hasGeo {
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/geo",
 			Description: "Geolocation management",
-		})
-	}
-
-	if h.hasOverwatch {
-		endpoints = append(endpoints, APIEndpoint{
+		},
+		{
 			Path:        "/api/v1/overwatch",
 			Description: "Overwatch-specific endpoints",
-		})
+		},
 	}
 
 	resp := APIDiscoveryResponse{

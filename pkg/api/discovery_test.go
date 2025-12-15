@@ -15,7 +15,6 @@ import (
 
 func TestDiscoveryHandlers_HandleAPIRoot(t *testing.T) {
 	h := NewDiscoveryHandlers()
-	h.SetHasSimpleHealth(true)
 
 	tests := []struct {
 		name       string
@@ -44,7 +43,6 @@ func TestDiscoveryHandlers_HandleAPIRoot(t *testing.T) {
 
 func TestDiscoveryHandlers_HandleAPIRoot_Response(t *testing.T) {
 	h := NewDiscoveryHandlers()
-	h.SetHasSimpleHealth(true)
 
 	req := httptest.NewRequest(http.MethodGet, "/api", nil)
 	rr := httptest.NewRecorder()
@@ -63,7 +61,7 @@ func TestDiscoveryHandlers_HandleAPIRoot_Response(t *testing.T) {
 		t.Errorf("expected at least 1 version, got %d", len(resp.Versions))
 	}
 
-	// Check that v1 is present
+	// Check that v1 and health are present
 	foundV1 := false
 	foundHealth := false
 	for _, v := range resp.Versions {
@@ -79,7 +77,7 @@ func TestDiscoveryHandlers_HandleAPIRoot_Response(t *testing.T) {
 		t.Error("expected /api/v1 in versions list")
 	}
 	if !foundHealth {
-		t.Error("expected /api/health in versions list when simple health is enabled")
+		t.Error("expected /api/health in versions list")
 	}
 
 	if resp.GeneratedAt.IsZero() {
@@ -89,9 +87,6 @@ func TestDiscoveryHandlers_HandleAPIRoot_Response(t *testing.T) {
 
 func TestDiscoveryHandlers_HandleV1Root(t *testing.T) {
 	h := NewDiscoveryHandlers()
-	h.SetHasHealth(true)
-	h.SetHasDomains(true)
-	h.SetHasServers(true)
 
 	tests := []struct {
 		name       string
@@ -120,11 +115,6 @@ func TestDiscoveryHandlers_HandleV1Root(t *testing.T) {
 
 func TestDiscoveryHandlers_HandleV1Root_Response(t *testing.T) {
 	h := NewDiscoveryHandlers()
-	h.SetHasHealth(true)
-	h.SetHasDomains(true)
-	h.SetHasServers(true)
-	h.SetHasRegions(true)
-	h.SetHasOverrides(true)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
 	rr := httptest.NewRecorder()
@@ -139,15 +129,25 @@ func TestDiscoveryHandlers_HandleV1Root_Response(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// Check for expected endpoints
+	// Check for expected endpoints - all should always be present
 	expectedPaths := map[string]bool{
-		"/api/v1/health":    false,
-		"/api/v1/ready":     false,
-		"/api/v1/live":      false,
-		"/api/v1/domains":   false,
-		"/api/v1/servers":   false,
-		"/api/v1/regions":   false,
-		"/api/v1/overrides": false,
+		"/api/v1/health":      false,
+		"/api/v1/ready":       false,
+		"/api/v1/live":        false,
+		"/api/v1/domains":     false,
+		"/api/v1/servers":     false,
+		"/api/v1/regions":     false,
+		"/api/v1/nodes":       false,
+		"/api/v1/gossip":      false,
+		"/api/v1/audit-logs":  false,
+		"/api/v1/metrics":     false,
+		"/api/v1/config":      false,
+		"/api/v1/preferences": false,
+		"/api/v1/routing":     false,
+		"/api/v1/overrides":   false,
+		"/api/v1/dnssec":      false,
+		"/api/v1/geo":         false,
+		"/api/v1/overwatch":   false,
 	}
 
 	for _, ep := range resp.Endpoints {
@@ -164,46 +164,6 @@ func TestDiscoveryHandlers_HandleV1Root_Response(t *testing.T) {
 
 	if resp.GeneratedAt.IsZero() {
 		t.Error("expected generated_at to be set")
-	}
-}
-
-func TestDiscoveryHandlers_HandleV1Root_ConditionalEndpoints(t *testing.T) {
-	// Test with no handlers registered
-	h := NewDiscoveryHandlers()
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
-	rr := httptest.NewRecorder()
-	h.HandleV1Root(rr, req)
-
-	var resp APIDiscoveryResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	// Should still have ready and live endpoints
-	foundReady := false
-	foundLive := false
-	foundDomains := false
-
-	for _, ep := range resp.Endpoints {
-		switch ep.Path {
-		case "/api/v1/ready":
-			foundReady = true
-		case "/api/v1/live":
-			foundLive = true
-		case "/api/v1/domains":
-			foundDomains = true
-		}
-	}
-
-	if !foundReady {
-		t.Error("ready endpoint should always be present")
-	}
-	if !foundLive {
-		t.Error("live endpoint should always be present")
-	}
-	if foundDomains {
-		t.Error("domains should not be present when hasDomains is false")
 	}
 }
 
@@ -399,8 +359,6 @@ func TestDiscoveryHandlers_HandleDNSSECRoot(t *testing.T) {
 
 func TestDiscoveryHandlers_EndpointMethods(t *testing.T) {
 	h := NewDiscoveryHandlers()
-	h.SetHasDomains(true)
-	h.SetHasServers(true)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
 	rr := httptest.NewRecorder()
