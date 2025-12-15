@@ -54,7 +54,8 @@ type Application struct {
 	// Gossip - used in both modes but differently (Story 4 will add)
 	// gossipManager *gossip.Manager
 
-	// shutdownCh is closed when the application is shutting down.
+	// Application lifecycle
+	startTime  time.Time
 	shutdownCh chan struct{}
 }
 
@@ -66,6 +67,7 @@ func NewApplication(cfg *config.Config, logger *slog.Logger) *Application {
 	return &Application{
 		config:     cfg,
 		logger:     logger,
+		startTime:  time.Now(),
 		shutdownCh: make(chan struct{}),
 	}
 }
@@ -481,7 +483,13 @@ func (a *Application) initializeAPIServer() error {
 		a.logger.Debug("audit API handlers registered")
 
 		// Metrics handlers - provides system metrics
-		metricsProvider := api.NewStubMetricsProvider(a.backendRegistry, a.logger)
+		metricsProvider := api.NewOverwatchMetricsProvider(api.OverwatchMetricsConfig{
+			Registry:      a.backendRegistry,
+			Config:        a.config,
+			HealthManager: a.healthManager,
+			StartTime:     a.startTime,
+			Logger:        a.logger,
+		})
 		server.SetMetricsHandlers(api.NewMetricsHandlers(metricsProvider, a.logger))
 		a.logger.Debug("metrics API handlers registered")
 
