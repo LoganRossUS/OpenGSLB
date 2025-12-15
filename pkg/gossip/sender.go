@@ -159,7 +159,7 @@ func (s *MemberlistSender) Start(ctx context.Context) error {
 	// Join the cluster via Overwatch nodes
 	joined, err := list.Join(s.config.OverwatchNodes)
 	if err != nil {
-		list.Shutdown()
+		_ = list.Shutdown()
 		return fmt.Errorf("failed to join gossip cluster: %w", err)
 	}
 

@@ -267,8 +267,7 @@ type receiverDelegate struct {
 	msgChan chan<- overwatch.GossipMessage
 	logger  *slog.Logger
 
-	mu       sync.RWMutex
-	nodeMeta []byte
+	mu sync.RWMutex
 }
 
 // NodeMeta returns metadata for this node (implements memberlist.Delegate).
