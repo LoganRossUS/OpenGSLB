@@ -10,9 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"time"
 
 	"github.com/loganrossus/OpenGSLB/pkg/config"
+	"github.com/loganrossus/OpenGSLB/pkg/health"
 	"github.com/loganrossus/OpenGSLB/pkg/overwatch"
 )
 
@@ -759,12 +761,14 @@ func (p *StubAuditProvider) ExportAuditLogs(_ AuditFilter, _ string) ([]byte, er
 }
 
 // StubMetricsProvider implements MetricsProvider with stub data.
+// Deprecated: Use OverwatchMetricsProvider for real metrics.
 type StubMetricsProvider struct {
 	registry RegistryInterface
 	logger   *slog.Logger
 }
 
 // NewStubMetricsProvider creates a new StubMetricsProvider.
+// Deprecated: Use NewOverwatchMetricsProvider for real metrics.
 func NewStubMetricsProvider(registry RegistryInterface, logger *slog.Logger) *StubMetricsProvider {
 	if logger == nil {
 		logger = slog.Default()
@@ -840,6 +844,292 @@ func (p *StubMetricsProvider) GetRoutingStats() (*RoutingStats, error) {
 		TotalDecisions: 0,
 		ByRegion:       make(map[string]int64),
 	}, nil
+}
+
+// =============================================================================
+// Overwatch Metrics Provider - Real implementation
+// =============================================================================
+
+// HealthManagerInterface defines the methods needed from the health manager.
+type HealthManagerInterface interface {
+	GetAllStatus() []health.Snapshot
+	ServerCount() int
+}
+
+// OverwatchMetricsProvider implements MetricsProvider with real data from multiple sources.
+type OverwatchMetricsProvider struct {
+	registry      RegistryInterface
+	config        *config.Config
+	healthManager HealthManagerInterface
+	startTime     time.Time
+	logger        *slog.Logger
+}
+
+// OverwatchMetricsConfig holds configuration for the metrics provider.
+type OverwatchMetricsConfig struct {
+	Registry      RegistryInterface
+	Config        *config.Config
+	HealthManager HealthManagerInterface
+	StartTime     time.Time
+	Logger        *slog.Logger
+}
+
+// NewOverwatchMetricsProvider creates a new OverwatchMetricsProvider with all data sources.
+func NewOverwatchMetricsProvider(cfg OverwatchMetricsConfig) *OverwatchMetricsProvider {
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	startTime := cfg.StartTime
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	return &OverwatchMetricsProvider{
+		registry:      cfg.Registry,
+		config:        cfg.Config,
+		healthManager: cfg.HealthManager,
+		startTime:     startTime,
+		logger:        logger,
+	}
+}
+
+// GetOverview returns the system metrics overview with real data.
+func (p *OverwatchMetricsProvider) GetOverview() (*MetricsOverview, error) {
+	now := time.Now()
+
+	// Get backend stats from registry
+	backends := p.registry.GetAllBackends()
+	healthyCount := 0
+	regionSet := make(map[string]struct{})
+	agentSet := make(map[string]struct{})
+
+	for _, b := range backends {
+		if b.EffectiveStatus == overwatch.StatusHealthy {
+			healthyCount++
+		}
+		region := b.Region
+		if region == "" {
+			region = "default"
+		}
+		regionSet[region] = struct{}{}
+		if b.AgentID != "" {
+			agentSet[b.AgentID] = struct{}{}
+		}
+	}
+
+	// Get domain count from config
+	activeDomains := 0
+	if p.config != nil {
+		activeDomains = len(p.config.Domains)
+	}
+
+	// Also count unique services from backends as domains
+	serviceSet := make(map[string]struct{})
+	for _, b := range backends {
+		serviceSet[b.Service] = struct{}{}
+	}
+	if len(serviceSet) > activeDomains {
+		activeDomains = len(serviceSet)
+	}
+
+	// Get region count from config if available, otherwise from backends
+	activeRegions := len(regionSet)
+	if p.config != nil && len(p.config.Regions) > activeRegions {
+		activeRegions = len(p.config.Regions)
+	}
+
+	// Get health check stats from health manager
+	healthChecksTotal := int64(0)
+	healthManagerServerCount := 0
+	if p.healthManager != nil {
+		snapshots := p.healthManager.GetAllStatus()
+		healthManagerServerCount = len(snapshots)
+		// Each snapshot represents a health check target; count those with checks performed
+		for _, snap := range snapshots {
+			if !snap.LastCheck.IsZero() {
+				healthChecksTotal++
+			}
+		}
+	}
+
+	// Calculate uptime
+	uptime := int64(now.Sub(p.startTime).Seconds())
+
+	// Get memory stats
+	memStats := getMemoryStats()
+
+	// Get CPU stats
+	cpuStats := getCPUStats()
+
+	// Determine server counts - prefer backend registry, fallback to health manager
+	activeServers := len(backends)
+	if activeServers == 0 && healthManagerServerCount > 0 {
+		activeServers = healthManagerServerCount
+		// If using health manager count, count healthy from snapshots
+		if p.healthManager != nil {
+			for _, snap := range p.healthManager.GetAllStatus() {
+				if snap.Status == health.StatusHealthy {
+					healthyCount++
+				}
+			}
+		}
+	}
+
+	// Also check config for server counts as a fallback
+	if activeServers == 0 && p.config != nil {
+		for _, r := range p.config.Regions {
+			activeServers += len(r.Servers)
+		}
+		// Assume config servers are healthy if no other data
+		if healthyCount == 0 {
+			healthyCount = activeServers
+		}
+	}
+
+	return &MetricsOverview{
+		Timestamp:          now,
+		Uptime:             uptime,
+		QueriesTotal:       0, // DNS metrics tracked separately via Prometheus
+		QueriesPerSec:      0, // Would need a rate calculator
+		HealthChecksTotal:  healthChecksTotal,
+		HealthChecksPerSec: 0, // Would need a rate calculator
+		ActiveDomains:      activeDomains,
+		ActiveServers:      activeServers,
+		HealthyServers:     healthyCount,
+		UnhealthyServers:   activeServers - healthyCount,
+		ActiveRegions:      activeRegions,
+		OverwatchNodes:     1, // Local node
+		AgentNodes:         len(agentSet),
+		DNSSECEnabled:      p.config != nil && p.config.Overwatch.DNSSEC.Enabled,
+		GossipEnabled:      true, // Gossip is always enabled in Overwatch mode
+		ResponseTimes:      ResponseTimeStats{},
+		ErrorRate:          0,
+		CacheHitRate:       0,
+		Memory:             memStats,
+		CPU:                cpuStats,
+	}, nil
+}
+
+// GetHistory returns historical metrics data.
+func (p *OverwatchMetricsProvider) GetHistory(_ MetricsHistoryFilter) ([]MetricsDataPoint, error) {
+	// Historical metrics would require a time-series store
+	return []MetricsDataPoint{}, nil
+}
+
+// GetNodeMetrics returns metrics for a specific node.
+func (p *OverwatchMetricsProvider) GetNodeMetrics(nodeID string) (*NodeMetrics, error) {
+	now := time.Now()
+
+	return &NodeMetrics{
+		NodeID:    nodeID,
+		NodeType:  "overwatch",
+		Timestamp: now,
+		Status:    "active",
+		Uptime:    int64(now.Sub(p.startTime).Seconds()),
+		Memory:    getMemoryStats(),
+		CPU:       getCPUStats(),
+	}, nil
+}
+
+// GetRegionMetrics returns metrics for a specific region.
+func (p *OverwatchMetricsProvider) GetRegionMetrics(regionID string) (*RegionMetrics, error) {
+	backends := p.registry.GetAllBackends()
+
+	serverCount := 0
+	healthyCount := 0
+	for _, b := range backends {
+		region := b.Region
+		if region == "" {
+			region = "default"
+		}
+		if region == regionID {
+			serverCount++
+			if b.EffectiveStatus == overwatch.StatusHealthy {
+				healthyCount++
+			}
+		}
+	}
+
+	// Also check config for servers in this region
+	if p.config != nil {
+		for _, r := range p.config.Regions {
+			if r.Name == regionID && len(r.Servers) > serverCount {
+				serverCount = len(r.Servers)
+				// If no backends registered, assume config servers are healthy
+				if healthyCount == 0 {
+					healthyCount = serverCount
+				}
+			}
+		}
+	}
+
+	return &RegionMetrics{
+		RegionID:       regionID,
+		Timestamp:      time.Now(),
+		TotalServers:   serverCount,
+		HealthyServers: healthyCount,
+	}, nil
+}
+
+// GetRoutingStats returns routing decision statistics.
+func (p *OverwatchMetricsProvider) GetRoutingStats() (*RoutingStats, error) {
+	// Routing stats would require tracking decisions over time
+	byRegion := make(map[string]int64)
+
+	// Populate regions from config
+	if p.config != nil {
+		for _, r := range p.config.Regions {
+			byRegion[r.Name] = 0
+		}
+	}
+
+	return &RoutingStats{
+		Timestamp:      time.Now(),
+		TotalDecisions: 0,
+		ByRegion:       byRegion,
+	}, nil
+}
+
+// getMemoryStats returns current memory statistics.
+func getMemoryStats() MemoryStats {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	// Calculate used memory
+	used := int64(m.Alloc)
+	total := int64(m.Sys)
+	available := total - used
+
+	var percent float64
+	if total > 0 {
+		percent = float64(used) / float64(total) * 100
+	}
+
+	return MemoryStats{
+		Used:      used,
+		Available: available,
+		Total:     total,
+		Percent:   percent,
+	}
+}
+
+// getCPUStats returns current CPU statistics.
+// Note: This provides a basic approximation. For accurate CPU metrics,
+// a dedicated monitoring solution would be needed.
+func getCPUStats() CPUStats {
+	numCPU := runtime.NumCPU()
+
+	// Note: Go doesn't provide direct CPU usage metrics.
+	// For a production system, you'd want to use something like
+	// gopsutil or read from /proc/stat directly.
+	// For now, we return the number of CPU cores and placeholder values.
+	return CPUStats{
+		Used:   0,
+		System: 0,
+		User:   0,
+		Idle:   100,
+		Cores:  numCPU,
+	}
 }
 
 // ConfigBasedConfigProvider implements ConfigProvider using application config.
