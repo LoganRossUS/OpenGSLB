@@ -1,0 +1,182 @@
+version: '3.8'
+
+# OpenGSLB Demo 5: Predictive Health Detection
+#
+# This demo showcases OpenGSLB's predictive health monitoring that detects
+# problems BEFORE they impact users.
+#
+# Network: 10.50.0.0/24
+#   - overwatch:   10.50.0.10 (DNS + gossip receiver + validation)
+#   - backend-1:   10.50.0.21 (demo-app + agent - stable)
+#   - backend-2:   10.50.0.22 (demo-app + agent - stable)
+#   - backend-3:   10.50.0.23 (demo-app + agent - chaos target)
+#   - prometheus:  10.50.0.30 (metrics collection)
+#   - grafana:     10.50.0.31 (visualization)
+#   - client:      10.50.0.100 (SSH access for demo)
+
+networks:
+  demo:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.50.0.0/24
+
+services:
+  # ==========================================================================
+  # OpenGSLB Overwatch - DNS + Gossip Receiver + External Validation
+  # ==========================================================================
+  overwatch:
+    build:
+      context: .
+      dockerfile: Dockerfile.overwatch
+    container_name: overwatch
+    hostname: overwatch
+    networks:
+      demo:
+        ipv4_address: 10.50.0.10
+    ports:
+      - "5354:53/udp"   # DNS (non-privileged port on host, avoid 5353 mDNS conflict)
+      - "5354:53/tcp"
+      - "8080:8080"     # API
+      - "9090:9090"     # Metrics
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Backend 1 - Stable (demo-app + agent)
+  # ==========================================================================
+  backend-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: backend-1
+    hostname: backend-1
+    networks:
+      demo:
+        ipv4_address: 10.50.0.21
+    environment:
+      - HOSTNAME=backend-1
+      - BACKEND_IP=10.50.0.21
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - ./config/agent1.yaml:/tmp/agent-config.yaml:ro
+    depends_on:
+      - overwatch
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Backend 2 - Stable (demo-app + agent)
+  # ==========================================================================
+  backend-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: backend-2
+    hostname: backend-2
+    networks:
+      demo:
+        ipv4_address: 10.50.0.22
+    environment:
+      - HOSTNAME=backend-2
+      - BACKEND_IP=10.50.0.22
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - ./config/agent2.yaml:/tmp/agent-config.yaml:ro
+    depends_on:
+      - overwatch
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Backend 3 - CHAOS TARGET (demo-app + agent)
+  # ==========================================================================
+  backend-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: backend-3
+    hostname: backend-3
+    networks:
+      demo:
+        ipv4_address: 10.50.0.23
+    ports:
+      - "8083:8080"   # Expose chaos endpoints to host
+    environment:
+      - HOSTNAME=backend-3
+      - BACKEND_IP=10.50.0.23
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - ./config/agent3.yaml:/tmp/agent-config.yaml:ro
+    depends_on:
+      - overwatch
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Prometheus - Metrics Collection
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    hostname: prometheus
+    networks:
+      demo:
+        ipv4_address: 10.50.0.30
+    ports:
+      - "9092:9090"   # Prometheus UI
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=1h'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Grafana - Visualization
+  # ==========================================================================
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    hostname: grafana
+    networks:
+      demo:
+        ipv4_address: 10.50.0.31
+    ports:
+      - "3000:3000"   # Grafana UI
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=demo
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/opengslb-predictive.json
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Client Container - SSH access for interactive demo
+  # ==========================================================================
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: client
+    hostname: client
+    networks:
+      demo:
+        ipv4_address: 10.50.0.100
+    ports:
+      - "2222:22"     # SSH access for demo
+    depends_on:
+      - overwatch
+      - backend-1
+      - backend-2
+      - backend-3
+    restart: unless-stopped

@@ -1,0 +1,44 @@
+# Prometheus configuration for OpenGSLB Demo 5: Predictive Health Detection
+#
+# Scrapes metrics from:
+# - Overwatch (DNS stats, backend health, predictive signals)
+# - Backend demo-apps (CPU, memory, chaos status)
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Overwatch metrics
+  - job_name: 'overwatch'
+    static_configs:
+      - targets: ['10.50.0.10:9090']
+        labels:
+          component: 'overwatch'
+
+  # Backend 1 - demo-app metrics
+  - job_name: 'backend-1'
+    static_configs:
+      - targets: ['10.50.0.21:8080']
+        labels:
+          hostname: 'backend-1'
+          chaos_target: 'false'
+    metrics_path: /metrics
+
+  # Backend 2 - demo-app metrics
+  - job_name: 'backend-2'
+    static_configs:
+      - targets: ['10.50.0.22:8080']
+        labels:
+          hostname: 'backend-2'
+          chaos_target: 'false'
+    metrics_path: /metrics
+
+  # Backend 3 - demo-app metrics (CHAOS TARGET)
+  - job_name: 'backend-3'
+    static_configs:
+      - targets: ['10.50.0.23:8080']
+        labels:
+          hostname: 'backend-3'
+          chaos_target: 'true'
+    metrics_path: /metrics
