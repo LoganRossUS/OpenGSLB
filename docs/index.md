@@ -95,6 +95,18 @@ cli
 
 ```{toctree}
 :maxdepth: 2
+:caption: Demos
+
+demos/index
+demos/demo-1-standalone
+demos/demo-2-agent-overwatch
+demos/demo-3-latency-routing
+demos/demo-4-geoip-routing
+demos/demo-5-predictive-health
+```
+
+```{toctree}
+:maxdepth: 2
 :caption: Architecture
 
 ARCHITECTURE_DECISIONS

@@ -33,6 +33,8 @@ const (
 	StatusStale BackendStatus = "stale"
 	// StatusOverridden indicates the status was manually overridden via API.
 	StatusOverridden BackendStatus = "overridden"
+	// StatusDraining indicates the backend is draining due to predictive health signals.
+	StatusDraining BackendStatus = "draining"
 )
 
 // Backend represents a registered backend from an agent.
@@ -72,6 +74,19 @@ type Backend struct {
 	OverrideBy string `json:"override_by,omitempty"`
 	// OverrideAt is when the override was set.
 	OverrideAt time.Time `json:"override_at,omitempty"`
+
+	// Draining indicates the backend is bleeding traffic due to predictive health.
+	Draining bool `json:"draining"`
+	// DrainingReason is the reason for draining (cpu_threshold_exceeded, memory_threshold_exceeded, error_rate_threshold_exceeded).
+	DrainingReason string `json:"draining_reason,omitempty"`
+	// DrainingAt is when draining started.
+	DrainingAt time.Time `json:"draining_at,omitempty"`
+	// CPUPercent is the current CPU utilization from predictive health.
+	CPUPercent float64 `json:"cpu_percent,omitempty"`
+	// MemPercent is the current memory utilization from predictive health.
+	MemPercent float64 `json:"mem_percent,omitempty"`
+	// ErrorRate is the current error rate from predictive health.
+	ErrorRate float64 `json:"error_rate,omitempty"`
 
 	// EffectiveStatus is the computed effective status based on the hierarchy.
 	EffectiveStatus BackendStatus `json:"effective_status"`
@@ -432,6 +447,65 @@ func (r *Registry) ClearOverride(service, address string, port int) error {
 	return nil
 }
 
+// UpdateDraining updates the draining state for all backends from an agent.
+// This is called when predictive health signals are received via gossip.
+func (r *Registry) UpdateDraining(agentID string, draining bool, reason string, drainingAt time.Time, cpuPercent, memPercent, errorRate float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for key, backend := range r.backends {
+		if backend.AgentID != agentID {
+			continue
+		}
+
+		oldStatus := backend.EffectiveStatus
+		oldDraining := backend.Draining
+
+		backend.Draining = draining
+		backend.DrainingReason = reason
+		backend.DrainingAt = drainingAt
+		backend.CPUPercent = cpuPercent
+		backend.MemPercent = memPercent
+		backend.ErrorRate = errorRate
+
+		r.computeEffectiveStatus(backend)
+
+		// Log status change
+		if oldDraining != draining {
+			if draining {
+				r.config.Logger.Info("backend draining started",
+					"service", backend.Service,
+					"address", backend.Address,
+					"port", backend.Port,
+					"agent_id", agentID,
+					"reason", reason,
+					"cpu_percent", cpuPercent,
+					"mem_percent", memPercent,
+					"error_rate", errorRate,
+				)
+			} else {
+				r.config.Logger.Info("backend draining stopped",
+					"service", backend.Service,
+					"address", backend.Address,
+					"port", backend.Port,
+					"agent_id", agentID,
+				)
+			}
+		}
+
+		if oldStatus != backend.EffectiveStatus && r.onStatusChange != nil {
+			r.onStatusChange(backend, oldStatus, backend.EffectiveStatus)
+		}
+
+		// Persist to store
+		if r.store != nil {
+			if err := r.persistBackend(backend); err != nil {
+				r.config.Logger.Warn("failed to persist backend", "key", key, "error", err)
+			}
+		}
+	}
+}
+
 // GetBackend returns a backend by key.
 func (r *Registry) GetBackend(service, address string, port int) (*Backend, bool) {
 	r.mu.RLock()
@@ -544,9 +618,10 @@ func (r *Registry) BackendCount() int {
 
 // computeEffectiveStatus computes the effective status based on the hierarchy:
 // 1. Manual override (if set) - takes precedence
-// 2. External validation (if performed) - Overwatch ALWAYS wins, can recover stale backends
-// 3. Staleness detection (if no validation)
-// 4. Agent health claim (default)
+// 2. Predictive health draining (if agent is bleeding) - removes from DNS rotation
+// 3. External validation (if performed) - Overwatch ALWAYS wins, can recover stale backends
+// 4. Staleness detection (if no validation)
+// 5. Agent health claim (default)
 //
 // Note: Validation is checked BEFORE staleness to allow Overwatch external checks
 // to recover backends when agents are unavailable but the backend service is still running.
@@ -561,6 +636,13 @@ func (r *Registry) computeEffectiveStatus(backend *Backend) {
 		} else {
 			backend.EffectiveStatus = StatusUnhealthy
 		}
+		return
+	}
+
+	// Predictive health draining - agent is bleeding traffic due to resource pressure
+	// This takes precedence over validation because the agent knows its own state best
+	if backend.Draining {
+		backend.EffectiveStatus = StatusDraining
 		return
 	}
 

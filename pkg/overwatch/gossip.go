@@ -46,6 +46,24 @@ type HeartbeatPayload struct {
 	Backends []BackendHeartbeat `json:"backends"`
 	// Fingerprint is the agent's certificate fingerprint for authentication.
 	Fingerprint string `json:"fingerprint"`
+	// Predictive contains predictive health state from the agent.
+	Predictive *PredictiveHeartbeat `json:"predictive,omitempty"`
+}
+
+// PredictiveHeartbeat contains predictive health information from an agent.
+type PredictiveHeartbeat struct {
+	// Bleeding indicates the agent is requesting traffic drain due to resource pressure.
+	Bleeding bool `json:"bleeding"`
+	// BleedReason is the reason for bleeding (cpu_threshold_exceeded, memory_threshold_exceeded, error_rate_threshold_exceeded).
+	BleedReason string `json:"bleed_reason,omitempty"`
+	// BleedingAt is when bleeding started.
+	BleedingAt time.Time `json:"bleeding_at,omitempty"`
+	// CPUPercent is the current CPU utilization.
+	CPUPercent float64 `json:"cpu_percent"`
+	// MemPercent is the current memory utilization.
+	MemPercent float64 `json:"mem_percent"`
+	// ErrorRate is the current error rate.
+	ErrorRate float64 `json:"error_rate"`
 }
 
 // BackendHeartbeat is the health status of a single backend in a heartbeat.
@@ -275,6 +293,29 @@ func (h *GossipHandler) handleHeartbeat(msg GossipMessage) {
 		}
 	}
 
+	// Process predictive health state if present
+	if payload.Predictive != nil {
+		h.registry.UpdateDraining(
+			msg.AgentID,
+			payload.Predictive.Bleeding,
+			payload.Predictive.BleedReason,
+			payload.Predictive.BleedingAt,
+			payload.Predictive.CPUPercent,
+			payload.Predictive.MemPercent,
+			payload.Predictive.ErrorRate,
+		)
+
+		if payload.Predictive.Bleeding {
+			h.logger.Debug("agent reporting bleed signal",
+				"agent_id", msg.AgentID,
+				"reason", payload.Predictive.BleedReason,
+				"cpu_percent", payload.Predictive.CPUPercent,
+				"mem_percent", payload.Predictive.MemPercent,
+				"error_rate", payload.Predictive.ErrorRate,
+			)
+		}
+	}
+
 	h.logger.Debug("processed heartbeat",
 		"agent_id", msg.AgentID,
 		"backends", len(payload.Backends),
@@ -367,7 +408,40 @@ func (h *GossipHandler) parseHeartbeatPayload(m map[string]interface{}) Heartbea
 		}
 	}
 
+	// Parse predictive health state
+	if pred, ok := m["predictive"].(map[string]interface{}); ok {
+		payload.Predictive = h.parsePredictiveHeartbeat(pred)
+	}
+
 	return payload
+}
+
+// parsePredictiveHeartbeat parses a predictive heartbeat from a map.
+func (h *GossipHandler) parsePredictiveHeartbeat(m map[string]interface{}) *PredictiveHeartbeat {
+	pred := &PredictiveHeartbeat{}
+
+	if bleeding, ok := m["bleeding"].(bool); ok {
+		pred.Bleeding = bleeding
+	}
+	if reason, ok := m["bleed_reason"].(string); ok {
+		pred.BleedReason = reason
+	}
+	if bleedingAt, ok := m["bleeding_at"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, bleedingAt); err == nil {
+			pred.BleedingAt = t
+		}
+	}
+	if cpu, ok := m["cpu_percent"].(float64); ok {
+		pred.CPUPercent = cpu
+	}
+	if mem, ok := m["mem_percent"].(float64); ok {
+		pred.MemPercent = mem
+	}
+	if errRate, ok := m["error_rate"].(float64); ok {
+		pred.ErrorRate = errRate
+	}
+
+	return pred
 }
 
 // parseRegisterPayload parses a register payload from a map.
