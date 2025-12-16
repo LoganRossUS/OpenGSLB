@@ -46,12 +46,14 @@ This is the simplest OpenGSLB deployment: a single Overwatch node performing ext
 
 | Host Port | Container Port | Service        |
 |-----------|----------------|----------------|
-| 5353      | 53             | DNS (UDP/TCP)  |
+| 15353     | 53             | DNS (UDP/TCP)  |
 | 8080      | 8080           | API            |
 | 9090      | 9090           | Metrics        |
 | 8081      | 80             | webapp1 nginx  |
 | 8082      | 80             | webapp2 nginx  |
 | 8083      | 80             | webapp3 nginx  |
+
+> **Note:** We use port 15353 instead of 5353 to avoid conflicts with mDNS/Avahi which commonly uses port 5353 on Linux systems.
 
 ## Quick Start
 
@@ -92,7 +94,7 @@ Query the DNS multiple times to see round-robin load balancing:
 ```bash
 # Query 6 times - see different IPs each time
 for i in {1..6}; do
-    dig @localhost -p 5353 app.demo.local +short
+    dig @localhost -p 15353 app.demo.local +short
 done
 ```
 
@@ -125,7 +127,7 @@ curl http://localhost:8080/api/v1/health/servers | jq
 
 # Query DNS - webapp2's IP should be gone
 for i in {1..4}; do
-    dig @localhost -p 5353 app.demo.local +short
+    dig @localhost -p 15353 app.demo.local +short
 done
 ```
 
@@ -145,7 +147,7 @@ curl http://localhost:8080/api/v1/health/servers | jq
 
 # Query DNS - all 3 IPs should be back
 for i in {1..6}; do
-    dig @localhost -p 5353 app.demo.local +short
+    dig @localhost -p 15353 app.demo.local +short
 done
 ```
 
@@ -192,8 +194,8 @@ docker-compose logs -f overwatch
 docker-compose logs -f webapp1
 
 # Query DNS
-dig @localhost -p 5353 app.demo.local +short
-dig @localhost -p 5353 app.demo.local
+dig @localhost -p 15353 app.demo.local +short
+dig @localhost -p 15353 app.demo.local
 
 # Check API health
 curl http://localhost:8080/api/v1/health/servers | jq

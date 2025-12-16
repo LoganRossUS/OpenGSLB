@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-DNS_PORT=5353
+DNS_PORT=15353  # Using 15353 to avoid mDNS/Avahi conflict on port 5353
 API_PORT=8080
 METRICS_PORT=9090
 DOMAIN="app.demo.local"

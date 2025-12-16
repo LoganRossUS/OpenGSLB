@@ -26,8 +26,8 @@ services:
       demo:
         ipv4_address: 10.10.0.10
     ports:
-      - "5353:53/udp"      # DNS (UDP)
-      - "5353:53/tcp"      # DNS (TCP)
+      - "15353:53/udp"     # DNS (UDP) - using 15353 to avoid mDNS/Avahi conflict
+      - "15353:53/tcp"     # DNS (TCP)
       - "8080:8080"        # API
       - "9090:9090"        # Metrics
     volumes:
