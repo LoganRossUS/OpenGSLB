@@ -110,12 +110,15 @@ log_header "Step 7: Current backend registry state"
 echo "Registered backends:"
 docker logs overwatch 2>&1 | grep -E "backend registered|backend draining" | tail -10 || echo "  (no registration logs yet)"
 
-# Step 8: Trigger chaos
+# Step 8: Trigger chaos (NOTE: chaos endpoints require POST)
 log_header "Step 8: Triggering CPU chaos on backend-3 (10.50.0.23)"
-if curl -s http://localhost:8083/chaos/cpu > /dev/null 2>&1; then
+response=$(curl -s -X POST "http://localhost:8083/chaos/cpu?duration=60s&intensity=90" 2>&1)
+if echo "$response" | grep -q "cpu_spike_started"; then
     log_success "CPU chaos triggered on backend-3"
+    echo "  Response: $response"
 else
     log_error "Failed to trigger chaos - is backend-3 running?"
+    echo "  Response: $response"
     exit 1
 fi
 
@@ -182,28 +185,31 @@ done
 echo ""
 log_header "Test Result"
 
-draining_detected=$(docker logs overwatch 2>&1 | grep -c "draining started" || echo "0")
-excluding_detected=$(docker logs overwatch 2>&1 | grep -c "excluding draining" || echo "0")
+draining_detected=$(docker logs overwatch 2>&1 | grep -c "draining started" 2>/dev/null || true)
+draining_detected=${draining_detected:-0}
+excluding_detected=$(docker logs overwatch 2>&1 | grep -c "excluding draining" 2>/dev/null || true)
+excluding_detected=${excluding_detected:-0}
 
-if [ "$draining_detected" -gt 0 ]; then
+if [ "$draining_detected" -gt 0 ] 2>/dev/null; then
     log_success "Draining signal received from agent ($draining_detected occurrences)"
 else
     log_error "No draining signals received - agent may not be detecting CPU stress"
 fi
 
-if [ "$excluding_detected" -gt 0 ]; then
+if [ "$excluding_detected" -gt 0 ] 2>/dev/null; then
     log_success "DNS is excluding draining backends ($excluding_detected occurrences)"
 else
     log_warn "DNS not excluding backends - check combinedHealthProvider logic"
 fi
 
 # Check if draining backend is still being returned
-draining_ip=$(docker logs overwatch 2>&1 | grep "draining started" | tail -1 | grep -oE "address=10\.[0-9]+\.[0-9]+\.[0-9]+" | cut -d= -f2)
+draining_ip=$(docker logs overwatch 2>&1 | grep "draining started" | tail -1 | grep -oE "address=10\.[0-9]+\.[0-9]+\.[0-9]+" | cut -d= -f2 || true)
 if [ -n "$draining_ip" ]; then
     echo ""
     echo "Draining backend: $draining_ip"
-    still_returned=$(dig @localhost -p 5354 app.demo.local A +short +time=2 2>/dev/null | grep -c "$draining_ip" || echo "0")
-    if [ "$still_returned" -gt 0 ]; then
+    still_returned=$(dig @localhost -p 5354 app.demo.local A +short +time=2 2>/dev/null | grep -c "$draining_ip" 2>/dev/null || true)
+    still_returned=${still_returned:-0}
+    if [ "$still_returned" -gt 0 ] 2>/dev/null; then
         log_error "FAIL: Draining backend $draining_ip is STILL being returned by DNS!"
     else
         log_success "PASS: Draining backend $draining_ip is correctly excluded from DNS"
