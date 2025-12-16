@@ -224,13 +224,27 @@ func (s *MemberlistSender) SendHealthUpdate(msg agent.HealthUpdateMessage) error
 		})
 	}
 
+	// Convert predictive state if present
+	var predictive *overwatch.PredictiveHeartbeat
+	if msg.Predictive != nil {
+		predictive = &overwatch.PredictiveHeartbeat{
+			Bleeding:    msg.Predictive.Bleeding,
+			BleedReason: msg.Predictive.BleedReason,
+			BleedingAt:  msg.Predictive.BleedingAt,
+			CPUPercent:  msg.Predictive.CPUPercent,
+			MemPercent:  msg.Predictive.MemPercent,
+			ErrorRate:   msg.Predictive.ErrorRate,
+		}
+	}
+
 	gossipMsg := overwatch.GossipMessage{
 		Type:      overwatch.MessageHeartbeat,
 		AgentID:   msg.AgentID,
 		Region:    msg.Region,
 		Timestamp: msg.Timestamp,
 		Payload: overwatch.HeartbeatPayload{
-			Backends: backends,
+			Backends:   backends,
+			Predictive: predictive,
 		},
 	}
 
