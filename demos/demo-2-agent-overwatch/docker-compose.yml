@@ -59,7 +59,7 @@ services:
         ipv4_address: 10.20.0.21
     volumes:
       - ./bin/opengslb:/opt/opengslb/opengslb:ro
-      - ./configs/agent1.yaml:/etc/opengslb/config.yaml:ro
+      - ./configs/agent1.yaml:/tmp/agent-config.yaml:ro
     depends_on:
       - overwatch
     restart: unless-stopped
@@ -75,7 +75,7 @@ services:
         ipv4_address: 10.20.0.22
     volumes:
       - ./bin/opengslb:/opt/opengslb/opengslb:ro
-      - ./configs/agent2.yaml:/etc/opengslb/config.yaml:ro
+      - ./configs/agent2.yaml:/tmp/agent-config.yaml:ro
     depends_on:
       - overwatch
     restart: unless-stopped
@@ -91,7 +91,7 @@ services:
         ipv4_address: 10.20.0.23
     volumes:
       - ./bin/opengslb:/opt/opengslb/opengslb:ro
-      - ./configs/agent3.yaml:/etc/opengslb/config.yaml:ro
+      - ./configs/agent3.yaml:/tmp/agent-config.yaml:ro
     depends_on:
       - overwatch
     restart: unless-stopped
