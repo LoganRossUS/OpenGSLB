@@ -42,8 +42,14 @@ log_header "DEMO 5: PREDICTIVE HEALTH TEST"
 # Step 1: Rebuild binary
 log_header "Step 1: Rebuilding OpenGSLB binary"
 cd "$PROJECT_ROOT"
-if go build -o "$SCRIPT_DIR/bin/opengslb" ./cmd/opengslb; then
-    log_success "Binary rebuilt successfully"
+
+# Create bin directory if it doesn't exist
+mkdir -p "$SCRIPT_DIR/bin"
+
+# Cross-compile for Linux (Docker containers run Linux)
+if CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$SCRIPT_DIR/bin/opengslb" ./cmd/opengslb; then
+    log_success "Binary rebuilt successfully (linux/amd64)"
+    ls -la "$SCRIPT_DIR/bin/opengslb"
 else
     log_error "Failed to build binary"
     exit 1
