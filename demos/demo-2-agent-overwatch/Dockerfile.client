@@ -1,0 +1,47 @@
+# Dockerfile.client
+#
+# Client container for Demo 2: Agent-Overwatch Architecture
+# Provides SSH access for interactive demo experience.
+
+FROM alpine:3.19
+
+RUN apk add --no-cache \
+    bind-tools \
+    curl \
+    jq \
+    openssh \
+    bash \
+    watch \
+    && rm -rf /var/cache/apk/* \
+    && ssh-keygen -A \
+    && echo 'root:demo' | chpasswd \
+    && sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+# Nice prompt
+RUN echo 'export PS1="\[\033[01;32m\][client]\[\033[00m\]:\w# "' >> /root/.profile
+
+# Copy demo scripts
+COPY scripts/demo.sh /root/demo.sh
+COPY scripts/drain.sh /root/drain.sh
+RUN chmod +x /root/*.sh
+
+# Welcome message
+RUN cat > /etc/motd << 'EOF'
+
+  =========================================================================
+  |         OpenGSLB Demo 2: Agent-Overwatch Architecture                 |
+  =========================================================================
+  |  Run ./demo.sh for a guided walkthrough                               |
+  |                                                                       |
+  |  Quick commands:                                                      |
+  |    dig @10.20.0.10 app.demo.local +short                              |
+  |    curl http://10.20.0.10:8080/api/v1/health/servers | jq             |
+  |    ./drain.sh webapp2 on    # Trigger proactive drain                 |
+  |    ./drain.sh webapp2 off   # Recover                                 |
+  =========================================================================
+
+EOF
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e"]

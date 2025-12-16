@@ -1,0 +1,22 @@
+# Dockerfile.overwatch
+#
+# OpenGSLB Overwatch node for Demo 2: Agent-Overwatch Architecture
+# Receives gossip from agents and serves DNS queries.
+
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates tzdata && rm -rf /var/cache/apk/*
+
+# Create directories
+RUN mkdir -p /opt/opengslb /etc/opengslb /var/lib/opengslb
+
+# Copy config with correct permissions (OpenGSLB requires chmod 600)
+COPY configs/overwatch.yaml /etc/opengslb/config.yaml
+RUN chmod 600 /etc/opengslb/config.yaml
+
+# Binary is mounted at runtime from bin/opengslb
+# IMPORTANT: Must be built with CGO_ENABLED=0
+
+EXPOSE 53/udp 53/tcp 7946/udp 7946/tcp 8080 9090
+
+CMD ["/opt/opengslb/opengslb", "--config", "/etc/opengslb/config.yaml"]
