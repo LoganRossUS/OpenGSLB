@@ -1,0 +1,370 @@
+version: '3.8'
+
+# OpenGSLB Demo 4: GeoIP-Based Routing
+#
+# This demo shows how OpenGSLB routes DNS queries to the nearest datacenter
+# based on the client's geographic location using MaxMind GeoLite2 database.
+#
+# Network: 172.28.0.0/16
+#   - overwatch:        172.28.0.10 (DNS + GeoIP routing)
+#   - backend-us-1:     172.28.1.10 (US East region)
+#   - backend-us-2:     172.28.1.11 (US East region)
+#   - backend-eu-1:     172.28.2.10 (EU West region)
+#   - backend-eu-2:     172.28.2.11 (EU West region)
+#   - backend-ap-1:     172.28.3.10 (AP Southeast region)
+#   - backend-ap-2:     172.28.3.11 (AP Southeast region)
+#   - backend-chicago-1: 172.28.4.10 (US Chicago - CIDR only)
+#   - backend-dallas-1:  172.28.5.10 (US Dallas - CIDR only)
+#   - backend-london-1:  172.28.6.10 (EU London - CIDR only)
+#   - client:           172.28.0.50 (SSH access for demo)
+
+networks:
+  gslb-demo:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  geoip-data:
+
+services:
+  # ==========================================================================
+  # GEOIP DATABASE INITIALIZER
+  # Downloads MaxMind GeoLite2-Country database on first run
+  # ==========================================================================
+  geoip-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.geoip-init
+    container_name: geoip-init
+    volumes:
+      - geoip-data:/data
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.0.5
+
+  # ==========================================================================
+  # OVERWATCH - DNS Server with GeoIP Routing
+  # ==========================================================================
+  overwatch:
+    build:
+      context: .
+      dockerfile: Dockerfile.overwatch
+    container_name: overwatch
+    hostname: overwatch
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.0.10
+    ports:
+      - "15353:53/udp"  # DNS (mapped to 15353 to avoid conflicts with mDNS)
+      - "15353:53/tcp"
+      - "8080:8080"     # API
+      - "9090:9090"     # Metrics
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - geoip-data:/var/lib/opengslb/geoip:ro
+    depends_on:
+      geoip-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # ==========================================================================
+  # US-EAST REGION BACKENDS (GeoIP mapped: US, CA, MX + NA, SA continents)
+  # ==========================================================================
+  backend-us-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: backend-us-1
+    hostname: backend-us-1
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.1.10
+    environment:
+      - BACKEND_NAME=US-EAST-1
+      - BACKEND_REGION=us-east
+      - BACKEND_LOCATION=Virginia, USA
+      - BACKEND_IP=10.10.1.10
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+    restart: unless-stopped
+
+  backend-us-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: backend-us-2
+    hostname: backend-us-2
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.1.11
+    environment:
+      - BACKEND_NAME=US-EAST-2
+      - BACKEND_REGION=us-east
+      - BACKEND_LOCATION=Virginia, USA
+      - BACKEND_IP=10.10.1.11
+    restart: unless-stopped
+
+  agent-us:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: agent-us
+    hostname: agent-us
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.1.100
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - ./configs/agent-us.yaml:/tmp/agent-config.yaml:ro
+    depends_on:
+      - overwatch
+      - backend-us-1
+      - backend-us-2
+    restart: unless-stopped
+
+  # ==========================================================================
+  # EU-WEST REGION BACKENDS (GeoIP mapped: GB, DE, FR, etc + EU continent)
+  # ==========================================================================
+  backend-eu-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: backend-eu-1
+    hostname: backend-eu-1
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.2.10
+    environment:
+      - BACKEND_NAME=EU-WEST-1
+      - BACKEND_REGION=eu-west
+      - BACKEND_LOCATION=Frankfurt, Germany
+      - BACKEND_IP=10.20.1.10
+    restart: unless-stopped
+
+  backend-eu-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: backend-eu-2
+    hostname: backend-eu-2
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.2.11
+    environment:
+      - BACKEND_NAME=EU-WEST-2
+      - BACKEND_REGION=eu-west
+      - BACKEND_LOCATION=Amsterdam, Netherlands
+      - BACKEND_IP=10.20.1.11
+    restart: unless-stopped
+
+  agent-eu:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: agent-eu
+    hostname: agent-eu
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.2.100
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - ./configs/agent-eu.yaml:/tmp/agent-config.yaml:ro
+    depends_on:
+      - overwatch
+      - backend-eu-1
+      - backend-eu-2
+    restart: unless-stopped
+
+  # ==========================================================================
+  # AP-SOUTHEAST REGION BACKENDS (GeoIP mapped: AU, JP, SG, etc + AS, OC)
+  # ==========================================================================
+  backend-ap-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: backend-ap-1
+    hostname: backend-ap-1
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.3.10
+    environment:
+      - BACKEND_NAME=AP-SOUTHEAST-1
+      - BACKEND_REGION=ap-southeast
+      - BACKEND_LOCATION=Singapore
+      - BACKEND_IP=10.30.1.10
+    restart: unless-stopped
+
+  backend-ap-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: backend-ap-2
+    hostname: backend-ap-2
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.3.11
+    environment:
+      - BACKEND_NAME=AP-SOUTHEAST-2
+      - BACKEND_REGION=ap-southeast
+      - BACKEND_LOCATION=Sydney, Australia
+      - BACKEND_IP=10.30.1.11
+    restart: unless-stopped
+
+  agent-ap:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: agent-ap
+    hostname: agent-ap
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.3.100
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - ./configs/agent-ap.yaml:/tmp/agent-config.yaml:ro
+    depends_on:
+      - overwatch
+      - backend-ap-1
+      - backend-ap-2
+    restart: unless-stopped
+
+  # ==========================================================================
+  # US-CHICAGO REGION (Custom CIDR only - no GeoIP countries)
+  # ==========================================================================
+  backend-chicago-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: backend-chicago-1
+    hostname: backend-chicago-1
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.4.10
+    environment:
+      - BACKEND_NAME=US-CHICAGO-1
+      - BACKEND_REGION=us-chicago
+      - BACKEND_LOCATION=Chicago, Illinois
+      - BACKEND_IP=10.40.1.10
+    restart: unless-stopped
+
+  agent-chicago:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: agent-chicago
+    hostname: agent-chicago
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.4.100
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - ./configs/agent-chicago.yaml:/tmp/agent-config.yaml:ro
+    depends_on:
+      - overwatch
+      - backend-chicago-1
+    restart: unless-stopped
+
+  # ==========================================================================
+  # US-DALLAS REGION (Custom CIDR only - no GeoIP countries)
+  # ==========================================================================
+  backend-dallas-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: backend-dallas-1
+    hostname: backend-dallas-1
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.5.10
+    environment:
+      - BACKEND_NAME=US-DALLAS-1
+      - BACKEND_REGION=us-dallas
+      - BACKEND_LOCATION=Dallas, Texas
+      - BACKEND_IP=10.50.1.10
+    restart: unless-stopped
+
+  agent-dallas:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: agent-dallas
+    hostname: agent-dallas
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.5.100
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - ./configs/agent-dallas.yaml:/tmp/agent-config.yaml:ro
+    depends_on:
+      - overwatch
+      - backend-dallas-1
+    restart: unless-stopped
+
+  # ==========================================================================
+  # EU-LONDON REGION (Custom CIDR only - no GeoIP countries)
+  # ==========================================================================
+  backend-london-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: backend-london-1
+    hostname: backend-london-1
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.6.10
+    environment:
+      - BACKEND_NAME=EU-LONDON-1
+      - BACKEND_REGION=eu-london
+      - BACKEND_LOCATION=London, UK
+      - BACKEND_IP=10.60.1.10
+    restart: unless-stopped
+
+  agent-london:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: agent-london
+    hostname: agent-london
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.6.100
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - ./configs/agent-london.yaml:/tmp/agent-config.yaml:ro
+    depends_on:
+      - overwatch
+      - backend-london-1
+    restart: unless-stopped
+
+  # ==========================================================================
+  # CLIENT CONTAINER - SSH access for interactive demo
+  # ==========================================================================
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: client
+    hostname: client
+    networks:
+      gslb-demo:
+        ipv4_address: 172.28.0.50
+    ports:
+      - "2222:22"     # SSH access for demo
+    volumes:
+      - ./scripts:/scripts:ro
+    depends_on:
+      overwatch:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    restart: unless-stopped

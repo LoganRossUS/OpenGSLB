@@ -19,6 +19,7 @@ import (
 	"github.com/loganrossus/OpenGSLB/pkg/api"
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/dns"
+	"github.com/loganrossus/OpenGSLB/pkg/geo"
 	"github.com/loganrossus/OpenGSLB/pkg/gossip"
 	"github.com/loganrossus/OpenGSLB/pkg/health"
 	"github.com/loganrossus/OpenGSLB/pkg/metrics"
@@ -53,6 +54,9 @@ type Application struct {
 	// Agent mode components (Story 2)
 	agentInstance *agent.Agent
 	gossipSender  *gossip.MemberlistSender
+
+	// Geolocation resolver (Demo 4: GeoIP routing)
+	geoResolver *geo.Resolver
 
 	// Application lifecycle
 	startTime  time.Time
@@ -192,6 +196,11 @@ func (a *Application) initializeOverwatchMode() error {
 		return fmt.Errorf("failed to initialize gossip handler: %w", err)
 	}
 
+	// Initialize geolocation resolver (Demo 4: GeoIP routing)
+	if err := a.initializeGeoResolver(); err != nil {
+		return fmt.Errorf("failed to initialize geo resolver: %w", err)
+	}
+
 	// Initialize DNS server
 	if err := a.initializeDNSServer(); err != nil {
 		return fmt.Errorf("failed to initialize DNS server: %w", err)
@@ -279,6 +288,36 @@ func (a *Application) registerHealthCheckServers() error {
 			)
 		}
 	}
+	return nil
+}
+
+// initializeGeoResolver creates and configures the geolocation resolver for GeoIP-based routing.
+func (a *Application) initializeGeoResolver() error {
+	geoCfg := a.config.Overwatch.Geolocation
+	if geoCfg.DatabasePath == "" {
+		a.logger.Info("geolocation disabled: no database path configured")
+		return nil
+	}
+
+	resolver, err := geo.NewResolver(geo.ResolverConfig{
+		DatabasePath:   geoCfg.DatabasePath,
+		DefaultRegion:  geoCfg.DefaultRegion,
+		CustomMappings: geoCfg.CustomMappings,
+		Regions:        a.config.Regions,
+		Logger:         a.logger,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create geo resolver: %w", err)
+	}
+
+	a.geoResolver = resolver
+
+	a.logger.Info("geolocation resolver initialized",
+		"database_path", geoCfg.DatabasePath,
+		"default_region", geoCfg.DefaultRegion,
+		"custom_mappings", len(geoCfg.CustomMappings),
+		"regions", len(a.config.Regions),
+	)
 	return nil
 }
 
@@ -417,7 +456,8 @@ func (a *Application) initializeDNSServer() error {
 	latencyProvider := &healthManagerLatencyProvider{manager: a.healthManager}
 	routerFactory := routing.NewFactory(routing.FactoryConfig{
 		LatencyProvider:   latencyProvider,
-		MinLatencySamples: 1, // Health manager tracks one sample at a time
+		MinLatencySamples: 1,             // Health manager tracks one sample at a time
+		GeoResolver:       a.geoResolver, // Demo 4: GeoIP-based routing
 		Logger:            a.logger,
 	})
 
@@ -444,6 +484,7 @@ func (a *Application) initializeDNSServer() error {
 		HealthProvider: a.healthManager,
 		LeaderChecker:  nil, // Standalone mode - always serve
 		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
+		ECSEnabled:     a.config.Overwatch.Geolocation.ECSEnabled, // Demo 4: EDNS Client Subnet for GeoIP
 		Logger:         a.logger,
 	})
 	a.dnsHandler = handler
@@ -574,6 +615,12 @@ func (a *Application) initializeAPIServer() error {
 		overrideManager := api.NewOverrideManager(a.overwatchStore, a.logger)
 		server.SetOverrideHandlers(api.NewOverrideHandlers(overrideManager, a.logger))
 		a.logger.Debug("override API handlers registered")
+	}
+
+	// Geo handlers - provides geolocation test and custom mapping management
+	if a.geoResolver != nil {
+		server.SetGeoHandlers(api.NewGeoHandlers(a.geoResolver))
+		a.logger.Debug("geo API handlers registered")
 	}
 
 	a.apiServer = server
@@ -982,7 +1029,8 @@ func (a *Application) reloadDNSRegistry(newCfg *config.Config) error {
 	latencyProvider := &healthManagerLatencyProvider{manager: a.healthManager}
 	routerFactory := routing.NewFactory(routing.FactoryConfig{
 		LatencyProvider:   latencyProvider,
-		MinLatencySamples: 1, // Health manager tracks one sample at a time
+		MinLatencySamples: 1,             // Health manager tracks one sample at a time
+		GeoResolver:       a.geoResolver, // Demo 4: GeoIP-based routing
 		Logger:            a.logger,
 	})
 

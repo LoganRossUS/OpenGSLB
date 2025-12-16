@@ -1,0 +1,58 @@
+# OpenGSLB Demo 4: Agent Configuration (AP-Southeast Region)
+#
+# This agent monitors the AP-Southeast backend servers and reports health to Overwatch.
+
+mode: agent
+
+# Agent configuration
+agent:
+  identity:
+    region: ap-southeast
+    service_token: "geoip-demo-token-2024"
+
+  # Backend services this agent monitors
+  backends:
+    - service: app.global.example.com
+      address: 172.28.3.10
+      port: 80
+      weight: 100
+      health_check:
+        type: http
+        path: /health
+        interval: 3s
+        timeout: 3s
+        failure_threshold: 3
+        success_threshold: 2
+
+    - service: app.global.example.com
+      address: 172.28.3.11
+      port: 80
+      weight: 100
+      health_check:
+        type: http
+        path: /health
+        interval: 3s
+        timeout: 3s
+        failure_threshold: 3
+        success_threshold: 2
+
+  # Gossip configuration to reach Overwatch
+  gossip:
+    encryption_key: "Z2VvaXAtZGVtby1lbmNyeXB0aW9uLWtleS0zMmJ5dGU="
+    overwatch_nodes:
+      - "172.28.0.10:7946"
+
+  # Heartbeat settings
+  heartbeat:
+    interval: 5s
+    missed_threshold: 3
+
+# Metrics
+metrics:
+  enabled: true
+  address: "0.0.0.0:9100"
+
+# Logging
+logging:
+  level: info
+  format: text
