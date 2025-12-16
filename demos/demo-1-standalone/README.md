@@ -44,14 +44,16 @@ This is the simplest OpenGSLB deployment: a single Overwatch node performing ext
 
 ## Host Port Mappings
 
-| Host Port | Container Port | Service        |
-|-----------|----------------|----------------|
-| 5353      | 53             | DNS (UDP/TCP)  |
-| 8080      | 8080           | API            |
-| 9090      | 9090           | Metrics        |
-| 8081      | 80             | webapp1 nginx  |
-| 8082      | 80             | webapp2 nginx  |
-| 8083      | 80             | webapp3 nginx  |
+| Host Port | Container Port | Service             |
+|-----------|----------------|---------------------|
+| 2222      | 22             | Client SSH access   |
+| 8080      | 8080           | API                 |
+| 9090      | 9090           | Metrics             |
+| 8081      | 80             | webapp1 nginx       |
+| 8082      | 80             | webapp2 nginx       |
+| 8083      | 80             | webapp3 nginx       |
+
+> **Note:** DNS (port 53) is internal to the Docker network. SSH into the client container to query DNS.
 
 ## Quick Start
 
@@ -77,7 +79,16 @@ cd demos/demo-1-standalone
 ./scripts/demo.sh start
 ```
 
-### 3. Stop the Demo
+### 3. SSH into the Client
+
+```bash
+ssh -p 2222 root@localhost
+# Password: demo
+```
+
+You'll see a welcome banner with available commands. The client uses Overwatch as its DNS server, so you can query `app.demo.local` directly.
+
+### 4. Stop the Demo
 
 ```bash
 ./scripts/demo.sh stop
@@ -87,13 +98,14 @@ cd demos/demo-1-standalone
 
 ### 1. DNS Round-Robin
 
-Query the DNS multiple times to see round-robin load balancing:
+SSH into the client and query DNS multiple times to see round-robin:
 
 ```bash
+# SSH in first
+ssh -p 2222 root@localhost
+
 # Query 6 times - see different IPs each time
-for i in {1..6}; do
-    dig @localhost -p 5353 app.demo.local +short
-done
+for i in {1..6}; do dig app.demo.local +short; done
 ```
 
 Expected output:
@@ -111,22 +123,14 @@ Expected output:
 Stop a backend and watch it leave DNS rotation:
 
 ```bash
-# Check current health
-curl http://localhost:8080/api/v1/health/servers | jq
-
-# Stop webapp2
+# From your host terminal - stop webapp2
 docker stop webapp2
 
-# Wait 10-15 seconds for health checks to fail
-sleep 15
-
-# Check health again - webapp2 should be unhealthy
+# Wait 10-15 seconds for health checks to fail, then check health
 curl http://localhost:8080/api/v1/health/servers | jq
 
-# Query DNS - webapp2's IP should be gone
-for i in {1..4}; do
-    dig @localhost -p 5353 app.demo.local +short
-done
+# From your SSH session in the client - query DNS (webapp2 should be gone)
+for i in {1..4}; do dig app.demo.local +short; done
 ```
 
 ### 3. Recovery
@@ -134,19 +138,14 @@ done
 Restart the backend and watch it return:
 
 ```bash
-# Start webapp2
+# From your host terminal - start webapp2
 docker start webapp2
 
-# Wait 5-10 seconds for health checks to pass
-sleep 10
-
-# Check health - webapp2 should be healthy again
+# Wait 5-10 seconds, then check health
 curl http://localhost:8080/api/v1/health/servers | jq
 
-# Query DNS - all 3 IPs should be back
-for i in {1..6}; do
-    dig @localhost -p 5353 app.demo.local +short
-done
+# From your SSH session - all 3 IPs should be back
+for i in {1..6}; do dig app.demo.local +short; done
 ```
 
 ### 4. API Exploration
@@ -191,9 +190,12 @@ docker-compose down
 docker-compose logs -f overwatch
 docker-compose logs -f webapp1
 
-# Query DNS
-dig @localhost -p 5353 app.demo.local +short
-dig @localhost -p 5353 app.demo.local
+# SSH into client (password: demo)
+ssh -p 2222 root@localhost
+
+# From inside client - query DNS
+dig app.demo.local +short
+dig app.demo.local
 
 # Check API health
 curl http://localhost:8080/api/v1/health/servers | jq
@@ -210,13 +212,9 @@ docker start webapp2
 # Restart everything
 docker-compose restart
 
-# Shell into client container
-docker exec -it client sh
-
-# From inside client (uses Overwatch as DNS)
-apk add bind-tools curl
-dig app.demo.local
+# Inside the client SSH session - curl a backend
 curl app.demo.local
+curl app.demo.local/health | jq
 ```
 
 ## How to Reset
