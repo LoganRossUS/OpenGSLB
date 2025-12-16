@@ -1,0 +1,118 @@
+version: '3.8'
+
+# OpenGSLB Demo 2: Agent-Overwatch Architecture
+#
+# This demo shows how agents run alongside applications and proactively
+# report health issues via gossip to the Overwatch node.
+#
+# Network: 10.20.0.0/24
+#   - overwatch: 10.20.0.10 (DNS + gossip receiver)
+#   - webapp1:   10.20.0.21 (nginx + agent)
+#   - webapp2:   10.20.0.22 (nginx + agent)
+#   - webapp3:   10.20.0.23 (nginx + agent)
+#   - client:    10.20.0.100 (SSH access for demo)
+
+networks:
+  demo:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.20.0.0/24
+
+services:
+  # ==========================================================================
+  # OpenGSLB Overwatch - DNS + Gossip Receiver
+  # ==========================================================================
+  overwatch:
+    build:
+      context: .
+      dockerfile: Dockerfile.overwatch
+    container_name: overwatch
+    hostname: overwatch
+    networks:
+      demo:
+        ipv4_address: 10.20.0.10
+    ports:
+      # DNS not exposed to host - use client container for DNS queries
+      - "8080:8080"   # API (for host access)
+      - "9090:9090"   # Metrics (for host access)
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Webapp Servers - nginx + OpenGSLB Agent
+  # ==========================================================================
+  webapp1:
+    build:
+      context: .
+      dockerfile: Dockerfile.webapp
+    container_name: webapp1
+    hostname: webapp1
+    networks:
+      demo:
+        ipv4_address: 10.20.0.21
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - ./configs/agent1.yaml:/etc/opengslb/config.yaml:ro
+    depends_on:
+      - overwatch
+    restart: unless-stopped
+
+  webapp2:
+    build:
+      context: .
+      dockerfile: Dockerfile.webapp
+    container_name: webapp2
+    hostname: webapp2
+    networks:
+      demo:
+        ipv4_address: 10.20.0.22
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - ./configs/agent2.yaml:/etc/opengslb/config.yaml:ro
+    depends_on:
+      - overwatch
+    restart: unless-stopped
+
+  webapp3:
+    build:
+      context: .
+      dockerfile: Dockerfile.webapp
+    container_name: webapp3
+    hostname: webapp3
+    networks:
+      demo:
+        ipv4_address: 10.20.0.23
+    volumes:
+      - ./bin/opengslb:/opt/opengslb/opengslb:ro
+      - ./configs/agent3.yaml:/etc/opengslb/config.yaml:ro
+    depends_on:
+      - overwatch
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Client Container - SSH access for interactive demo
+  # ==========================================================================
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: client
+    hostname: client
+    networks:
+      demo:
+        ipv4_address: 10.20.0.100
+    ports:
+      - "2222:22"     # SSH access for demo
+    depends_on:
+      - overwatch
+      - webapp1
+      - webapp2
+      - webapp3
+    restart: unless-stopped

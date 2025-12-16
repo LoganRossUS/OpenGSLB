@@ -1,0 +1,47 @@
+# OpenGSLB Demo 2: Agent Configuration (webapp1)
+#
+# This agent monitors the local nginx server and reports health to Overwatch.
+# It demonstrates the agent-overwatch architecture for proactive health signaling.
+
+mode: agent
+
+# Agent configuration
+agent:
+  identity:
+    region: demo
+    service_token: "demo-token-12345"
+
+  # Backend service this agent monitors
+  backends:
+    - service: app.demo.local
+      address: 127.0.0.1
+      port: 80
+      weight: 100
+      health_check:
+        type: http
+        path: /health
+        interval: 2s
+        timeout: 1s
+        failure_threshold: 2
+        success_threshold: 1
+
+  # Gossip configuration to reach Overwatch
+  gossip:
+    encryption_key: "cGFzc3dvcmQxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ="
+    overwatch_nodes:
+      - "10.20.0.10:7946"
+
+  # Heartbeat settings
+  heartbeat:
+    interval: 5s
+    missed_threshold: 3
+
+# Metrics
+metrics:
+  enabled: true
+  address: "0.0.0.0:9100"
+
+# Logging
+logging:
+  level: debug
+  format: text

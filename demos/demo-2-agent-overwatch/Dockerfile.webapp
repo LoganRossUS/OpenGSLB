@@ -1,0 +1,72 @@
+# Dockerfile.webapp
+#
+# Webapp container for Demo 2: Agent-Overwatch Architecture
+# Runs nginx + OpenGSLB agent side-by-side.
+# Agent monitors localhost and gossips health to Overwatch.
+
+FROM alpine:3.19
+
+RUN apk add --no-cache nginx ca-certificates tzdata curl && rm -rf /var/cache/apk/*
+
+# Create directories
+RUN mkdir -p /opt/opengslb /etc/opengslb /var/lib/opengslb /run/nginx
+
+# nginx health endpoint config
+RUN cat > /etc/nginx/http.d/default.conf << 'EOF'
+server {
+    listen 80 default_server;
+
+    location /health {
+        default_type application/json;
+        return 200 '{"status":"healthy","server":"webapp"}';
+    }
+
+    location / {
+        default_type text/html;
+        return 200 '<!DOCTYPE html>
+<html>
+<head>
+    <title>OpenGSLB Demo 2</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .container {
+            text-align: center;
+            padding: 40px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+        }
+        h1 { font-size: 2.5em; margin-bottom: 10px; }
+        .hostname { font-size: 1.8em; font-weight: bold; color: #ffd700; }
+        .info { margin-top: 20px; opacity: 0.8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>OpenGSLB Demo 2</h1>
+        <p>Agent-Overwatch Architecture</p>
+        <p class="hostname">webapp</p>
+        <p class="info">This server has an agent reporting to Overwatch</p>
+    </div>
+</body>
+</html>';
+    }
+}
+EOF
+
+# Startup script runs both nginx and agent
+COPY scripts/start-webapp.sh /start.sh
+RUN chmod +x /start.sh
+
+EXPOSE 80 7946/udp 7946/tcp 9100
+
+CMD ["/start.sh"]
