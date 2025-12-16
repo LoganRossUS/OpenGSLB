@@ -26,8 +26,8 @@ services:
       demo:
         ipv4_address: 10.10.0.10
     ports:
-      - "15353:53/udp"     # DNS (UDP) - using 15353 to avoid mDNS/Avahi conflict
-      - "15353:53/tcp"     # DNS (TCP)
+      # DNS not exposed to host - use client container for DNS queries
+      # This avoids port conflicts with mDNS/Avahi on the host
       - "8080:8080"        # API
       - "9090:9090"        # Metrics
     volumes:
@@ -98,7 +98,7 @@ services:
     restart: unless-stopped
 
   # ==========================================================================
-  # Client Container - for testing from inside the network
+  # Client Container - for testing DNS queries from inside the network
   # ==========================================================================
   client:
     image: alpine:3.19
@@ -109,7 +109,8 @@ services:
         ipv4_address: 10.10.0.100
     dns:
       - 10.10.0.10
-    command: ["sleep", "infinity"]
+    command: >
+      sh -c "apk add --no-cache bind-tools curl jq > /dev/null 2>&1 && sleep infinity"
     depends_on:
       - overwatch
       - webapp1
