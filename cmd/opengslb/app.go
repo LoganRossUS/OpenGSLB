@@ -484,6 +484,7 @@ func (a *Application) initializeDNSServer() error {
 		HealthProvider: a.healthManager,
 		LeaderChecker:  nil, // Standalone mode - always serve
 		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
+		ECSEnabled:     a.config.Overwatch.Geolocation.ECSEnabled, // Demo 4: EDNS Client Subnet for GeoIP
 		Logger:         a.logger,
 	})
 	a.dnsHandler = handler
