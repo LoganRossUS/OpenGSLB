@@ -168,8 +168,8 @@ func applyOverwatchDefaults(cfg *Config) {
 		cfg.DNS.DefaultTTL = DefaultTTL
 	}
 
-	// Gossip defaults
-	if cfg.Overwatch.Gossip.BindAddress == "" {
+	// Gossip defaults - only apply bind_address default if gossip is enabled (has encryption key)
+	if cfg.Overwatch.Gossip.EncryptionKey != "" && cfg.Overwatch.Gossip.BindAddress == "" {
 		cfg.Overwatch.Gossip.BindAddress = DefaultOverwatchGossipBindAddress
 	}
 	if cfg.Overwatch.Gossip.ProbeInterval == 0 {
