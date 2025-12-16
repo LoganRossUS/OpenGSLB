@@ -1174,17 +1174,19 @@ func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
 	if p.backendRegistry != nil {
 		// The registry stores backends by service:address:port, but we only have address:port
 		// So we need to search all backends for a matching address:port
-		for _, backend := range p.backendRegistry.GetAllBackends() {
+		allBackends := p.backendRegistry.GetAllBackends()
+
+		for _, backend := range allBackends {
 			if backend.Address == address && backend.Port == port {
 				// Backend is draining - exclude from DNS
 				if backend.Draining {
 					if p.logger != nil {
-						p.logger.Debug("backend draining, excluding from DNS",
+						p.logger.Info("DNS excluding draining backend",
 							"address", address,
 							"port", port,
 							"reason", backend.DrainingReason,
 							"cpu_percent", backend.CPUPercent,
-							"mem_percent", backend.MemPercent,
+							"effective_status", backend.EffectiveStatus,
 						)
 					}
 					return false
@@ -1192,7 +1194,7 @@ func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
 				// Check effective status - exclude unhealthy/stale/draining
 				if backend.EffectiveStatus != overwatch.StatusHealthy {
 					if p.logger != nil {
-						p.logger.Debug("backend not healthy, excluding from DNS",
+						p.logger.Info("DNS excluding unhealthy backend",
 							"address", address,
 							"port", port,
 							"effective_status", backend.EffectiveStatus,
