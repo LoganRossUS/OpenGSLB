@@ -1,0 +1,13 @@
+# Dockerfile.geoip-init
+#
+# GeoIP database initializer for Demo 4
+# Downloads MaxMind GeoLite2-Country database or DB-IP alternative.
+
+FROM alpine:3.19
+
+RUN apk add --no-cache curl ca-certificates gzip && rm -rf /var/cache/apk/*
+
+COPY scripts/download-geoip.sh /download-geoip.sh
+RUN chmod +x /download-geoip.sh
+
+CMD ["/bin/sh", "/download-geoip.sh"]

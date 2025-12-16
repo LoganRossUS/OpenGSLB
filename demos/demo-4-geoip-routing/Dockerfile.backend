@@ -1,0 +1,65 @@
+# Dockerfile.backend
+#
+# Backend server for Demo 4: GeoIP-Based Routing
+# Simple nginx server that responds with region/location info.
+
+FROM nginx:alpine
+
+RUN apk add --no-cache curl && rm -rf /var/cache/apk/*
+
+# nginx health endpoint config with dynamic response based on environment
+RUN cat > /etc/nginx/templates/default.conf.template << 'NGINX_EOF'
+server {
+    listen 80 default_server;
+
+    location /health {
+        default_type application/json;
+        return 200 '{"status":"healthy","backend":"${BACKEND_NAME}","region":"${BACKEND_REGION}","location":"${BACKEND_LOCATION}"}';
+    }
+
+    location / {
+        default_type text/html;
+        return 200 '<!DOCTYPE html>
+<html>
+<head>
+    <title>OpenGSLB Demo 4 - GeoIP Routing</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .container {
+            text-align: center;
+            padding: 40px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+        }
+        h1 { font-size: 2.5em; margin-bottom: 10px; }
+        .backend { font-size: 2em; font-weight: bold; color: #ffd700; }
+        .region { font-size: 1.5em; color: #90ee90; margin: 10px 0; }
+        .location { opacity: 0.8; }
+        .ip { font-family: monospace; background: rgba(0,0,0,0.2); padding: 5px 10px; border-radius: 5px; margin-top: 15px; display: inline-block; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>GeoIP Routing Demo</h1>
+        <p class="backend">${BACKEND_NAME}</p>
+        <p class="region">${BACKEND_REGION}</p>
+        <p class="location">${BACKEND_LOCATION}</p>
+        <p class="ip">Simulated IP: ${BACKEND_IP}</p>
+    </div>
+</body>
+</html>';
+    }
+}
+NGINX_EOF
+
+EXPOSE 80

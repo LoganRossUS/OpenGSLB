@@ -1,0 +1,300 @@
+# OpenGSLB Demo 4: Overwatch Configuration - GeoIP-Based Routing
+#
+# This overwatch node receives gossip from agents and serves DNS with
+# geolocation-based routing. Traffic is routed to the nearest datacenter
+# based on client IP geolocation.
+#
+# Resolution Order:
+# 1. Custom CIDR mappings (longest prefix match) - for internal/VPN networks
+# 2. GeoIP database lookup (country match > continent match)
+# 3. Default region fallback (us-east)
+
+mode: overwatch
+
+# DNS Server Configuration
+dns:
+  listen_address: "0.0.0.0:53"
+  zones:
+    - global.example.com
+  default_ttl: 30
+
+# Overwatch-specific configuration
+overwatch:
+  identity:
+    node_id: demo-overwatch-geoip
+    region: global
+
+  # Agent authentication token
+  agent_tokens:
+    demo-agent: "geoip-demo-token-2024"
+
+  # Gossip - receive health updates from agents
+  gossip:
+    bind_address: "0.0.0.0:7946"
+    encryption_key: "Z2VvaXAtZGVtby1lbmNyeXB0aW9uLWtleS0zMmI="
+
+  # External validation - health checks from Overwatch
+  validation:
+    enabled: true
+    check_interval: 3s
+    check_timeout: 5s
+
+  # Stale backend handling
+  stale:
+    threshold: 15s
+    remove_after: 30s
+
+  # DNSSEC disabled for simplicity in demo
+  dnssec:
+    enabled: false
+    security_acknowledgment: "I understand that disabling DNSSEC removes cryptographic verification of DNS responses"
+
+  data_dir: /var/lib/opengslb
+
+  # ==========================================================================
+  # GEOLOCATION CONFIGURATION
+  # ==========================================================================
+  geolocation:
+    # Path to MaxMind GeoLite2-Country database (or compatible DB-IP database)
+    database_path: "/var/lib/opengslb/geoip/GeoLite2-Country.mmdb"
+
+    # Fallback region when geo lookup fails or IP not found
+    default_region: us-east
+
+    # Enable EDNS Client Subnet parsing for accurate geo when clients
+    # query through public resolvers (Google DNS, Cloudflare, etc.)
+    ecs_enabled: true
+
+    # Custom IP-to-region mappings (evaluated BEFORE GeoIP lookup)
+    # Use these for:
+    # - Internal/private IP ranges (not in GeoIP database)
+    # - VPN networks
+    # - Office networks with known locations
+    # - Overriding GeoIP for specific IPs
+    custom_mappings:
+      # Corporate HQ - Kentucky office routes to Chicago DC
+      - cidr: "10.50.0.0/16"
+        region: us-chicago
+        comment: "Corporate HQ - Kentucky office"
+
+      # Texas Datacenter internal network
+      - cidr: "10.60.0.0/16"
+        region: us-dallas
+        comment: "Texas Datacenter"
+
+      # VPN Users - route to London
+      - cidr: "172.16.0.0/12"
+        region: eu-london
+        comment: "VPN Users - route to London"
+
+      # Home office users (RFC1918) - default to us-east
+      - cidr: "192.168.0.0/16"
+        region: us-east
+        comment: "Home office users"
+
+      # Internal demo network mappings (match simulated backend IPs)
+      - cidr: "10.10.0.0/16"
+        region: us-east
+        comment: "US-East internal network"
+
+      - cidr: "10.20.0.0/16"
+        region: eu-west
+        comment: "EU-West internal network"
+
+      - cidr: "10.30.0.0/16"
+        region: ap-southeast
+        comment: "AP-Southeast internal network"
+
+      - cidr: "10.40.0.0/16"
+        region: us-chicago
+        comment: "Chicago internal network"
+
+# ==========================================================================
+# REGIONS WITH GEOGRAPHIC MAPPING
+# ==========================================================================
+# For geolocation routing, regions can specify:
+# - countries: ISO 3166-1 alpha-2 codes (e.g., "US", "CA")
+# - continents: AF, AN, AS, EU, NA, OC, SA
+
+regions:
+  # US East - Americas (default region)
+  - name: us-east
+    countries:
+      - US
+      - CA
+      - MX
+    continents:
+      - NA
+      - SA
+    servers:
+      - address: 172.28.1.10
+        port: 80
+        weight: 100
+      - address: 172.28.1.11
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      path: /health
+      interval: 3s
+      timeout: 5s
+      failure_threshold: 3
+      success_threshold: 2
+
+  # EU West - Europe
+  - name: eu-west
+    countries:
+      - GB
+      - DE
+      - FR
+      - ES
+      - IT
+      - NL
+      - BE
+      - CH
+      - AT
+      - PL
+      - SE
+      - NO
+      - DK
+      - FI
+      - IE
+      - PT
+    continents:
+      - EU
+    servers:
+      - address: 172.28.2.10
+        port: 80
+        weight: 100
+      - address: 172.28.2.11
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      path: /health
+      interval: 3s
+      timeout: 5s
+      failure_threshold: 3
+      success_threshold: 2
+
+  # AP Southeast - Asia Pacific
+  - name: ap-southeast
+    countries:
+      - AU
+      - JP
+      - SG
+      - KR
+      - IN
+      - NZ
+      - TH
+      - MY
+      - PH
+      - ID
+      - VN
+      - TW
+      - HK
+    continents:
+      - AS
+      - OC
+    servers:
+      - address: 172.28.3.10
+        port: 80
+        weight: 100
+      - address: 172.28.3.11
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      path: /health
+      interval: 3s
+      timeout: 5s
+      failure_threshold: 3
+      success_threshold: 2
+
+  # US Chicago - Internal only (no GeoIP countries, uses custom CIDR mappings)
+  - name: us-chicago
+    # No countries/continents - only reachable via custom CIDR mappings
+    servers:
+      - address: 172.28.4.10
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      path: /health
+      interval: 3s
+      timeout: 5s
+      failure_threshold: 3
+      success_threshold: 2
+
+  # US Dallas - Internal only (no GeoIP countries, uses custom CIDR mappings)
+  - name: us-dallas
+    # No countries/continents - only reachable via custom CIDR mappings
+    servers:
+      - address: 172.28.5.10
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      path: /health
+      interval: 3s
+      timeout: 5s
+      failure_threshold: 3
+      success_threshold: 2
+
+  # EU London - Internal only (no GeoIP countries, uses custom CIDR mappings)
+  - name: eu-london
+    # No countries/continents - only reachable via custom CIDR mappings
+    servers:
+      - address: 172.28.6.10
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      path: /health
+      interval: 3s
+      timeout: 5s
+      failure_threshold: 3
+      success_threshold: 2
+
+# ==========================================================================
+# DOMAINS USING GEOLOCATION ROUTING
+# ==========================================================================
+domains:
+  # Main global service - route to nearest datacenter
+  - name: app.global.example.com
+    routing_algorithm: geolocation
+    regions:
+      - us-east
+      - eu-west
+      - ap-southeast
+      - us-chicago
+      - us-dallas
+      - eu-london
+    ttl: 30
+
+  # API service using geolocation
+  - name: api.global.example.com
+    routing_algorithm: geolocation
+    regions:
+      - us-east
+      - eu-west
+      - ap-southeast
+    ttl: 15
+
+# API Server
+api:
+  enabled: true
+  address: "0.0.0.0:8080"
+  allowed_networks:
+    - 0.0.0.0/0  # Allow all for demo - NOT for production!
+  trust_proxy_headers: false
+
+# Metrics Server
+metrics:
+  enabled: true
+  address: "0.0.0.0:9090"
+
+# Logging
+logging:
+  level: info
+  format: text
