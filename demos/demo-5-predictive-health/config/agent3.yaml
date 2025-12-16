@@ -1,0 +1,67 @@
+# OpenGSLB Demo 5: Agent Configuration (backend-3 - CHAOS TARGET)
+#
+# This agent monitors the local demo-app and reports health to Overwatch.
+# PREDICTIVE MONITORING IS ENABLED - the agent watches CPU, memory, and error rates
+# and sends "bleed" signals when thresholds are exceeded.
+#
+# NOTE: This is the chaos target. The demo will inject CPU spikes, memory pressure,
+# and errors into this backend to demonstrate predictive health detection.
+
+mode: agent
+
+# Agent configuration
+agent:
+  identity:
+    region: demo
+    service_token: "demo-token-12345"
+
+  # Backend service this agent monitors
+  backends:
+    - service: app.demo.local
+      address: 127.0.0.1
+      port: 8080
+      weight: 100
+      health_check:
+        type: http
+        path: /health
+        interval: 2s
+        timeout: 1s
+        failure_threshold: 2
+        success_threshold: 1
+
+  # PREDICTIVE HEALTH MONITORING
+  # This is the key differentiator - detect problems BEFORE they cause failures
+  predictive:
+    enabled: true
+    check_interval: 5s
+    cpu:
+      threshold: 80        # Bleed when CPU exceeds 80%
+      bleed_duration: 30s
+    memory:
+      threshold: 85        # Bleed when memory exceeds 85%
+      bleed_duration: 30s
+    error_rate:
+      threshold: 5         # Bleed when error rate exceeds 5 per minute
+      window: 60s
+      bleed_duration: 30s
+
+  # Gossip configuration to reach Overwatch
+  gossip:
+    encryption_key: "cGFzc3dvcmQxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ="
+    overwatch_nodes:
+      - "10.50.0.10:7946"
+
+  # Heartbeat settings
+  heartbeat:
+    interval: 5s
+    missed_threshold: 3
+
+# Metrics
+metrics:
+  enabled: true
+  address: "0.0.0.0:9100"
+
+# Logging
+logging:
+  level: debug
+  format: text

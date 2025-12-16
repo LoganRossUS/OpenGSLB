@@ -1,0 +1,37 @@
+# Dockerfile.backend
+#
+# Backend container for Demo 5: Predictive Health Detection
+# Runs demo-app + OpenGSLB agent side-by-side.
+# Agent monitors localhost and gossips health to Overwatch.
+
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /app
+
+# Copy demo-app source
+COPY demo-app/go.mod demo-app/go.sum* ./
+RUN go mod download || true
+
+COPY demo-app/*.go ./
+
+# Build demo-app
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o demo-app .
+
+# Runtime image
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates tzdata curl && rm -rf /var/cache/apk/*
+
+# Create directories
+RUN mkdir -p /opt/opengslb /etc/opengslb /var/lib/opengslb /app
+
+# Copy demo-app binary
+COPY --from=builder /app/demo-app /app/demo-app
+
+# Startup script runs both demo-app and agent
+COPY scripts/start-backend.sh /start.sh
+RUN chmod +x /start.sh
+
+EXPOSE 8080 7946/udp 7946/tcp 9100
+
+CMD ["/start.sh"]
