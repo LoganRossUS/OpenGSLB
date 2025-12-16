@@ -46,19 +46,32 @@ type RegionMapper interface {
 	GetServerRegion(address string, port int) string
 }
 
+// LatencyInfo contains latency information for a server.
+type LatencyInfo struct {
+	SmoothedLatency time.Duration
+	HasData         bool
+}
+
+// LatencyProvider provides latency data for servers.
+type LatencyProvider interface {
+	GetLatency(address string, port int) LatencyInfo
+}
+
 // Handlers contains all API endpoint handlers.
 type Handlers struct {
 	healthProvider   HealthProvider
 	readinessChecker ReadinessChecker
 	regionMapper     RegionMapper
+	latencyProvider  LatencyProvider
 }
 
 // NewHandlers creates a new Handlers instance.
-func NewHandlers(hp HealthProvider, rc ReadinessChecker, rm RegionMapper) *Handlers {
+func NewHandlers(hp HealthProvider, rc ReadinessChecker, rm RegionMapper, lp LatencyProvider) *Handlers {
 	return &Handlers{
 		healthProvider:   hp,
 		readinessChecker: rc,
 		regionMapper:     rm,
+		latencyProvider:  lp,
 	}
 }
 
@@ -98,6 +111,20 @@ func (h *Handlers) HealthServers(w http.ResponseWriter, r *http.Request) {
 		}
 		if snap.LastError != nil {
 			srv.LastError = snap.LastError.Error()
+		}
+
+		// Add latency information if available
+		// Primary source: health check latency from snapshot
+		if snap.LastLatency > 0 {
+			latencyMs := float64(snap.LastLatency.Microseconds()) / 1000.0
+			srv.LatencyMs = &latencyMs
+		} else if h.latencyProvider != nil {
+			// Fallback: registry latency data (for overwatch mode)
+			latencyInfo := h.latencyProvider.GetLatency(addr, port)
+			if latencyInfo.HasData {
+				latencyMs := float64(latencyInfo.SmoothedLatency.Microseconds()) / 1000.0
+				srv.LatencyMs = &latencyMs
+			}
 		}
 
 		servers = append(servers, srv)

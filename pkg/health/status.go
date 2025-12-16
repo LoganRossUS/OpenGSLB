@@ -63,6 +63,7 @@ type ServerHealth struct {
 	consecutiveFails  int
 	consecutivePasses int
 	lastError         error
+	lastLatency       time.Duration
 
 	// Thresholds for status transitions
 	failThreshold int
@@ -132,6 +133,7 @@ func (sh *ServerHealth) RecordResult(result Result) bool {
 	defer sh.mu.Unlock()
 
 	sh.lastCheck = result.Timestamp
+	sh.lastLatency = result.Latency
 	previousStatus := sh.status
 
 	if result.Healthy {
@@ -167,6 +169,7 @@ type Snapshot struct {
 	ConsecutiveFails  int
 	ConsecutivePasses int
 	LastError         error
+	LastLatency       time.Duration
 }
 
 // Snapshot returns a point-in-time copy of the health state.
@@ -181,5 +184,6 @@ func (sh *ServerHealth) Snapshot() Snapshot {
 		ConsecutiveFails:  sh.consecutiveFails,
 		ConsecutivePasses: sh.consecutivePasses,
 		LastError:         sh.lastError,
+		LastLatency:       sh.lastLatency,
 	}
 }

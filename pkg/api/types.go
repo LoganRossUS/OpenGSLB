@@ -33,6 +33,7 @@ type ServerHealthResponse struct {
 	ConsecutiveFailures  int        `json:"consecutive_failures"`
 	ConsecutiveSuccesses int        `json:"consecutive_successes"`
 	LastError            string     `json:"last_error,omitempty"`
+	LatencyMs            *float64   `json:"latency_ms,omitempty"`
 }
 
 // HealthResponse is the response for GET /api/v1/health/servers.
