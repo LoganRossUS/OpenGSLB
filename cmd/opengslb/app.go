@@ -481,10 +481,17 @@ func (a *Application) initializeAPIServer() error {
 		return nil
 	}
 
+	// Create latency provider if backend registry is available
+	var latencyProvider api.LatencyProvider
+	if a.backendRegistry != nil {
+		latencyProvider = api.NewRegistryLatencyProvider(a.backendRegistry)
+	}
+
 	handlers := api.NewHandlers(
 		a.healthManager,
 		&readinessChecker{app: a},
 		&regionMapper{cfg: a.config},
+		latencyProvider,
 	)
 
 	server, err := api.NewServer(api.ServerConfig{

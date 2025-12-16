@@ -1304,3 +1304,31 @@ func (p *StubRoutingProvider) GetDecisions(_ RoutingDecisionFilter) ([]RoutingDe
 func (p *StubRoutingProvider) GetFlows(_ FlowFilter) ([]TrafficFlow, error) {
 	return []TrafficFlow{}, nil
 }
+
+// =============================================================================
+// Latency Provider
+// =============================================================================
+
+// LatencyRegistryInterface defines the methods needed from the backend registry for latency data.
+type LatencyRegistryInterface interface {
+	GetLatency(address string, port int) overwatch.LatencyInfo
+}
+
+// RegistryLatencyProvider implements LatencyProvider using the backend registry.
+type RegistryLatencyProvider struct {
+	registry LatencyRegistryInterface
+}
+
+// NewRegistryLatencyProvider creates a new RegistryLatencyProvider.
+func NewRegistryLatencyProvider(registry LatencyRegistryInterface) *RegistryLatencyProvider {
+	return &RegistryLatencyProvider{registry: registry}
+}
+
+// GetLatency returns latency information for a server.
+func (p *RegistryLatencyProvider) GetLatency(address string, port int) LatencyInfo {
+	info := p.registry.GetLatency(address, port)
+	return LatencyInfo{
+		SmoothedLatency: info.SmoothedLatency,
+		HasData:         info.HasData,
+	}
+}
