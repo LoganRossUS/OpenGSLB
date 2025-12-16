@@ -16,9 +16,10 @@ agent:
     service_token: "demo-token-12345"
 
   # Backend service this agent monitors
+  # IMPORTANT: Use the container's external IP so it matches the DNS config in overwatch.yaml
   backends:
     - service: app.demo.local
-      address: 127.0.0.1
+      address: 10.50.0.23
       port: 8080
       weight: 100
       health_check:
