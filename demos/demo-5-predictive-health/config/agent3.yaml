@@ -32,11 +32,12 @@ agent:
 
   # PREDICTIVE HEALTH MONITORING
   # This is the key differentiator - detect problems BEFORE they cause failures
+  # NOTE: In Docker, /proc/stat shows HOST CPU. Lower threshold for demo to work.
   predictive:
     enabled: true
     check_interval: 5s
     cpu:
-      threshold: 80        # Bleed when CPU exceeds 80%
+      threshold: 40        # Bleed when CPU exceeds 40% (lowered for Docker demo)
       bleed_duration: 30s
     memory:
       threshold: 85        # Bleed when memory exceeds 85%
