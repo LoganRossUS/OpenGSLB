@@ -228,8 +228,9 @@ func validateModeFlags(cfg *config.Config) error {
 		}
 	case config.ModeOverwatch:
 		// Overwatch mode validation
-		if cfg.Overwatch.Gossip.EncryptionKey == "" {
-			return fmt.Errorf("overwatch mode requires gossip.encryption_key (generate with: openssl rand -base64 32)")
+		// Only require encryption key if gossip is enabled (bind_address is set)
+		if cfg.Overwatch.Gossip.BindAddress != "" && cfg.Overwatch.Gossip.EncryptionKey == "" {
+			return fmt.Errorf("overwatch mode requires gossip.encryption_key when gossip is enabled (generate with: openssl rand -base64 32)")
 		}
 	default:
 		return fmt.Errorf("invalid mode %q: must be 'agent' or 'overwatch'", cfg.Mode)

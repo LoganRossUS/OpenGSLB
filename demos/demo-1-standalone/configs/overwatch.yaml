@@ -21,7 +21,6 @@ overwatch:
   # No gossip/agent configuration needed for standalone mode
   gossip:
     bind_address: ""  # Disabled - no agents in this demo
-    encryption_key: "DEMO_KEY_NOT_FOR_PRODUCTION_1234"  # Required even when disabled
 
   # External validation (health checking)
   validation:
