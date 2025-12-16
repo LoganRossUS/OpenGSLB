@@ -58,12 +58,12 @@ cd "$SCRIPT_DIR"
 
 # Step 2: Stop any existing containers
 log_header "Step 2: Stopping existing containers"
-docker-compose down --remove-orphans 2>/dev/null || true
+docker compose down --remove-orphans 2>/dev/null || true
 log_success "Containers stopped"
 
 # Step 3: Start fresh containers
 log_header "Step 3: Starting fresh containers"
-docker-compose up -d --build
+docker compose up -d --build
 log_success "Containers started"
 
 # Step 4: Wait for startup
