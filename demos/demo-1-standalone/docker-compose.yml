@@ -32,7 +32,8 @@ services:
       - "9090:9090"        # Metrics
     volumes:
       - ./bin/opengslb:/usr/local/bin/opengslb:ro
-      - ./configs/overwatch.yaml:/etc/opengslb/config.yaml:ro
+      # Config is copied during build with secure permissions (chmod 600)
+      # To modify config, edit configs/overwatch.yaml and rebuild: docker-compose build overwatch
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
       interval: 5s
