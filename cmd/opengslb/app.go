@@ -456,7 +456,7 @@ func (a *Application) initializeDNSServer() error {
 	latencyProvider := &healthManagerLatencyProvider{manager: a.healthManager}
 	routerFactory := routing.NewFactory(routing.FactoryConfig{
 		LatencyProvider:   latencyProvider,
-		MinLatencySamples: 1, // Health manager tracks one sample at a time
+		MinLatencySamples: 1,             // Health manager tracks one sample at a time
 		GeoResolver:       a.geoResolver, // Demo 4: GeoIP-based routing
 		Logger:            a.logger,
 	})
@@ -1023,7 +1023,7 @@ func (a *Application) reloadDNSRegistry(newCfg *config.Config) error {
 	latencyProvider := &healthManagerLatencyProvider{manager: a.healthManager}
 	routerFactory := routing.NewFactory(routing.FactoryConfig{
 		LatencyProvider:   latencyProvider,
-		MinLatencySamples: 1, // Health manager tracks one sample at a time
+		MinLatencySamples: 1,             // Health manager tracks one sample at a time
 		GeoResolver:       a.geoResolver, // Demo 4: GeoIP-based routing
 		Logger:            a.logger,
 	})
