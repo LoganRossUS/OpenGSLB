@@ -28,8 +28,8 @@ Overwatch nodes are the core DNS-serving components of OpenGSLB:
 |-----------|------|----------|---------|
 | Inbound | 53 | UDP/TCP | DNS queries |
 | Inbound | 7946 | TCP/UDP | Gossip from agents |
-| Inbound | 9090 | TCP | API endpoint |
-| Inbound | 9091 | TCP | Metrics endpoint |
+| Inbound | 8080 | TCP | API endpoint (default: localhost only) |
+| Inbound | 9090 | TCP | Metrics endpoint |
 | Outbound | 9090 | TCP | DNSSEC key sync (to peers) |
 | Outbound | Backend ports | TCP | Health validation |
 
@@ -224,11 +224,11 @@ logging:
 
 metrics:
   enabled: true
-  address: ":9091"
+  address: ":9090"
 
 api:
   enabled: true
-  address: ":9090"
+  address: "127.0.0.1:8080"  # Localhost only by default for security
   allowed_networks:
     - 10.0.0.0/8
     - 192.168.0.0/16
@@ -371,10 +371,10 @@ DNSSEC is enabled by default. After starting Overwatch:
 
 ```bash
 # Using CLI
-opengslb-cli dnssec ds --zone gslb.example.com --api http://localhost:9090
+opengslb-cli dnssec ds --zone gslb.example.com --api http://localhost:8080
 
 # Using curl
-curl http://localhost:9090/api/v1/dnssec/ds | jq .
+curl http://localhost:8080/api/v1/dnssec/ds | jq .
 ```
 
 Output:
@@ -450,9 +450,9 @@ scrape_configs:
   - job_name: 'opengslb-overwatch'
     static_configs:
       - targets:
-        - 'overwatch-1.internal:9091'
-        - 'overwatch-2.internal:9091'
-        - 'overwatch-3.internal:9091'
+        - 'overwatch-1.internal:9090'
+        - 'overwatch-2.internal:9090'
+        - 'overwatch-3.internal:9090'
     scrape_interval: 15s
 ```
 
@@ -517,19 +517,19 @@ dig @localhost webapp.gslb.example.com +dnssec
 
 ```bash
 # Health check
-curl http://localhost:9090/api/v1/live
+curl http://localhost:8080/api/v1/live
 
 # Readiness check
-curl http://localhost:9090/api/v1/ready
+curl http://localhost:8080/api/v1/ready
 
 # List backends
-curl http://localhost:9090/api/v1/overwatch/backends | jq .
+curl http://localhost:8080/api/v1/overwatch/backends | jq .
 ```
 
 ### 4. Check Metrics Endpoint
 
 ```bash
-curl http://localhost:9091/metrics | grep opengslb
+curl http://localhost:9090/metrics | grep opengslb
 ```
 
 ### 5. Verify Gossip is Listening
@@ -548,7 +548,8 @@ Run these after deployment to verify functionality:
 
 OVERWATCH="localhost"
 DNS_PORT="53"
-API_PORT="9090"
+API_PORT="8080"
+METRICS_PORT="9090"
 DOMAIN="webapp.gslb.example.com"
 
 echo "=== OpenGSLB Overwatch Smoke Test ==="
@@ -587,7 +588,7 @@ fi
 
 # Test 5: Metrics
 echo -n "Metrics: "
-if curl -s http://${OVERWATCH}:9091/metrics | grep -q "opengslb_dns_queries_total"; then
+if curl -s http://${OVERWATCH}:${METRICS_PORT}/metrics | grep -q "opengslb_dns_queries_total"; then
     echo "PASS"
 else
     echo "FAIL"
@@ -634,7 +635,7 @@ echo "=== Smoke Test Complete ==="
 
 1. **Check binding:**
    ```bash
-   ss -tulnp | grep 9090
+   ss -tulnp | grep 8080
    ```
 
 2. **Check allowed networks:**
@@ -642,14 +643,14 @@ echo "=== Smoke Test Complete ==="
 
 3. **Check firewall:**
    ```bash
-   sudo iptables -L -n | grep 9090
+   sudo iptables -L -n | grep 8080
    ```
 
 ### DNSSEC Issues
 
 1. **Verify keys exist:**
    ```bash
-   curl http://localhost:9090/api/v1/dnssec/status | jq .
+   curl http://localhost:8080/api/v1/dnssec/status | jq .
    ```
 
 2. **Check DS record in parent:**

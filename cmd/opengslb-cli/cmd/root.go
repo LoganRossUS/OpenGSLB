@@ -41,7 +41,7 @@ It provides commands to:
   - Validate configuration files
   - View DNSSEC DS records
 
-Use --api to specify the Overwatch API endpoint (default: http://localhost:9090).`,
+Use --api to specify the Overwatch API endpoint (default: http://localhost:8080).`,
 	Version: version.Version,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		formatter = output.GetFormatter(jsonOutput)
@@ -54,7 +54,7 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&apiEndpoint, "api", getEnvOrDefault("OPENGSLB_API", "http://localhost:9090"), "Overwatch API endpoint")
+	rootCmd.PersistentFlags().StringVar(&apiEndpoint, "api", getEnvOrDefault("OPENGSLB_API", "http://localhost:8080"), "Overwatch API endpoint")
 	rootCmd.PersistentFlags().IntVar(&timeout, "timeout", 10, "API request timeout in seconds")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 

@@ -24,7 +24,7 @@ All commands support these global flags:
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--api` | Overwatch API endpoint | `http://localhost:9090` |
+| `--api` | Overwatch API endpoint | `http://localhost:8080` |
 | `--timeout` | API request timeout in seconds | `10` |
 | `--json` | Output in JSON format | `false` |
 | `-h, --help` | Show help | |
@@ -33,7 +33,7 @@ All commands support these global flags:
 You can also set the API endpoint via environment variable:
 
 ```bash
-export OPENGSLB_API=http://overwatch:9090
+export OPENGSLB_API=http://overwatch:8080
 ```
 
 ## Commands
@@ -418,7 +418,7 @@ echo "opengslb_backends_total $total"
 ### Cannot Connect to API
 
 ```
-Error: failed to connect to API: dial tcp 127.0.0.1:9090: connect: connection refused
+Error: failed to connect to API: dial tcp 127.0.0.1:8080: connect: connection refused
 ```
 
 Check that:
