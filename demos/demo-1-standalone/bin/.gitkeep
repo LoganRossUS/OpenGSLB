@@ -1,3 +1,9 @@
 # This directory should contain the opengslb binary
-# Build it from the repo root with: make build
-# Then copy it here: cp opengslb demos/demo-1-standalone/bin/
+#
+# Build a static binary for Alpine Linux:
+#   CGO_ENABLED=0 go build -o opengslb ./cmd/opengslb
+#
+# Then copy it here:
+#   cp opengslb demos/demo-1-standalone/bin/
+#
+# Note: CGO_ENABLED=0 is required because Alpine uses musl libc, not glibc.
