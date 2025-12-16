@@ -1,0 +1,49 @@
+# Dockerfile.client
+#
+# Client container with SSH access for interactive demo experience.
+# Users can SSH in and run dig/curl commands against the OpenGSLB environment.
+
+FROM alpine:3.19
+
+# Install SSH server and demo tools
+RUN apk add --no-cache \
+    openssh-server \
+    bind-tools \
+    curl \
+    jq \
+    && rm -rf /var/cache/apk/*
+
+# Configure SSH
+RUN mkdir -p /var/run/sshd \
+    && ssh-keygen -A \
+    && echo "PermitRootLogin yes" >> /etc/ssh/sshd_config \
+    && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config \
+    && echo "root:demo" | chpasswd
+
+# Create a welcome message
+RUN cat > /etc/motd << 'EOF'
+
+  ╔═══════════════════════════════════════════════════════════╗
+  ║           OpenGSLB Demo - Client Container                ║
+  ╠═══════════════════════════════════════════════════════════╣
+  ║                                                           ║
+  ║  This container uses Overwatch (10.10.0.10) as its DNS.   ║
+  ║                                                           ║
+  ║  Try these commands:                                      ║
+  ║    dig app.demo.local              # Query DNS            ║
+  ║    dig app.demo.local +short       # Just the IP          ║
+  ║    curl -s app.demo.local          # Hit a backend        ║
+  ║    curl -s app.demo.local/health   # Health endpoint      ║
+  ║                                                           ║
+  ║  Backends:                                                ║
+  ║    webapp1: 10.10.0.21                                    ║
+  ║    webapp2: 10.10.0.22                                    ║
+  ║    webapp3: 10.10.0.23                                    ║
+  ║                                                           ║
+  ╚═══════════════════════════════════════════════════════════╝
+
+EOF
+
+EXPOSE 22
+
+CMD ["/usr/sbin/sshd", "-D", "-e"]

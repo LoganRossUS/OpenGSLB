@@ -281,10 +281,19 @@ run_full_demo() {
 
     print_header "Demo Complete!"
     echo "The demo environment is still running. You can:"
-    echo "  - Query DNS:    docker exec client dig app.demo.local +short"
-    echo "  - Check API:    curl http://localhost:${API_PORT}/api/v1/health/servers"
-    echo "  - View metrics: curl http://localhost:${METRICS_PORT}/metrics"
-    echo "  - Stop demo:    $0 stop"
+    echo ""
+    echo "  SSH into the client container:"
+    echo "    ssh -p 2222 root@localhost   (password: demo)"
+    echo ""
+    echo "  Then run commands like:"
+    echo "    dig app.demo.local +short"
+    echo "    curl app.demo.local"
+    echo ""
+    echo "  Or from your host:"
+    echo "    curl http://localhost:${API_PORT}/api/v1/health/servers"
+    echo "    curl http://localhost:${METRICS_PORT}/metrics"
+    echo ""
+    echo "  Stop demo: $0 stop"
 }
 
 show_help() {

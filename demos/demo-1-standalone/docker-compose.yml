@@ -98,19 +98,21 @@ services:
     restart: unless-stopped
 
   # ==========================================================================
-  # Client Container - for testing DNS queries from inside the network
+  # Client Container - SSH in to test DNS queries from inside the network
   # ==========================================================================
   client:
-    image: alpine:3.19
+    build:
+      context: .
+      dockerfile: Dockerfile.client
     container_name: client
     hostname: client
     networks:
       demo:
         ipv4_address: 10.10.0.100
+    ports:
+      - "2222:22"          # SSH access
     dns:
       - 10.10.0.10
-    command: >
-      sh -c "apk add --no-cache bind-tools curl jq > /dev/null 2>&1 && sleep infinity"
     depends_on:
       - overwatch
       - webapp1
