@@ -57,8 +57,8 @@ services:
       gslb-demo:
         ipv4_address: 172.28.0.10
     ports:
-      - "5353:53/udp"   # DNS (mapped to 5353 to avoid conflicts)
-      - "5353:53/tcp"
+      - "15353:53/udp"  # DNS (mapped to 15353 to avoid conflicts with mDNS)
+      - "15353:53/tcp"
       - "8080:8080"     # API
       - "9090:9090"     # Metrics
     volumes:
