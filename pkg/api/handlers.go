@@ -114,7 +114,12 @@ func (h *Handlers) HealthServers(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Add latency information if available
-		if h.latencyProvider != nil {
+		// Primary source: health check latency from snapshot
+		if snap.LastLatency > 0 {
+			latencyMs := float64(snap.LastLatency.Microseconds()) / 1000.0
+			srv.LatencyMs = &latencyMs
+		} else if h.latencyProvider != nil {
+			// Fallback: registry latency data (for overwatch mode)
 			latencyInfo := h.latencyProvider.GetLatency(addr, port)
 			if latencyInfo.HasData {
 				latencyMs := float64(latencyInfo.SmoothedLatency.Microseconds()) / 1000.0
