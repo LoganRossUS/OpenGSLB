@@ -16,10 +16,14 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-DNS_PORT=5353
 API_PORT=8080
 METRICS_PORT=9090
 DOMAIN="app.demo.local"
+
+# Run dig inside the client container (avoids host port conflicts)
+docker_dig() {
+    docker exec client dig @10.10.0.10 "$@"
+}
 
 print_header() {
     echo -e "\n${BOLD}${BLUE}═══════════════════════════════════════════════════════════${NC}"
@@ -129,6 +133,7 @@ demo_dns_queries() {
 
     echo "We'll query ${DOMAIN} multiple times to see round-robin in action."
     echo "Each query should return a different backend IP."
+    echo "(Queries run inside the client container)"
     echo ""
 
     wait_for_enter
@@ -137,7 +142,7 @@ demo_dns_queries() {
     echo ""
 
     for i in {1..6}; do
-        result=$(dig @localhost -p ${DNS_PORT} ${DOMAIN} +short 2>/dev/null || echo "DNS query failed")
+        result=$(docker_dig ${DOMAIN} +short 2>/dev/null || echo "DNS query failed")
         echo "  Query $i: $result"
         sleep 0.5
     done
@@ -170,7 +175,7 @@ demo_failure_detection() {
     echo ""
     print_step "DNS queries now (webapp2 should be gone):"
     for i in {1..4}; do
-        result=$(dig @localhost -p ${DNS_PORT} ${DOMAIN} +short 2>/dev/null || echo "DNS query failed")
+        result=$(docker_dig ${DOMAIN} +short 2>/dev/null || echo "DNS query failed")
         echo "  Query $i: $result"
         sleep 0.5
     done
@@ -199,7 +204,7 @@ demo_recovery() {
     echo ""
     print_step "DNS queries now (all 3 backends should be back):"
     for i in {1..6}; do
-        result=$(dig @localhost -p ${DNS_PORT} ${DOMAIN} +short 2>/dev/null || echo "DNS query failed")
+        result=$(docker_dig ${DOMAIN} +short 2>/dev/null || echo "DNS query failed")
         echo "  Query $i: $result"
         sleep 0.5
     done
@@ -276,10 +281,19 @@ run_full_demo() {
 
     print_header "Demo Complete!"
     echo "The demo environment is still running. You can:"
-    echo "  - Query DNS:    dig @localhost -p ${DNS_PORT} ${DOMAIN}"
-    echo "  - Check API:    curl http://localhost:${API_PORT}/api/v1/health/servers"
-    echo "  - View metrics: curl http://localhost:${METRICS_PORT}/metrics"
-    echo "  - Stop demo:    $0 stop"
+    echo ""
+    echo "  SSH into the client container:"
+    echo "    ssh -p 2222 root@localhost   (password: demo)"
+    echo ""
+    echo "  Then run commands like:"
+    echo "    dig app.demo.local +short"
+    echo "    curl app.demo.local"
+    echo ""
+    echo "  Or from your host:"
+    echo "    curl http://localhost:${API_PORT}/api/v1/health/servers"
+    echo "    curl http://localhost:${METRICS_PORT}/metrics"
+    echo ""
+    echo "  Stop demo: $0 stop"
 }
 
 show_help() {

@@ -26,8 +26,8 @@ services:
       demo:
         ipv4_address: 10.10.0.10
     ports:
-      - "5353:53/udp"      # DNS (UDP)
-      - "5353:53/tcp"      # DNS (TCP)
+      # DNS not exposed to host - use client container for DNS queries
+      # This avoids port conflicts with mDNS/Avahi on the host
       - "8080:8080"        # API
       - "9090:9090"        # Metrics
     volumes:
@@ -98,18 +98,21 @@ services:
     restart: unless-stopped
 
   # ==========================================================================
-  # Client Container - for testing from inside the network
+  # Client Container - SSH in to test DNS queries from inside the network
   # ==========================================================================
   client:
-    image: alpine:3.19
+    build:
+      context: .
+      dockerfile: Dockerfile.client
     container_name: client
     hostname: client
     networks:
       demo:
         ipv4_address: 10.10.0.100
+    ports:
+      - "2222:22"          # SSH access
     dns:
       - 10.10.0.10
-    command: ["sleep", "infinity"]
     depends_on:
       - overwatch
       - webapp1
