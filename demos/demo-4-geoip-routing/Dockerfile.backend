@@ -7,7 +7,10 @@ FROM nginx:alpine
 
 RUN apk add --no-cache curl && rm -rf /var/cache/apk/*
 
-# nginx health endpoint config with dynamic response based on environment
+# Create templates directory and nginx config template
+RUN mkdir -p /etc/nginx/templates
+
+# Create the nginx config template with environment variable substitution
 RUN cat > /etc/nginx/templates/default.conf.template << 'NGINX_EOF'
 server {
     listen 80 default_server;
