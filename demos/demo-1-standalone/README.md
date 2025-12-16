@@ -243,7 +243,21 @@ The Overwatch is configured with:
 | Success Threshold | 1 | Successes before healthy |
 | DNS TTL | 5s | Low for demo visibility |
 
+> **Security Note:** OpenGSLB requires config files to have secure permissions (600 or 640). The demo handles this automatically by copying the config into the image during build with `chmod 600`. If you modify `configs/overwatch.yaml`, rebuild with `docker-compose build overwatch`.
+
 ## Troubleshooting
+
+### Config permission errors
+
+If you see "config file has insecure permissions" errors:
+
+```bash
+# Rebuild the overwatch container to apply config with correct permissions
+docker-compose build overwatch
+docker-compose up -d
+```
+
+The config is copied during image build with `chmod 600`. This avoids permission issues from volume mounts.
 
 ### DNS queries fail
 

@@ -18,15 +18,17 @@ RUN adduser -D -H -s /sbin/nologin opengslb \
     && mkdir -p /etc/opengslb /var/lib/opengslb \
     && chown -R opengslb:opengslb /var/lib/opengslb
 
+# Copy config with secure permissions (OpenGSLB requires 600 or 640)
+COPY configs/overwatch.yaml /etc/opengslb/config.yaml
+RUN chmod 600 /etc/opengslb/config.yaml
+
 # Expose ports
 # 53    - DNS (UDP/TCP)
 # 8080  - API
 # 9090  - Metrics
 EXPOSE 53/udp 53/tcp 8080 9090
 
-# The binary and config are mounted at runtime
-# - /usr/local/bin/opengslb (binary)
-# - /etc/opengslb/config.yaml (config)
+# The binary is mounted at runtime: /usr/local/bin/opengslb
 
 # Run as root to bind to port 53
 # In production, use capabilities or a non-privileged port
