@@ -11,8 +11,7 @@ RUN apk add --no-cache \
     jq \
     openssh \
     bash \
-    procps \
-    watch \
+    procps-ng \
     && rm -rf /var/cache/apk/* \
     && ssh-keygen -A \
     && echo 'root:demo' | chpasswd \
