@@ -1,0 +1,34 @@
+# Dockerfile.overwatch
+#
+# Alpine-based container for running OpenGSLB Overwatch.
+# The opengslb binary is mounted from the host at runtime.
+
+FROM alpine:3.19
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    ca-certificates \
+    wget \
+    curl \
+    bind-tools \
+    && rm -rf /var/cache/apk/*
+
+# Create opengslb user and directories
+RUN adduser -D -H -s /sbin/nologin opengslb \
+    && mkdir -p /etc/opengslb /var/lib/opengslb \
+    && chown -R opengslb:opengslb /var/lib/opengslb
+
+# Expose ports
+# 53    - DNS (UDP/TCP)
+# 8080  - API
+# 9090  - Metrics
+EXPOSE 53/udp 53/tcp 8080 9090
+
+# The binary and config are mounted at runtime
+# - /usr/local/bin/opengslb (binary)
+# - /etc/opengslb/config.yaml (config)
+
+# Run as root to bind to port 53
+# In production, use capabilities or a non-privileged port
+ENTRYPOINT ["/usr/local/bin/opengslb"]
+CMD ["--config=/etc/opengslb/config.yaml"]

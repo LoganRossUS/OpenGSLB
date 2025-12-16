@@ -1,0 +1,117 @@
+version: "3.8"
+
+# OpenGSLB Demo 1: Standalone Overwatch
+#
+# This is the simplest deployment: a single Overwatch node performing external
+# health checks on nginx backend servers. No agents, no clustering, no Overlord.
+
+networks:
+  demo:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.0.0/24
+
+services:
+  # ==========================================================================
+  # OpenGSLB Overwatch - DNS + Health Checking
+  # ==========================================================================
+  overwatch:
+    build:
+      context: .
+      dockerfile: Dockerfile.overwatch
+    container_name: overwatch
+    hostname: overwatch
+    networks:
+      demo:
+        ipv4_address: 10.10.0.10
+    ports:
+      - "5353:53/udp"      # DNS (UDP)
+      - "5353:53/tcp"      # DNS (TCP)
+      - "8080:8080"        # API
+      - "9090:9090"        # Metrics
+    volumes:
+      - ./bin/opengslb:/usr/local/bin/opengslb:ro
+      - ./configs/overwatch.yaml:/etc/opengslb/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Backend Servers - nginx with health endpoints
+  # ==========================================================================
+  webapp1:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: webapp1
+    hostname: webapp1
+    networks:
+      demo:
+        ipv4_address: 10.10.0.21
+    ports:
+      - "8081:80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+    restart: unless-stopped
+
+  webapp2:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: webapp2
+    hostname: webapp2
+    networks:
+      demo:
+        ipv4_address: 10.10.0.22
+    ports:
+      - "8082:80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+    restart: unless-stopped
+
+  webapp3:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: webapp3
+    hostname: webapp3
+    networks:
+      demo:
+        ipv4_address: 10.10.0.23
+    ports:
+      - "8083:80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Client Container - for testing from inside the network
+  # ==========================================================================
+  client:
+    image: alpine:3.19
+    container_name: client
+    hostname: client
+    networks:
+      demo:
+        ipv4_address: 10.10.0.100
+    dns:
+      - 10.10.0.10
+    command: ["sleep", "infinity"]
+    depends_on:
+      - overwatch
+      - webapp1
+      - webapp2
+      - webapp3

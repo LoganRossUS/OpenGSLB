@@ -1,0 +1,3 @@
+# This directory should contain the opengslb binary
+# Build it from the repo root with: make build
+# Then copy it here: cp opengslb demos/demo-1-standalone/bin/
