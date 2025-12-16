@@ -31,7 +31,7 @@ overwatch:
   # Gossip - receive health updates from agents
   gossip:
     bind_address: "0.0.0.0:7946"
-    encryption_key: "Z2VvaXAtZGVtby1lbmNyeXB0aW9uLWtleS0zMmI="
+    encryption_key: "Z2VvaXAtZGVtby1lbmNyeXB0aW9uLWtleS0zMmJ5dGU="
 
   # External validation - health checks from Overwatch
   validation:

@@ -27,7 +27,7 @@ agent:
 
   # Gossip configuration to reach Overwatch
   gossip:
-    encryption_key: "Z2VvaXAtZGVtby1lbmNyeXB0aW9uLWtleS0zMmI="
+    encryption_key: "Z2VvaXAtZGVtby1lbmNyeXB0aW9uLWtleS0zMmJ5dGU="
     overwatch_nodes:
       - "172.28.0.10:7946"
 
