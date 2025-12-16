@@ -617,6 +617,12 @@ func (a *Application) initializeAPIServer() error {
 		a.logger.Debug("override API handlers registered")
 	}
 
+	// Geo handlers - provides geolocation test and custom mapping management
+	if a.geoResolver != nil {
+		server.SetGeoHandlers(api.NewGeoHandlers(a.geoResolver))
+		a.logger.Debug("geo API handlers registered")
+	}
+
 	a.apiServer = server
 
 	a.logger.Info("API server initialized",
