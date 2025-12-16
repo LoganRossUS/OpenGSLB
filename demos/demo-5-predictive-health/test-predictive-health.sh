@@ -178,7 +178,14 @@ echo ""
 echo "=== Backend CPU/Memory from agent logs ==="
 for backend in backend-1 backend-2 backend-3; do
     echo "$backend:"
-    docker logs $backend 2>&1 | grep -E "(cpu|CPU|memory|Memory|bleed|Bleeding)" | tail -3 || echo "  (no metrics logs)"
+    docker logs $backend 2>&1 | grep -iE "(cpu|memory|bleed|predictive|threshold|metrics)" | tail -5 || echo "  (no metrics logs)"
+done
+
+echo ""
+echo "=== Agent errors or warnings ==="
+for backend in backend-1 backend-2 backend-3; do
+    echo "$backend:"
+    docker logs $backend 2>&1 | grep -E "(WARN|ERROR|failed)" | tail -3 || echo "  (none)"
 done
 
 # Determine if test passed
