@@ -12,17 +12,23 @@ RUN apk add --no-cache nginx ca-certificates tzdata curl && rm -rf /var/cache/ap
 RUN mkdir -p /opt/opengslb /etc/opengslb /var/lib/opengslb /run/nginx
 
 # nginx health endpoint config
+# Health check respects /tmp/drain file - returns 503 when draining
 RUN cat > /etc/nginx/http.d/default.conf << 'EOF'
 server {
     listen 80 default_server;
 
     location /health {
         default_type application/json;
+        # Check for drain file - if exists, return unhealthy
+        if (-f /tmp/drain) {
+            return 503 '{"status":"draining","server":"webapp","message":"proactive drain active"}';
+        }
         return 200 '{"status":"healthy","server":"webapp"}';
     }
 
     location / {
         default_type text/html;
+        # Main page always works - demonstrates traffic still being served during drain
         return 200 '<!DOCTYPE html>
 <html>
 <head>

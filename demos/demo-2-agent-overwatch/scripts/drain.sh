@@ -5,42 +5,36 @@
 # Example: ./drain.sh webapp2 on
 #
 # This creates/removes /tmp/drain on the specified container.
-# When drain is ON, the agent stops reporting and the backend
-# is removed from DNS - even though nginx is still running!
+# When drain is ON:
+#   - nginx's /health endpoint returns 503 (unhealthy)
+#   - Overwatch's external validation sees the failure
+#   - Backend is removed from DNS rotation
+#   - BUT nginx still serves traffic on / (demonstrates graceful drain!)
 
 CONTAINER=${1:?Usage: ./drain.sh <container> [on|off]}
 ACTION=${2:-on}
 
-# Check if we're running inside Docker or from host
-if [ -f /.dockerenv ]; then
-    # Running inside container - use docker command
-    DOCKER_CMD="docker"
-else
-    # Running from host
-    DOCKER_CMD="docker"
-fi
-
 if [ "$ACTION" = "on" ]; then
-    # Create drain file - agent will stop, backend removed from DNS
-    $DOCKER_CMD exec $CONTAINER touch /tmp/drain
+    # Create drain file - nginx /health will return 503
+    docker exec $CONTAINER touch /tmp/drain
     echo ""
     echo "  DRAIN ENABLED on $CONTAINER"
     echo "  ================================"
-    echo "  - Agent will stop reporting to Overwatch"
-    echo "  - Backend will be removed from DNS rotation"
-    echo "  - nginx is STILL RUNNING and serving requests!"
+    echo "  - /health now returns 503 (unhealthy)"
+    echo "  - Overwatch will detect failure via external validation"
+    echo "  - Backend will be removed from DNS (~5-10s)"
+    echo "  - Main page (/) STILL WORKS - try: curl http://$CONTAINER/"
     echo ""
-    echo "  This demonstrates PROACTIVE health signaling."
-    echo "  The backend removed itself BEFORE any requests failed."
+    echo "  This demonstrates PROACTIVE health signaling!"
     echo ""
 else
-    # Remove drain file - agent will restart, backend returns to rotation
-    $DOCKER_CMD exec $CONTAINER rm -f /tmp/drain
+    # Remove drain file - nginx /health returns 200 again
+    docker exec $CONTAINER rm -f /tmp/drain
     echo ""
     echo "  DRAIN DISABLED on $CONTAINER"
     echo "  ================================"
-    echo "  - Agent will restart and report healthy"
-    echo "  - Backend will return to DNS rotation"
-    echo "  - Wait ~5-10 seconds for gossip propagation"
+    echo "  - /health now returns 200 (healthy)"
+    echo "  - Overwatch will see recovery via external validation"
+    echo "  - Backend will return to DNS rotation (~5-10s)"
     echo ""
 fi
