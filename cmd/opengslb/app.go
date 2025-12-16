@@ -362,10 +362,13 @@ func (a *Application) initializeBackendRegistry() error {
 	a.backendRegistry = overwatch.NewRegistry(registryCfg, a.overwatchStore)
 
 	// Set up status change callback for metrics
+	// NOTE: This callback runs while holding the registry's write lock.
+	// Do NOT call methods that acquire locks on the registry (e.g., GetAllBackends)
+	// or you'll get a deadlock. UpdateRegistryMetrics is called asynchronously instead.
 	a.backendRegistry.OnStatusChange(func(backend *overwatch.Backend, oldStatus, newStatus overwatch.BackendStatus) {
 		overwatch.RecordBackendStatusChange(backend.Service, oldStatus, newStatus)
-		// Update registry metrics
-		overwatch.UpdateRegistryMetrics(a.backendRegistry)
+		// Update registry metrics asynchronously to avoid deadlock
+		go overwatch.UpdateRegistryMetrics(a.backendRegistry)
 	})
 
 	a.logger.Info("backend registry initialized",
