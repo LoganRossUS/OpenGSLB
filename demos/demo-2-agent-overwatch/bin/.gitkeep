@@ -1,0 +1,3 @@
+# Binary directory for opengslb
+# Build the binary before running the demo:
+#   CGO_ENABLED=0 GOOS=linux go build -o demos/demo-2-agent-overwatch/bin/opengslb ./cmd/opengslb
