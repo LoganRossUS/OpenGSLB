@@ -112,6 +112,9 @@ $RECYCLE.BIN/
 /build/
 /release/
 
+# Demo binaries (keep .gitkeep files)
+demos/*/bin/opengslb
+
 # Compiled object files
 *.o
 *.a

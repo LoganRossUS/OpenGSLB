@@ -1,7 +1,7 @@
-# OpenGSLB Demo 2: Overwatch Configuration
+# OpenGSLB Demo 3: Overwatch Configuration - Latency-Based Routing
 #
 # This overwatch node receives gossip from agents and serves DNS.
-# Static backend configuration required for DNS; agents report health via gossip.
+# Key feature: Uses latency-based routing to select the fastest backend.
 
 mode: overwatch
 
@@ -21,18 +21,18 @@ overwatch:
   # Gossip - receive health updates from agents
   gossip:
     bind_address: "0.0.0.0:7946"
-    encryption_key: "cGFzc3dvcmQxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ="
+    encryption_key: "bGF0ZW5jeS1kZW1vLWtleS0yMDI0LXNlY3VyZS1rZXk="
 
-  # External validation as safety net
+  # External validation - measures latency for routing decisions
   validation:
     enabled: true
-    check_interval: 5s
-    check_timeout: 2s
+    check_interval: 2s      # Frequent checks to see latency changes quickly
+    check_timeout: 5s
 
   # Stale backend handling
   stale:
     threshold: 15s
-    remove_after: 60s
+    remove_after: 30s
 
   # DNSSEC disabled for simplicity in demo
   dnssec:
@@ -42,34 +42,34 @@ overwatch:
   data_dir: /var/lib/opengslb
 
 # Region with backend servers (static configuration for DNS)
-# Health status comes from agents via gossip AND external validation
+# Health status and latency come from external validation health checks
 regions:
   - name: demo
     servers:
-      - address: 10.20.0.21
+      - address: 10.30.0.21
         port: 80
         weight: 100
-      - address: 10.20.0.22
+      - address: 10.30.0.22
         port: 80
         weight: 100
-      - address: 10.20.0.23
+      - address: 10.30.0.23
         port: 80
         weight: 100
     health_check:
       type: http
       path: /health
-      interval: 5s
-      timeout: 2s
-      failure_threshold: 2
-      success_threshold: 1
+      interval: 2s          # Frequent checks for latency measurement
+      timeout: 5s
+      failure_threshold: 3
+      success_threshold: 2
 
 # Domain routing configuration
 domains:
   - name: app.demo.local
-    routing_algorithm: round-robin
+    routing_algorithm: latency    # KEY: Latency-based routing
     regions:
       - demo
-    ttl: 5  # Low TTL so DNS changes are visible quickly
+    ttl: 5  # Short TTL to see changes quickly
 
 # API Server
 api:
@@ -86,5 +86,5 @@ metrics:
 
 # Logging
 logging:
-  level: debug
+  level: info
   format: text

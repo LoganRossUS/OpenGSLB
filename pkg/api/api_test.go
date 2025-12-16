@@ -213,7 +213,7 @@ func TestHealthServers_Success(t *testing.T) {
 	}
 
 	rc := &mockReadinessChecker{dnsReady: true, healthReady: true}
-	handlers := NewHandlers(hp, rc, nil)
+	handlers := NewHandlers(hp, rc, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/health/servers", nil)
 	rr := httptest.NewRecorder()
@@ -250,7 +250,7 @@ func TestHealthServers_Success(t *testing.T) {
 func TestHealthServers_MethodNotAllowed(t *testing.T) {
 	hp := &mockHealthProvider{}
 	rc := &mockReadinessChecker{}
-	handlers := NewHandlers(hp, rc, nil)
+	handlers := NewHandlers(hp, rc, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/health/servers", nil)
 	rr := httptest.NewRecorder()
@@ -264,7 +264,7 @@ func TestHealthServers_MethodNotAllowed(t *testing.T) {
 func TestReady_AllReady(t *testing.T) {
 	hp := &mockHealthProvider{}
 	rc := &mockReadinessChecker{dnsReady: true, healthReady: true}
-	handlers := NewHandlers(hp, rc, nil)
+	handlers := NewHandlers(hp, rc, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/ready", nil)
 	rr := httptest.NewRecorder()
@@ -293,7 +293,7 @@ func TestReady_AllReady(t *testing.T) {
 func TestReady_NotReady(t *testing.T) {
 	hp := &mockHealthProvider{}
 	rc := &mockReadinessChecker{dnsReady: true, healthReady: false}
-	handlers := NewHandlers(hp, rc, nil)
+	handlers := NewHandlers(hp, rc, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/ready", nil)
 	rr := httptest.NewRecorder()
@@ -319,7 +319,7 @@ func TestReady_NotReady(t *testing.T) {
 func TestLive_Success(t *testing.T) {
 	hp := &mockHealthProvider{}
 	rc := &mockReadinessChecker{}
-	handlers := NewHandlers(hp, rc, nil)
+	handlers := NewHandlers(hp, rc, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/live", nil)
 	rr := httptest.NewRecorder()

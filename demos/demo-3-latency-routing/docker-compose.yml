@@ -1,27 +1,27 @@
 version: '3.8'
 
-# OpenGSLB Demo 2: Agent-Overwatch Architecture
+# OpenGSLB Demo 3: Latency-Based Routing
 #
-# This demo shows how agents run alongside applications and proactively
-# report health issues via gossip to the Overwatch node.
+# This demo shows how OpenGSLB automatically routes traffic to the fastest
+# backend based on measured health check latency.
 #
-# Network: 10.20.0.0/24
-#   - overwatch: 10.20.0.10 (DNS + gossip receiver)
-#   - webapp1:   10.20.0.21 (nginx + agent)
-#   - webapp2:   10.20.0.22 (nginx + agent)
-#   - webapp3:   10.20.0.23 (nginx + agent)
-#   - client:    10.20.0.100 (SSH access for demo)
+# Network: 10.30.0.0/24
+#   - overwatch: 10.30.0.10 (DNS + gossip receiver)
+#   - webapp1:   10.30.0.21 (nginx + agent) - FAST
+#   - webapp2:   10.30.0.22 (nginx + agent) - MEDIUM
+#   - webapp3:   10.30.0.23 (nginx + agent) - SLOW
+#   - client:    10.30.0.100 (SSH access for demo)
 
 networks:
   demo:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.20.0.0/24
+        - subnet: 10.30.0.0/24
 
 services:
   # ==========================================================================
-  # OpenGSLB Overwatch - DNS + Gossip Receiver
+  # OpenGSLB Overwatch - DNS + Gossip Receiver + Latency Measurement
   # ==========================================================================
   overwatch:
     build:
@@ -31,7 +31,7 @@ services:
     hostname: overwatch
     networks:
       demo:
-        ipv4_address: 10.20.0.10
+        ipv4_address: 10.30.0.10
     ports:
       # DNS not exposed to host - use client container for DNS queries
       - "8080:8080"   # API (for host access)
@@ -46,7 +46,7 @@ services:
     restart: unless-stopped
 
   # ==========================================================================
-  # Webapp Servers - nginx + OpenGSLB Agent
+  # Webapp Servers - nginx + OpenGSLB Agent + tc support for latency simulation
   # ==========================================================================
   webapp1:
     build:
@@ -56,7 +56,9 @@ services:
     hostname: webapp1
     networks:
       demo:
-        ipv4_address: 10.20.0.21
+        ipv4_address: 10.30.0.21
+    cap_add:
+      - NET_ADMIN    # Required for tc (traffic control)
     volumes:
       - ./bin/opengslb:/opt/opengslb/opengslb:ro
       - ./configs/agent1.yaml:/tmp/agent-config.yaml:ro
@@ -72,7 +74,9 @@ services:
     hostname: webapp2
     networks:
       demo:
-        ipv4_address: 10.20.0.22
+        ipv4_address: 10.30.0.22
+    cap_add:
+      - NET_ADMIN    # Required for tc (traffic control)
     volumes:
       - ./bin/opengslb:/opt/opengslb/opengslb:ro
       - ./configs/agent2.yaml:/tmp/agent-config.yaml:ro
@@ -88,7 +92,9 @@ services:
     hostname: webapp3
     networks:
       demo:
-        ipv4_address: 10.20.0.23
+        ipv4_address: 10.30.0.23
+    cap_add:
+      - NET_ADMIN    # Required for tc (traffic control)
     volumes:
       - ./bin/opengslb:/opt/opengslb/opengslb:ro
       - ./configs/agent3.yaml:/tmp/agent-config.yaml:ro
@@ -107,7 +113,7 @@ services:
     hostname: client
     networks:
       demo:
-        ipv4_address: 10.20.0.100
+        ipv4_address: 10.30.0.100
     ports:
       - "2222:22"     # SSH access for demo
     depends_on:

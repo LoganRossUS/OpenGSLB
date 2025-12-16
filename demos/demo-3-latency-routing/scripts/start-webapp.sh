@@ -14,5 +14,4 @@ nginx
 
 echo "Starting OpenGSLB agent..."
 # Agent runs continuously, reporting health to Overwatch
-# Drain mode is handled by nginx: /health returns 503 when /tmp/drain exists
 exec /opt/opengslb/opengslb --config /etc/opengslb/config.yaml

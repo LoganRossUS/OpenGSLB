@@ -413,7 +413,15 @@ func (a *Application) initializeGossipHandler() error {
 
 // initializeDNSServer creates and configures the DNS server.
 func (a *Application) initializeDNSServer() error {
-	registry, err := dns.BuildRegistry(a.config, routing.NewRouter)
+	// Create a routing factory with access to the health manager for latency-based routing
+	latencyProvider := &healthManagerLatencyProvider{manager: a.healthManager}
+	routerFactory := routing.NewFactory(routing.FactoryConfig{
+		LatencyProvider:   latencyProvider,
+		MinLatencySamples: 1, // Health manager tracks one sample at a time
+		Logger:            a.logger,
+	})
+
+	registry, err := dns.BuildRegistry(a.config, routerFactory.NewRouter)
 	if err != nil {
 		return fmt.Errorf("failed to build DNS registry: %w", err)
 	}
@@ -481,10 +489,17 @@ func (a *Application) initializeAPIServer() error {
 		return nil
 	}
 
+	// Create latency provider if backend registry is available
+	var latencyProvider api.LatencyProvider
+	if a.backendRegistry != nil {
+		latencyProvider = api.NewRegistryLatencyProvider(a.backendRegistry)
+	}
+
 	handlers := api.NewHandlers(
 		a.healthManager,
 		&readinessChecker{app: a},
 		&regionMapper{cfg: a.config},
+		latencyProvider,
 	)
 
 	server, err := api.NewServer(api.ServerConfig{
@@ -963,7 +978,15 @@ func (a *Application) reloadOverwatchMode(newCfg *config.Config) error {
 
 // reloadDNSRegistry updates the DNS registry with new domain configuration.
 func (a *Application) reloadDNSRegistry(newCfg *config.Config) error {
-	newRegistry, err := dns.BuildRegistry(newCfg, routing.NewRouter)
+	// Create a routing factory with access to the health manager for latency-based routing
+	latencyProvider := &healthManagerLatencyProvider{manager: a.healthManager}
+	routerFactory := routing.NewFactory(routing.FactoryConfig{
+		LatencyProvider:   latencyProvider,
+		MinLatencySamples: 1, // Health manager tracks one sample at a time
+		Logger:            a.logger,
+	})
+
+	newRegistry, err := dns.BuildRegistry(newCfg, routerFactory.NewRouter)
 	if err != nil {
 		return fmt.Errorf("failed to build new registry: %w", err)
 	}
@@ -1071,4 +1094,26 @@ func (r *regionMapper) GetServerRegion(address string, port int) string {
 		}
 	}
 	return ""
+}
+
+// healthManagerLatencyProvider implements routing.LatencyProvider using the health.Manager.
+type healthManagerLatencyProvider struct {
+	manager *health.Manager
+}
+
+// GetLatency returns latency information for a server from the health manager.
+func (p *healthManagerLatencyProvider) GetLatency(address string, port int) routing.LatencyInfo {
+	snapshot, found := p.manager.GetStatus(address, port)
+	if !found {
+		return routing.LatencyInfo{HasData: false}
+	}
+	if snapshot.LastLatency <= 0 {
+		return routing.LatencyInfo{HasData: false}
+	}
+	return routing.LatencyInfo{
+		SmoothedLatency: snapshot.LastLatency,
+		LastLatency:     snapshot.LastLatency,
+		Samples:         1, // Health manager tracks one sample at a time
+		HasData:         true,
+	}
 }
