@@ -316,13 +316,22 @@ func (a *Agent) sendHealthUpdate() {
 	// Collect predictive state from monitor
 	metrics, err := a.monitor.Collect()
 	var predictiveState *PredictiveState
-	if err == nil {
+	if err != nil {
+		a.logger.Warn("failed to collect metrics for predictive health", "error", err)
+	} else {
 		predictiveState = &PredictiveState{
 			CPUPercent: metrics.CPUPercent,
 			MemPercent: metrics.MemoryPercent,
 			ErrorRate:  metrics.ErrorRate,
 			LastCheck:  metrics.Timestamp,
 		}
+
+		// Log metrics periodically for debugging
+		a.logger.Debug("predictive health metrics",
+			"cpu_percent", metrics.CPUPercent,
+			"mem_percent", metrics.MemoryPercent,
+			"error_rate", metrics.ErrorRate,
+		)
 
 		// Check thresholds
 		cfg := a.config.Agent.Predictive
@@ -331,14 +340,26 @@ func (a *Agent) sendHealthUpdate() {
 				predictiveState.Bleeding = true
 				predictiveState.BleedReason = "cpu_threshold_exceeded"
 				predictiveState.BleedingAt = time.Now()
+				a.logger.Warn("CPU threshold exceeded, sending bleed signal",
+					"cpu_percent", metrics.CPUPercent,
+					"threshold", cfg.CPU.Threshold,
+				)
 			} else if metrics.MemoryPercent >= cfg.Memory.Threshold {
 				predictiveState.Bleeding = true
 				predictiveState.BleedReason = "memory_threshold_exceeded"
 				predictiveState.BleedingAt = time.Now()
+				a.logger.Warn("Memory threshold exceeded, sending bleed signal",
+					"mem_percent", metrics.MemoryPercent,
+					"threshold", cfg.Memory.Threshold,
+				)
 			} else if metrics.ErrorRate >= cfg.ErrorRate.Threshold {
 				predictiveState.Bleeding = true
 				predictiveState.BleedReason = "error_rate_threshold_exceeded"
 				predictiveState.BleedingAt = time.Now()
+				a.logger.Warn("Error rate threshold exceeded, sending bleed signal",
+					"error_rate", metrics.ErrorRate,
+					"threshold", cfg.ErrorRate.Threshold,
+				)
 			}
 		}
 	}

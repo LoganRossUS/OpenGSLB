@@ -362,10 +362,13 @@ func (a *Application) initializeBackendRegistry() error {
 	a.backendRegistry = overwatch.NewRegistry(registryCfg, a.overwatchStore)
 
 	// Set up status change callback for metrics
+	// NOTE: This callback runs while holding the registry's write lock.
+	// Do NOT call methods that acquire locks on the registry (e.g., GetAllBackends)
+	// or you'll get a deadlock. UpdateRegistryMetrics is called asynchronously instead.
 	a.backendRegistry.OnStatusChange(func(backend *overwatch.Backend, oldStatus, newStatus overwatch.BackendStatus) {
 		overwatch.RecordBackendStatusChange(backend.Service, oldStatus, newStatus)
-		// Update registry metrics
-		overwatch.UpdateRegistryMetrics(a.backendRegistry)
+		// Update registry metrics asynchronously to avoid deadlock
+		go overwatch.UpdateRegistryMetrics(a.backendRegistry)
 	})
 
 	a.logger.Info("backend registry initialized",
@@ -479,9 +482,16 @@ func (a *Application) initializeDNSServer() error {
 	}
 
 	// ADR-015: No leader checker needed - all Overwatch nodes serve DNS independently
+	// Use combined health provider that checks both HTTP health AND draining status from gossip
+	healthProvider := &combinedHealthProvider{
+		healthManager:   a.healthManager,
+		backendRegistry: a.backendRegistry,
+		logger:          a.logger,
+	}
+
 	handler := dns.NewHandler(dns.HandlerConfig{
 		Registry:       registry,
-		HealthProvider: a.healthManager,
+		HealthProvider: healthProvider,
 		LeaderChecker:  nil, // Standalone mode - always serve
 		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
 		ECSEnabled:     a.config.Overwatch.Geolocation.ECSEnabled, // Demo 4: EDNS Client Subnet for GeoIP
@@ -1142,6 +1152,65 @@ func (r *regionMapper) GetServerRegion(address string, port int) string {
 		}
 	}
 	return ""
+}
+
+// combinedHealthProvider implements dns.HealthProvider by checking both
+// the health manager (HTTP checks) and the backend registry (draining status).
+// A backend is only considered healthy if:
+// 1. The health manager says it's healthy (HTTP check passes), AND
+// 2. The backend registry doesn't show it as draining (from predictive health gossip)
+type combinedHealthProvider struct {
+	healthManager   *health.Manager
+	backendRegistry *overwatch.Registry
+	logger          *slog.Logger
+}
+
+// IsHealthy returns true only if both the health manager reports healthy
+// AND the backend registry doesn't show the backend as draining.
+func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
+	// First check the health manager (HTTP check)
+	if p.healthManager != nil && !p.healthManager.IsHealthy(address, port) {
+		return false
+	}
+
+	// Then check the backend registry for draining status
+	if p.backendRegistry != nil {
+		// The registry stores backends by service:address:port, but we only have address:port
+		// So we need to search all backends for a matching address:port
+		allBackends := p.backendRegistry.GetAllBackends()
+
+		for _, backend := range allBackends {
+			if backend.Address == address && backend.Port == port {
+				// Backend is draining - exclude from DNS
+				if backend.Draining {
+					if p.logger != nil {
+						p.logger.Info("DNS excluding draining backend",
+							"address", address,
+							"port", port,
+							"reason", backend.DrainingReason,
+							"cpu_percent", backend.CPUPercent,
+							"effective_status", backend.EffectiveStatus,
+						)
+					}
+					return false
+				}
+				// Check effective status - exclude unhealthy/stale/draining
+				if backend.EffectiveStatus != overwatch.StatusHealthy {
+					if p.logger != nil {
+						p.logger.Info("DNS excluding unhealthy backend",
+							"address", address,
+							"port", port,
+							"effective_status", backend.EffectiveStatus,
+						)
+					}
+					return false
+				}
+				break
+			}
+		}
+	}
+
+	return true
 }
 
 // healthManagerLatencyProvider implements routing.LatencyProvider using the health.Manager.
