@@ -1,0 +1,49 @@
+# Dockerfile.client
+#
+# Client container for Demo 3: Latency-Based Routing
+# Provides SSH access for interactive demo experience.
+
+FROM alpine:3.19
+
+RUN apk add --no-cache \
+    bind-tools \
+    curl \
+    jq \
+    openssh \
+    bash \
+    procps \
+    && rm -rf /var/cache/apk/* \
+    && ssh-keygen -A \
+    && echo 'root:demo' | chpasswd \
+    && sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+# Nice prompt
+RUN echo 'export PS1="\[\033[01;32m\][client]\[\033[00m\]:\w# "' >> /root/.profile
+
+# Copy demo script
+COPY scripts/demo.sh /root/demo.sh
+RUN chmod +x /root/demo.sh
+
+# Welcome message
+RUN cat > /etc/motd << 'EOF'
+
+  =========================================================================
+  |         OpenGSLB Demo 3: Latency-Based Routing                        |
+  =========================================================================
+  |  Run ./demo.sh for a guided walkthrough                               |
+  |                                                                       |
+  |  Quick commands:                                                      |
+  |    dig @10.30.0.10 app.demo.local +short                              |
+  |    curl http://10.30.0.10:8080/api/v1/health/servers | jq             |
+  |                                                                       |
+  |  From HOST terminal (to set latencies):                               |
+  |    ./scripts/set-latency.sh webapp1 5     # Set 5ms latency           |
+  |    ./scripts/set-latency.sh webapp2 50    # Set 50ms latency          |
+  |    ./scripts/set-latency.sh webapp3 150   # Set 150ms latency         |
+  =========================================================================
+
+EOF
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e"]

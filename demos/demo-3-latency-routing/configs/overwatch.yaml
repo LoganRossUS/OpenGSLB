@@ -1,0 +1,90 @@
+# OpenGSLB Demo 3: Overwatch Configuration - Latency-Based Routing
+#
+# This overwatch node receives gossip from agents and serves DNS.
+# Key feature: Uses latency-based routing to select the fastest backend.
+
+mode: overwatch
+
+# DNS Server Configuration
+dns:
+  listen_address: "0.0.0.0:53"
+  zones:
+    - demo.local
+  default_ttl: 5  # Low TTL for demo visibility
+
+# Overwatch-specific configuration
+overwatch:
+  identity:
+    node_id: demo-overwatch
+    region: demo
+
+  # Gossip - receive health updates from agents
+  gossip:
+    bind_address: "0.0.0.0:7946"
+    encryption_key: "bGF0ZW5jeS1kZW1vLWtleS0yMDI0LXNlY3VyZS1rZXk="
+
+  # External validation - measures latency for routing decisions
+  validation:
+    enabled: true
+    check_interval: 2s      # Frequent checks to see latency changes quickly
+    check_timeout: 5s
+
+  # Stale backend handling
+  stale:
+    threshold: 15s
+    remove_after: 30s
+
+  # DNSSEC disabled for simplicity in demo
+  dnssec:
+    enabled: false
+    security_acknowledgment: "I understand that disabling DNSSEC removes cryptographic verification of DNS responses"
+
+  data_dir: /var/lib/opengslb
+
+# Region with backend servers (static configuration for DNS)
+# Health status and latency come from external validation health checks
+regions:
+  - name: demo
+    servers:
+      - address: 10.30.0.21
+        port: 80
+        weight: 100
+      - address: 10.30.0.22
+        port: 80
+        weight: 100
+      - address: 10.30.0.23
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      path: /health
+      interval: 2s          # Frequent checks for latency measurement
+      timeout: 5s
+      failure_threshold: 3
+      success_threshold: 2
+
+# Domain routing configuration
+domains:
+  - name: app.demo.local
+    routing_algorithm: latency    # KEY: Latency-based routing
+    regions:
+      - demo
+    ttl: 5  # Short TTL to see changes quickly
+
+# API Server
+api:
+  enabled: true
+  address: "0.0.0.0:8080"
+  allowed_networks:
+    - 0.0.0.0/0  # Allow all for demo - NOT for production!
+  trust_proxy_headers: false
+
+# Metrics Server
+metrics:
+  enabled: true
+  address: "0.0.0.0:9090"
+
+# Logging
+logging:
+  level: info
+  format: text
