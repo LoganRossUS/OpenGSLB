@@ -35,8 +35,8 @@ services:
       demo:
         ipv4_address: 10.50.0.10
     ports:
-      - "5353:53/udp"   # DNS (non-privileged port on host)
-      - "5353:53/tcp"
+      - "5354:53/udp"   # DNS (non-privileged port on host, avoid 5353 mDNS conflict)
+      - "5354:53/tcp"
       - "8080:8080"     # API
       - "9090:9090"     # Metrics
     volumes:

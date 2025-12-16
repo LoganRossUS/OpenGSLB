@@ -107,7 +107,7 @@ ssh root@localhost -p 2222
 | Grafana Dashboard | http://localhost:3000 |
 | Prometheus | http://localhost:9092 |
 | Overwatch API | http://localhost:8080/api/v1/health/servers |
-| DNS Query | `dig @localhost -p 5353 app.demo.local +short` |
+| DNS Query | `dig @localhost -p 5354 app.demo.local +short` |
 | Client SSH | `ssh root@localhost -p 2222` (password: demo) |
 | Chaos API | http://localhost:8083/chaos/status |
 
@@ -122,7 +122,7 @@ Verify all backends are healthy:
 curl -s http://localhost:8080/api/v1/health/servers | jq '.servers[] | {address, healthy}'
 
 # DNS returns all 3 backends
-dig @localhost -p 5353 app.demo.local +short
+dig @localhost -p 5354 app.demo.local +short
 ```
 
 ### Act 2: Trigger CPU Spike
@@ -148,7 +148,7 @@ DNS automatically excludes backend-3:
 
 ```bash
 # DNS now returns only backend-1 and backend-2
-dig @localhost -p 5353 app.demo.local +short
+dig @localhost -p 5354 app.demo.local +short
 
 # But health check STILL PASSES!
 curl -s http://localhost:8083/health
@@ -181,7 +181,7 @@ curl -X POST "http://localhost:8083/chaos/stop"
 sleep 15
 
 # All 3 backends should be back
-dig @localhost -p 5353 app.demo.local +short
+dig @localhost -p 5354 app.demo.local +short
 ```
 
 ## Chaos Injection API
