@@ -126,14 +126,14 @@ stale:
   remove_after: 5m    # Remove backend after 5m stale
 
 api:
-  address: "0.0.0.0:9090"
+  address: "127.0.0.1:8080"  # Localhost only by default; change for remote access
   allowed_networks:
     - 10.0.0.0/8
     - 192.168.0.0/16
 
 metrics:
   enabled: true
-  address: "0.0.0.0:9091"
+  address: "0.0.0.0:9090"
 
 data_dir: /var/lib/opengslb
 
@@ -313,15 +313,15 @@ External tools can override health state:
 
 ```bash
 # Mark backend unhealthy
-curl -X PUT http://overwatch:9090/api/v1/overrides/myapp/10.0.1.10 \
+curl -X PUT http://overwatch:8080/api/v1/overrides/myapp/10.0.1.10 \
   -H "Content-Type: application/json" \
   -d '{"healthy": false, "reason": "High latency from CloudWatch"}'
 
 # Clear override
-curl -X DELETE http://overwatch:9090/api/v1/overrides/myapp/10.0.1.10
+curl -X DELETE http://overwatch:8080/api/v1/overrides/myapp/10.0.1.10
 
 # List all overrides
-curl http://overwatch:9090/api/v1/overrides
+curl http://overwatch:8080/api/v1/overrides
 ```
 
 ## DNSSEC Configuration
@@ -329,7 +329,7 @@ curl http://overwatch:9090/api/v1/overrides
 DNSSEC is enabled by default. To get DS records for parent zone delegation:
 
 ```bash
-curl http://overwatch:9090/api/v1/dnssec/ds
+curl http://overwatch:8080/api/v1/dnssec/ds
 ```
 
 Response:
@@ -366,7 +366,7 @@ dnssec:
 - `opengslb_agent_heartbeat_failures_total` - Failed heartbeats
 - `opengslb_predictive_bleeding` - Predictive health signal
 
-**Overwatch metrics** (port 9091):
+**Overwatch metrics** (port 9090):
 - `opengslb_overwatch_agents_registered` - Registered agents
 - `opengslb_overwatch_backends_total` - Total backends
 - `opengslb_overwatch_backends_healthy` - Healthy backends
@@ -432,12 +432,12 @@ groups:
 
 2. Check registered backends:
    ```bash
-   curl http://overwatch:9090/api/v1/backends
+   curl http://overwatch:8080/api/v1/backends
    ```
 
 3. Check healthy backends:
    ```bash
-   curl http://overwatch:9090/api/v1/backends/healthy
+   curl http://overwatch:8080/api/v1/backends/healthy
    ```
 
 ### DNSSEC validation failing
@@ -445,7 +445,7 @@ groups:
 1. Verify DS records are published in parent zone
 2. Check key sync between Overwatches:
    ```bash
-   curl http://overwatch:9090/api/v1/dnssec/sync/status
+   curl http://overwatch:8080/api/v1/dnssec/sync/status
    ```
 
 ## Security Checklist

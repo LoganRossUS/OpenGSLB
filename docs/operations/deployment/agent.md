@@ -26,7 +26,7 @@ OpenGSLB agents run alongside your applications to:
 | Direction | Port | Protocol | Purpose |
 |-----------|------|----------|---------|
 | Outbound | 7946 | TCP/UDP | Gossip to Overwatch nodes |
-| Outbound | 9090 | TCP | API calls (optional) |
+| Outbound | 8080 | TCP | API calls to Overwatch (optional) |
 | Inbound | 9100 | TCP | Metrics endpoint (optional) |
 
 ### Information Needed
@@ -236,10 +236,10 @@ openssl x509 -in /var/lib/opengslb/agent.crt -noout -text
 
 ```bash
 # Using opengslb-cli
-opengslb-cli servers --api http://overwatch-1.internal:9090
+opengslb-cli servers --api http://overwatch-1.internal:8080
 
 # Or using curl
-curl http://overwatch-1.internal:9090/api/v1/overwatch/backends | jq .
+curl http://overwatch-1.internal:8080/api/v1/overwatch/backends | jq .
 ```
 
 Expected output should show your backend registered:
@@ -443,7 +443,7 @@ opengslb_agent_heartbeat_failures_total 0
 
 ```bash
 # Query Overwatch API
-curl http://overwatch-1.internal:9090/api/v1/overwatch/backends?service=myapp | jq .
+curl http://overwatch-1.internal:8080/api/v1/overwatch/backends?service=myapp | jq .
 ```
 
 ## Troubleshooting
