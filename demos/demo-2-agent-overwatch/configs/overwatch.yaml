@@ -1,7 +1,7 @@
 # OpenGSLB Demo 2: Overwatch Configuration
 #
 # This overwatch node receives gossip from agents and serves DNS.
-# Agents register themselves dynamically via gossip.
+# Static backend configuration required for DNS; agents report health via gossip.
 
 mode: overwatch
 
@@ -41,11 +41,34 @@ overwatch:
 
   data_dir: /var/lib/opengslb
 
+# Region with backend servers (static configuration for DNS)
+# Health status comes from agents via gossip AND external validation
+regions:
+  - name: demo
+    servers:
+      - address: 10.20.0.21
+        port: 80
+        weight: 100
+      - address: 10.20.0.22
+        port: 80
+        weight: 100
+      - address: 10.20.0.23
+        port: 80
+        weight: 100
+    health_check:
+      type: http
+      path: /health
+      interval: 5s
+      timeout: 2s
+      failure_threshold: 2
+      success_threshold: 1
+
 # Domain routing configuration
-# Backends are registered dynamically by agents via gossip
 domains:
   - name: app.demo.local
     routing_algorithm: round-robin
+    regions:
+      - demo
     ttl: 5  # Low TTL so DNS changes are visible quickly
 
 # API Server
