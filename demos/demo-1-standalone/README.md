@@ -60,12 +60,14 @@ This is the simplest OpenGSLB deployment: a single Overwatch node performing ext
 ### 1. Build the OpenGSLB Binary
 
 ```bash
-# From the repository root
-make build
+# From the repository root - build a static binary for Alpine Linux
+CGO_ENABLED=0 go build -o opengslb ./cmd/opengslb
 
 # Copy to demo directory
 cp opengslb demos/demo-1-standalone/bin/
 ```
+
+> **Important:** The `CGO_ENABLED=0` flag is required because the demo containers use Alpine Linux, which uses musl libc instead of glibc. Without this flag, the binary will fail with "exec: no such file or directory" errors.
 
 ### 2. Start the Demo
 
