@@ -1,0 +1,52 @@
+# Dockerfile.client
+#
+# Client container for Demo 4: GeoIP-Based Routing
+# Provides SSH access for interactive demo experience with DNS tools.
+
+FROM alpine:3.19
+
+RUN apk add --no-cache \
+    bind-tools \
+    curl \
+    jq \
+    openssh \
+    bash \
+    procps \
+    && rm -rf /var/cache/apk/* \
+    && ssh-keygen -A \
+    && echo 'root:demo' | chpasswd \
+    && sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+# Nice prompt
+RUN echo 'export PS1="\[\033[01;32m\][client]\[\033[00m\]:\w# "' >> /root/.profile
+
+# Copy demo script
+COPY scripts/demo.sh /root/demo.sh
+RUN chmod +x /root/demo.sh
+
+# Welcome message
+RUN cat > /etc/motd << 'EOF'
+
+  =========================================================================
+  |         OpenGSLB Demo 4: GeoIP-Based Routing                          |
+  =========================================================================
+  |  Run ./demo.sh for a guided walkthrough                               |
+  |                                                                       |
+  |  Quick commands:                                                      |
+  |    dig @172.28.0.10 app.global.example.com +short                     |
+  |    dig @172.28.0.10 app.global.example.com +subnet=8.8.8.8/32 +short  |
+  |    curl http://172.28.0.10:8080/api/v1/health/servers | jq            |
+  |    curl http://172.28.0.10:8080/api/v1/geo/test?ip=8.8.8.8 | jq       |
+  |                                                                       |
+  |  Test different source IPs:                                           |
+  |    8.8.8.8         -> US (Google DNS)      -> us-east                 |
+  |    185.228.168.9   -> Germany              -> eu-west                 |
+  |    1.1.1.1         -> Australia            -> ap-southeast            |
+  |    10.50.100.50    -> Custom CIDR          -> us-chicago              |
+  =========================================================================
+
+EOF
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e"]

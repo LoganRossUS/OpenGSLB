@@ -1,0 +1,22 @@
+# Dockerfile.agent
+#
+# OpenGSLB Agent for Demo 4: GeoIP-Based Routing
+# Monitors local backends and reports health to Overwatch via gossip.
+
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates tzdata curl && rm -rf /var/cache/apk/*
+
+# Create directories
+RUN mkdir -p /opt/opengslb /etc/opengslb /var/lib/opengslb
+
+# Startup script copies config with secure permissions
+COPY scripts/start-agent.sh /start.sh
+RUN chmod +x /start.sh
+
+# Binary is mounted at runtime from bin/opengslb
+# IMPORTANT: Must be built with CGO_ENABLED=0
+
+EXPOSE 7946/udp 7946/tcp 9100
+
+CMD ["/start.sh"]

@@ -1,0 +1,2 @@
+# Place compiled OpenGSLB binary here
+# Build command: CGO_ENABLED=0 GOOS=linux go build -o demos/demo-4-geoip-routing/bin/opengslb ./cmd/opengslb
