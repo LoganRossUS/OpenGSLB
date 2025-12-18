@@ -596,22 +596,29 @@ func TestAPIServerCRUD(t *testing.T) {
 		
 		// Wait for DNS propagation
 		time.Sleep(2 * time.Second)
-		
-		// Verify server appears in DNS responses
-		ips, err := queryDNSGetIPs("roundrobin.test")
-		if err != nil {
-			t.Fatalf("DNS query failed: %v", err)
-		}
-		
+
+		// Verify server appears in DNS responses (round-robin, so query multiple times)
+		// We now have 4 servers total (3 static + 1 API-created), so query enough times to see them all
 		found := false
-		for _, ip := range ips {
-			if ip == "172.28.0.100" {
-				found = true
+		seenIPs := make(map[string]bool)
+		for i := 0; i < 20; i++ {
+			ips, err := queryDNSGetIPs("roundrobin.test")
+			if err != nil {
+				t.Fatalf("DNS query %d failed: %v", i, err)
+			}
+			for _, ip := range ips {
+				seenIPs[ip] = true
+				if ip == "172.28.0.100" {
+					found = true
+					break
+				}
+			}
+			if found {
 				break
 			}
 		}
 		if !found {
-			t.Errorf("API-created server not found in DNS responses: %v", ips)
+			t.Errorf("API-created server 172.28.0.100 not found in DNS responses after 20 queries. Seen IPs: %v", seenIPs)
 		}
 	})
 	

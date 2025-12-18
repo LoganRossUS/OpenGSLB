@@ -1026,6 +1026,14 @@ func (r *Registry) loadFromStore() error {
 
 		// Recompute effective status
 		r.computeEffectiveStatus(&backend)
+
+		// v1.1.0: Trigger status change callback for loaded backends
+		// This ensures API-registered servers loaded from persistence get registered in DNS
+		if r.onStatusChange != nil {
+			// Treat as new registration (oldStatus = "") to trigger DNS registration
+			backendCopy := backend
+			r.onStatusChange(&backendCopy, "", backend.EffectiveStatus)
+		}
 	}
 
 	r.config.Logger.Info("loaded backends from store", "count", len(r.backends))

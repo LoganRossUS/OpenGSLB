@@ -376,7 +376,7 @@ func (a *Application) initializeBackendRegistry() error {
 
 	a.backendRegistry = overwatch.NewRegistry(registryCfg, a.overwatchStore)
 
-	// Set up status change callback for metrics
+	// Set up status change callback for metrics AND DNS registration
 	// NOTE: This callback runs while holding the registry's write lock.
 	// Do NOT call methods that acquire locks on the registry (e.g., GetAllBackends)
 	// or you'll get a deadlock. UpdateRegistryMetrics is called asynchronously instead.
@@ -384,6 +384,39 @@ func (a *Application) initializeBackendRegistry() error {
 		overwatch.RecordBackendStatusChange(backend.Service, oldStatus, newStatus)
 		// Update registry metrics asynchronously to avoid deadlock
 		go overwatch.UpdateRegistryMetrics(a.backendRegistry)
+
+		// v1.1.0: Sync backend registration to DNS registry
+		// This ensures API-registered and agent-registered servers appear in DNS
+		if a.dnsRegistry != nil {
+			// New backend registration (oldStatus is empty)
+			if oldStatus == "" {
+				if err := a.dnsRegistry.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
+					a.logger.Error("failed to register backend in DNS",
+						"service", backend.Service,
+						"address", backend.Address,
+						"port", backend.Port,
+						"error", err)
+				}
+			} else if newStatus == "" {
+				// Backend is being removed (newStatus is empty means deregistration)
+				if err := a.dnsRegistry.DeregisterServer(backend.Service, backend.Address, backend.Port); err != nil {
+					a.logger.Error("failed to deregister backend from DNS",
+						"service", backend.Service,
+						"address", backend.Address,
+						"port", backend.Port,
+						"error", err)
+				}
+			} else if oldStatus != newStatus {
+				// Status changed - update registration (weight might have changed)
+				if err := a.dnsRegistry.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
+					a.logger.Error("failed to update backend in DNS",
+						"service", backend.Service,
+						"address", backend.Address,
+						"port", backend.Port,
+						"error", err)
+				}
+			}
+		}
 	})
 
 	a.logger.Info("backend registry initialized",
