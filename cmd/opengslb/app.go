@@ -436,10 +436,14 @@ func (a *Application) initializeBackendRegistry() error {
 
 // registerStaticServers registers all static servers from config into backend registry.
 // v1.1.0: Unified architecture - static servers use same validation system as agents.
+// v1.1.1: Pass health check type to fix latency routing with TCP health checks.
 func (a *Application) registerStaticServers() error {
 	staticCount := 0
 
 	for _, region := range a.config.Regions {
+		// Get health check type from region config (defaults to "http" in RegisterStatic)
+		healthCheckType := region.HealthCheck.Type
+
 		for _, server := range region.Servers {
 			if err := a.backendRegistry.RegisterStatic(
 				server.Service,
@@ -447,6 +451,7 @@ func (a *Application) registerStaticServers() error {
 				server.Port,
 				server.Weight,
 				region.Name,
+				healthCheckType,
 			); err != nil {
 				return fmt.Errorf("failed to register static server %s:%d: %w",
 					server.Address, server.Port, err)

@@ -201,16 +201,31 @@ func (v *Validator) validateSingleBackend(backend *Backend) {
 	ctx, cancel := context.WithTimeout(baseCtx, v.config.CheckTimeout)
 	defer cancel()
 
-	// Build the check target
+	// Build the check target using backend's configured health check type
+	// v1.1.1: Use HealthCheckType from backend to fix latency routing with TCP health checks
+	scheme := backend.HealthCheckType
+	if scheme == "" {
+		scheme = "http" // Default to HTTP for backwards compatibility
+	}
 	target := health.Target{
 		Address: backend.Address,
 		Port:    backend.Port,
-		Scheme:  "http", // Default to HTTP
+		Scheme:  scheme,
 		Timeout: v.config.CheckTimeout,
 	}
 
 	// Perform the health check
 	result := v.checker.Check(ctx, target)
+
+	// v1.1.1: Debug log to help diagnose latency routing issues
+	v.config.Logger.Debug("validation check completed",
+		"service", backend.Service,
+		"address", backend.Address,
+		"port", backend.Port,
+		"check_type", scheme,
+		"healthy", result.Healthy,
+		"latency_ms", result.Latency.Milliseconds(),
+	)
 
 	var validationErr string
 	if result.Error != nil {
