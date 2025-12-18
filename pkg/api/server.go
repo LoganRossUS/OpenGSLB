@@ -265,6 +265,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/v1/geo/", s.discoveryHandlers.HandleGeoRoot)
 	mux.HandleFunc("/api/v1/overwatch", s.discoveryHandlers.HandleOverwatchRoot)
 	mux.HandleFunc("/api/v1/overwatch/", s.discoveryHandlers.HandleOverwatchRoot)
+	mux.HandleFunc("/api/v1/version", s.discoveryHandlers.HandleVersion)
 	mux.HandleFunc("/api/v1", s.discoveryHandlers.HandleV1Root)
 	mux.HandleFunc("/api/v1/", s.discoveryHandlers.HandleV1Root)
 	mux.HandleFunc("/api", s.discoveryHandlers.HandleAPIRoot)

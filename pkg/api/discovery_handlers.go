@@ -8,7 +8,10 @@ package api
 
 import (
 	"net/http"
+	"runtime"
 	"time"
+
+	"github.com/loganrossus/OpenGSLB/pkg/version"
 )
 
 // APIEndpoint represents a discoverable API endpoint.
@@ -28,6 +31,14 @@ type APIDiscoveryResponse struct {
 type APIVersionResponse struct {
 	Versions    []APIEndpoint `json:"versions"`
 	GeneratedAt time.Time     `json:"generated_at"`
+}
+
+// VersionResponse is the response for GET /api/v1/version.
+type VersionResponse struct {
+	Version     string    `json:"version"`
+	GoVersion   string    `json:"go_version"`
+	Platform    string    `json:"platform"`
+	GeneratedAt time.Time `json:"generated_at"`
 }
 
 // DiscoveryHandlers handles API discovery endpoints.
@@ -86,6 +97,11 @@ func (h *DiscoveryHandlers) HandleV1Root(w http.ResponseWriter, r *http.Request)
 
 	// List all available API endpoints for discoverability
 	endpoints := []APIEndpoint{
+		{
+			Path:        "/api/v1/version",
+			Description: "OpenGSLB version information",
+			Methods:     []string{"GET"},
+		},
 		{
 			Path:        "/api/v1/health",
 			Description: "Health status endpoints",
@@ -324,6 +340,23 @@ func (h *DiscoveryHandlers) HandleDNSSECRoot(w http.ResponseWriter, r *http.Requ
 
 	resp := APIDiscoveryResponse{
 		Endpoints:   endpoints,
+		GeneratedAt: time.Now().UTC(),
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// HandleVersion handles GET /api/v1/version - returns OpenGSLB version information.
+func (h *DiscoveryHandlers) HandleVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	resp := VersionResponse{
+		Version:     version.GetVersion(),
+		GoVersion:   runtime.Version(),
+		Platform:    runtime.GOOS + "/" + runtime.GOARCH,
 		GeneratedAt: time.Now().UTC(),
 	}
 
