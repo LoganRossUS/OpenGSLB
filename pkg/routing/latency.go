@@ -133,6 +133,15 @@ func (r *LatencyRouter) Route(ctx context.Context, pool ServerPool) (*Server, er
 	var withLatency []serverLatency
 	for _, server := range servers {
 		info := provider.GetLatency(server.Address, server.Port)
+		// v1.1.1: Debug log to help diagnose latency routing issues
+		r.logger.Debug("latency lookup for server",
+			"address", server.Address,
+			"port", server.Port,
+			"has_data", info.HasData,
+			"samples", info.Samples,
+			"smoothed_latency_ms", info.SmoothedLatency.Milliseconds(),
+			"min_samples", minSamples,
+		)
 		if info.HasData && info.Samples >= minSamples {
 			withLatency = append(withLatency, serverLatency{
 				server:  server,

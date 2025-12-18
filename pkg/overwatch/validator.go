@@ -217,6 +217,16 @@ func (v *Validator) validateSingleBackend(backend *Backend) {
 	// Perform the health check
 	result := v.checker.Check(ctx, target)
 
+	// v1.1.1: Debug log to help diagnose latency routing issues
+	v.config.Logger.Debug("validation check completed",
+		"service", backend.Service,
+		"address", backend.Address,
+		"port", backend.Port,
+		"check_type", scheme,
+		"healthy", result.Healthy,
+		"latency_ms", result.Latency.Milliseconds(),
+	)
+
 	var validationErr string
 	if result.Error != nil {
 		validationErr = result.Error.Error()
