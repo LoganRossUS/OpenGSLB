@@ -1211,13 +1211,9 @@ type combinedHealthProvider struct {
 
 // IsHealthy returns true only if both the health manager reports healthy
 // AND the backend registry doesn't show the backend as draining.
+// v1.1.0: Prioritizes backend registry status for unified health tracking.
 func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
-	// First check the health manager (HTTP check)
-	if p.healthManager != nil && !p.healthManager.IsHealthy(address, port) {
-		return false
-	}
-
-	// Then check the backend registry for draining status
+	// v1.1.0: Check backend registry first (unified health for static, agent, and API backends)
 	if p.backendRegistry != nil {
 		// The registry stores backends by service:address:port, but we only have address:port
 		// So we need to search all backends for a matching address:port
@@ -1238,7 +1234,7 @@ func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
 					}
 					return false
 				}
-				// Check effective status - exclude unhealthy/stale/draining
+				// Check effective status - only healthy backends should be in DNS
 				if backend.EffectiveStatus != overwatch.StatusHealthy {
 					if p.logger != nil {
 						p.logger.Info("DNS excluding unhealthy backend",
@@ -1249,12 +1245,19 @@ func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
 					}
 					return false
 				}
-				break
+				// Backend found in registry and is healthy
+				return true
 			}
 		}
 	}
 
-	return true
+	// Backend not in registry - fall back to health manager for static config servers
+	if p.healthManager != nil {
+		return p.healthManager.IsHealthy(address, port)
+	}
+
+	// No health information available
+	return false
 }
 
 // backendRegistryLatencyProvider implements routing.LatencyProvider using the backend registry.

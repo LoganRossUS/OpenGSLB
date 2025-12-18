@@ -193,6 +193,28 @@ regions:
         port: 80
         weight: 100
         service: roundrobin.test  # v1.1.0: Required
+      # Servers for weighted.test domain
+      - address: "172.28.0.2"
+        port: 80
+        weight: 300
+        service: weighted.test
+      - address: "172.28.0.3"
+        port: 80
+        weight: 100
+        service: weighted.test
+      - address: "172.28.0.4"
+        port: 80
+        weight: 100
+        service: weighted.test
+      # Servers for failover.test domain
+      - address: "172.28.0.2"
+        port: 80
+        weight: 100
+        service: failover.test
+      - address: "172.28.0.3"
+        port: 80
+        weight: 100
+        service: failover.test
     health_check:
       type: http
       interval: 2s
