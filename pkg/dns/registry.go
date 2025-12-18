@@ -8,6 +8,7 @@ package dns
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 
@@ -26,9 +27,11 @@ type Registry struct {
 
 // NewRegistry creates a new empty registry.
 func NewRegistry() *Registry {
-	return &Registry{
+	r := &Registry{
 		domains: make(map[string]*DomainEntry),
 	}
+	slog.Debug("DNS registry created", "registry_ptr", fmt.Sprintf("%p", r))
+	return r
 }
 
 // BuildRegistry creates a registry from configuration.
@@ -109,6 +112,12 @@ func (r *Registry) Register(entry *DomainEntry) {
 	name := normalizeDomain(entry.Name)
 	entry.Name = name
 	r.domains[name] = entry
+	// Log registry state after registration (INFO level for runtime visibility)
+	slog.Info("domain registered in DNS registry",
+		"name", name,
+		"registry_count", len(r.domains),
+		"registry_ptr", fmt.Sprintf("%p", r),
+	)
 }
 
 // Lookup retrieves a domain entry by name.
@@ -116,7 +125,25 @@ func (r *Registry) Register(entry *DomainEntry) {
 func (r *Registry) Lookup(name string) *DomainEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.domains[normalizeDomain(name)]
+	normalizedName := normalizeDomain(name)
+	entry := r.domains[normalizedName]
+	// Log lookup details at appropriate level
+	if entry == nil {
+		// Log at INFO level when not found - helps diagnose issues
+		slog.Info("DNS registry lookup - domain not found",
+			"query_name", name,
+			"normalized_name", normalizedName,
+			"registry_count", len(r.domains),
+			"registry_ptr", fmt.Sprintf("%p", r),
+		)
+	} else {
+		slog.Debug("DNS registry lookup - found",
+			"query_name", name,
+			"normalized_name", normalizedName,
+			"registry_ptr", fmt.Sprintf("%p", r),
+		)
+	}
+	return entry
 }
 
 // Remove deletes a domain from the registry.

@@ -559,6 +559,10 @@ func (a *Application) initializeDNSServer() error {
 		return fmt.Errorf("failed to build DNS registry: %w", err)
 	}
 	a.dnsRegistry = registry
+	a.logger.Debug("DNS registry initialized",
+		"dns_registry_ptr", fmt.Sprintf("%p", a.dnsRegistry),
+		"domains", registry.Count(),
+	)
 
 	// v1.1.0: Wire up DNS registry to gossip handler for dynamic agent registration
 	if a.gossipHandler != nil {
@@ -594,6 +598,9 @@ func (a *Application) initializeDNSServer() error {
 		Logger:         a.logger,
 	})
 	a.dnsHandler = handler
+	a.logger.Debug("DNS handler created with registry",
+		"dns_registry_ptr", fmt.Sprintf("%p", registry),
+	)
 
 	a.dnsServer = dns.NewServer(dns.ServerConfig{
 		Address: a.config.DNS.ListenAddress,
@@ -688,7 +695,9 @@ func (a *Application) initializeAPIServer() error {
 			domainProvider.SetRouterFactory(func(algorithm string) (interface{}, error) {
 				return routerFactory.NewRouter(algorithm)
 			})
-			a.logger.Debug("domain provider wired to DNS registry")
+			a.logger.Debug("domain provider wired to DNS registry",
+				"dns_registry_ptr", fmt.Sprintf("%p", a.dnsRegistry),
+			)
 		}
 		server.SetDomainHandlers(api.NewDomainHandlers(domainProvider, a.logger))
 		a.logger.Debug("domain API handlers registered")

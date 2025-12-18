@@ -83,6 +83,10 @@ func (p *RegistryDomainProvider) SetStore(s store.Store) {
 // This enables API-created domains to be automatically registered with the DNS server.
 func (p *RegistryDomainProvider) SetDNSRegistry(registry DNSRegistryInterface) {
 	p.dnsRegistry = registry
+	p.logger.Info("DNS registry set for domain provider",
+		"registry_type", fmt.Sprintf("%T", registry),
+		"registry_ptr", fmt.Sprintf("%p", registry),
+	)
 }
 
 // SetRouterFactory sets the router factory for creating routers for new domains.
