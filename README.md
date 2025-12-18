@@ -40,6 +40,8 @@ See [LICENSE](LICENSE) for full terms.
 - **Structured Logging**: JSON or text format with configurable log levels
 - **Prometheus Metrics**: DNS queries, health check results, routing decisions, and more
 - **Health Status API**: JSON endpoint for current server health status
+- **Server Management API**: CRUD operations for dynamic server management (v1.1.0)
+- **CLI Management Tool**: gslbctl for server and domain management
 
 ### Deployment
 - **Single Binary**: No runtime dependencies
@@ -109,12 +111,15 @@ regions:
       - address: "10.0.1.10"
         port: 80
         weight: 100
+        service: "app.example.com"  # Required in v1.1.0
       - address: "10.0.1.11"
         port: 80
         weight: 100
+        service: "app.example.com"
       - address: "2001:db8::1"    # IPv6 support
         port: 80
         weight: 100
+        service: "app.example.com"
     health_check:
       type: http
       interval: 30s
@@ -128,6 +133,7 @@ regions:
       - address: "10.0.2.10"
         port: 80
         weight: 100
+        service: "app.example.com"
     health_check:
       type: http
       interval: 30s
@@ -138,6 +144,7 @@ regions:
     servers:
       - address: "10.0.3.10"
         port: 5432
+        service: "db.example.com"
     health_check:
       type: tcp              # TCP health check for non-HTTP
       interval: 15s
@@ -185,6 +192,9 @@ domains:
 - ✅ Agent-Overwatch distributed architecture
 - ✅ Multi-file configuration with includes
 - ✅ CLI management tool (gslbctl)
+- ✅ **NEW in v1.1.0**: Unified server architecture (static, agent, API)
+- ✅ **NEW in v1.1.0**: Server management CRUD API
+- ✅ **NEW in v1.1.0**: Dynamic DNS registration for API/agent servers
 
 ### Planned
 - 🔲 Web UI dashboard
