@@ -559,6 +559,10 @@ func (a *Application) initializeDNSServer() error {
 		return fmt.Errorf("failed to build DNS registry: %w", err)
 	}
 	a.dnsRegistry = registry
+	a.logger.Debug("DNS registry initialized",
+		"dns_registry_ptr", fmt.Sprintf("%p", a.dnsRegistry),
+		"domains", registry.Count(),
+	)
 
 	// v1.1.0: Wire up DNS registry to gossip handler for dynamic agent registration
 	if a.gossipHandler != nil {
@@ -594,6 +598,9 @@ func (a *Application) initializeDNSServer() error {
 		Logger:         a.logger,
 	})
 	a.dnsHandler = handler
+	a.logger.Debug("DNS handler created with registry",
+		"dns_registry_ptr", fmt.Sprintf("%p", registry),
+	)
 
 	a.dnsServer = dns.NewServer(dns.ServerConfig{
 		Address: a.config.DNS.ListenAddress,
@@ -668,9 +675,34 @@ func (a *Application) initializeAPIServer() error {
 		// Set up dashboard/management API handlers
 		// Domain handlers - provides domain/service information from the registry
 		// v1.1.1: Full CRUD support with store persistence
+		// v1.1.2: Dynamic DNS registration for API-created domains
 		domainProvider := api.NewRegistryDomainProvider(a.backendRegistry, a.config, a.logger)
 		if a.overwatchStore != nil {
 			domainProvider.SetStore(a.overwatchStore)
+		}
+		// Wire DNS registry for dynamic domain registration
+		if a.dnsRegistry != nil {
+			domainProvider.SetDNSRegistry(a.dnsRegistry)
+			// Create router factory for dynamic domain creation
+			latencyProvider := &backendRegistryLatencyProvider{registry: a.backendRegistry}
+			routerFactory := routing.NewFactory(routing.FactoryConfig{
+				LatencyProvider:   latencyProvider,
+				MinLatencySamples: 1,
+				GeoResolver:       a.geoResolver,
+				Logger:            a.logger,
+			})
+			// Wrap router factory to return interface{} for the provider
+			domainProvider.SetRouterFactory(func(algorithm string) (interface{}, error) {
+				return routerFactory.NewRouter(algorithm)
+			})
+			a.logger.Debug("domain provider wired to DNS registry",
+				"dns_registry_ptr", fmt.Sprintf("%p", a.dnsRegistry),
+			)
+
+			// Load stored domains and backends into DNS registry on startup
+			if err := domainProvider.LoadStoredDomainsIntoDNS(); err != nil {
+				a.logger.Warn("failed to load stored domains into DNS registry", "error", err)
+			}
 		}
 		server.SetDomainHandlers(api.NewDomainHandlers(domainProvider, a.logger))
 		a.logger.Debug("domain API handlers registered")

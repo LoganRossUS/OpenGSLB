@@ -8,6 +8,7 @@ package dns
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"sync"
@@ -103,6 +104,12 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 func (h *Handler) handleAQuery(m *dns.Msg, qname string, q dns.Question, clientIP net.IP) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+
+	// Debug: log handler's registry pointer
+	h.logger.Debug("handler lookup using registry",
+		"query_name", qname,
+		"registry_ptr", fmt.Sprintf("%p", h.registry),
+	)
 
 	entry := h.registry.Lookup(qname)
 	if entry == nil {

@@ -272,3 +272,99 @@ func TestNormalizeDomain(t *testing.T) {
 		})
 	}
 }
+
+// TestRegistry_RegisterDomainDynamic tests dynamic domain registration via API.
+func TestRegistry_RegisterDomainDynamic(t *testing.T) {
+	registry := NewRegistry()
+
+	// Verify registry starts empty
+	if registry.Count() != 0 {
+		t.Errorf("expected empty registry, got %d domains", registry.Count())
+	}
+
+	// Create a router factory that returns a mock router
+	routerFactory := func(algorithm string) (interface{}, error) {
+		return &mockRouter{algorithm: algorithm}, nil
+	}
+
+	// Register a domain dynamically
+	err := registry.RegisterDomainDynamic("api.demo.local", 300, "round-robin", routerFactory)
+	if err != nil {
+		t.Fatalf("RegisterDomainDynamic failed: %v", err)
+	}
+
+	// Verify domain was registered
+	if registry.Count() != 1 {
+		t.Errorf("expected 1 domain, got %d", registry.Count())
+	}
+
+	// Lookup with trailing dot (as DNS queries come in)
+	entry := registry.Lookup("api.demo.local.")
+	if entry == nil {
+		t.Fatal("expected to find domain with trailing dot")
+	}
+	if entry.Name != "api.demo.local." {
+		t.Errorf("expected name 'api.demo.local.', got %q", entry.Name)
+	}
+	if entry.TTL != 300 {
+		t.Errorf("expected TTL 300, got %d", entry.TTL)
+	}
+	if entry.RoutingAlgorithm != "round-robin" {
+		t.Errorf("expected algorithm 'round-robin', got %q", entry.RoutingAlgorithm)
+	}
+
+	// Lookup without trailing dot should also work
+	entry2 := registry.Lookup("api.demo.local")
+	if entry2 == nil {
+		t.Fatal("expected to find domain without trailing dot")
+	}
+	if entry2 != entry {
+		t.Error("expected same entry for both lookups")
+	}
+}
+
+// TestRegistry_SameInstanceForHandlerAndProvider verifies the same registry instance
+// is used by both the DNS handler and dynamic registration.
+func TestRegistry_SameInstanceForHandlerAndProvider(t *testing.T) {
+	registry := NewRegistry()
+
+	// Create handler with this registry
+	handler := NewHandler(HandlerConfig{
+		Registry:   registry,
+		DefaultTTL: 60,
+	})
+
+	// Verify handler has the same registry pointer
+	if handler.registry != registry {
+		t.Error("handler should have the same registry instance")
+	}
+
+	// Create a router factory
+	routerFactory := func(algorithm string) (interface{}, error) {
+		return &mockRouter{algorithm: algorithm}, nil
+	}
+
+	// Register a domain dynamically (simulating API call)
+	err := registry.RegisterDomainDynamic("dynamic.test.local", 300, "weighted", routerFactory)
+	if err != nil {
+		t.Fatalf("RegisterDomainDynamic failed: %v", err)
+	}
+
+	// Verify handler can see the new domain through its registry pointer
+	entry := handler.registry.Lookup("dynamic.test.local.")
+	if entry == nil {
+		t.Fatal("handler should be able to see dynamically registered domain")
+	}
+	if entry.RoutingAlgorithm != "weighted" {
+		t.Errorf("expected 'weighted' algorithm, got %q", entry.RoutingAlgorithm)
+	}
+
+	// Also verify through the original registry reference
+	entry2 := registry.Lookup("dynamic.test.local.")
+	if entry2 == nil {
+		t.Fatal("original registry should also see the domain")
+	}
+	if entry != entry2 {
+		t.Error("both should return the same entry")
+	}
+}
