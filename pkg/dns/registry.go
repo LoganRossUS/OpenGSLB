@@ -336,6 +336,41 @@ func (r *Registry) RegisterDomainDynamic(name string, ttl uint32, algorithm stri
 	return r.RegisterDomain(name, ttl, algorithm, typedFactory)
 }
 
+// UpdateDomainSettings updates a domain's TTL and routing algorithm while preserving servers.
+// This is used by the API layer when a domain is updated.
+func (r *Registry) UpdateDomainSettings(name string, ttl uint32, algorithm string, routerFactory func(string) (interface{}, error)) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	domainName := normalizeDomain(name)
+	existing, exists := r.domains[domainName]
+	if !exists {
+		return fmt.Errorf("domain %q not found in DNS registry", name)
+	}
+
+	// Create new router if algorithm changed
+	result, err := routerFactory(algorithm)
+	if err != nil {
+		return fmt.Errorf("failed to create router: %w", err)
+	}
+	router, ok := result.(routing.Router)
+	if !ok {
+		return fmt.Errorf("router factory returned non-Router type: %T", result)
+	}
+
+	// Update settings while preserving servers
+	existing.TTL = ttl
+	existing.Router = router
+
+	slog.Info("domain settings updated in DNS registry",
+		"name", domainName,
+		"ttl", ttl,
+		"algorithm", algorithm,
+	)
+
+	return nil
+}
+
 // normalizeDomain ensures domain names are in a consistent format.
 func normalizeDomain(name string) string {
 	if len(name) == 0 {
