@@ -44,6 +44,8 @@ type DNSRegistryInterface interface {
 	// RegisterDomainDynamic creates and registers a new domain entry with the given parameters.
 	// The routerFactory must return a routing.Router compatible type.
 	RegisterDomainDynamic(name string, ttl uint32, algorithm string, routerFactory func(string) (interface{}, error)) error
+	// UpdateDomainSettings updates a domain's TTL and routing algorithm while preserving servers.
+	UpdateDomainSettings(name string, ttl uint32, algorithm string, routerFactory func(string) (interface{}, error)) error
 	// Remove deletes a domain from the DNS registry.
 	Remove(name string)
 	// RegisterServer dynamically adds or updates a server in the DNS registry.
@@ -99,16 +101,18 @@ func (p *RegistryDomainProvider) SetRouterFactory(factory func(string) (interfac
 // and registers them with the DNS registry. This should be called on startup after
 // the DNS registry and router factory are set.
 func (p *RegistryDomainProvider) LoadStoredDomainsIntoDNS() error {
+	p.logger.Info("loading stored domains into DNS registry")
+
 	if p.store == nil {
-		p.logger.Debug("no store configured, skipping stored domain loading")
+		p.logger.Warn("no store configured, skipping stored domain loading")
 		return nil
 	}
 	if p.dnsRegistry == nil {
-		p.logger.Debug("no DNS registry configured, skipping stored domain loading")
+		p.logger.Warn("no DNS registry configured, skipping stored domain loading")
 		return nil
 	}
 	if p.routerFactory == nil {
-		p.logger.Debug("no router factory configured, skipping stored domain loading")
+		p.logger.Warn("no router factory configured, skipping stored domain loading")
 		return nil
 	}
 
@@ -117,6 +121,8 @@ func (p *RegistryDomainProvider) LoadStoredDomainsIntoDNS() error {
 	if err != nil {
 		return fmt.Errorf("failed to list stored domains: %w", err)
 	}
+
+	p.logger.Info("found stored domains to load", "count", len(pairs))
 
 	loadedDomains := 0
 	loadedBackends := 0
@@ -502,6 +508,32 @@ func (p *RegistryDomainProvider) UpdateDomain(name string, domain Domain) error 
 
 	if err := p.store.Set(context.Background(), key, data); err != nil {
 		return fmt.Errorf("failed to update domain: %w", err)
+	}
+
+	// Update DNS registry if available
+	if p.dnsRegistry != nil && p.routerFactory != nil {
+		ttl := uint32(domain.TTL)
+		if ttl == 0 {
+			ttl = uint32(config.DefaultTTL)
+		}
+		algorithm := domain.RoutingPolicy
+		if algorithm == "" {
+			algorithm = config.DefaultRoutingAlgorithm
+		}
+
+		if err := p.dnsRegistry.UpdateDomainSettings(name, ttl, algorithm, p.routerFactory); err != nil {
+			// Log but don't fail - store is already updated
+			p.logger.Warn("failed to update domain in DNS registry",
+				"domain", name,
+				"error", err,
+			)
+		} else {
+			p.logger.Info("domain settings updated in DNS registry",
+				"domain", name,
+				"ttl", ttl,
+				"algorithm", algorithm,
+			)
+		}
 	}
 
 	p.logger.Info("domain updated via API", "name", name)
