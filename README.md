@@ -23,23 +23,31 @@ See [LICENSE](LICENSE) for full terms.
 - **UDP and TCP**: Handles both transport protocols
 - **Configurable TTL**: Per-domain TTL settings with global default fallback
 - **Authoritative Responses**: Returns proper NXDOMAIN, SERVFAIL, and NOERROR responses
+- **DNSSEC**: Automatic key management with zone signing and DS record generation
 
 ### Routing Algorithms
 - **Round-Robin**: Even distribution across healthy servers with per-domain rotation
 - **Weighted**: Proportional traffic distribution based on server capacity (weight 0-1000)
 - **Failover (Active/Standby)**: Predictable primary → secondary → tertiary failover with automatic return-to-primary
+- **Geolocation-Based**: Route clients to nearest region using MaxMind GeoIP2 with custom CIDR overrides
+- **Latency-Based**: Dynamically route to lowest-latency backends with EMA smoothing to prevent flapping
+- **EDNS Client Subnet (ECS)**: Extract client location from recursive resolvers for accurate geo-routing
 
 ### Health Checking
 - **HTTP/HTTPS**: Configurable endpoint path, expected status codes, and TLS support
 - **TCP**: Connection-based health checks for non-HTTP services (databases, custom protocols)
 - **Configurable Thresholds**: Separate failure and success thresholds to prevent flapping
 - **Per-Region Configuration**: Different health check settings for different server tiers
+- **Agent-Based Monitoring**: Distributed agents report health from edge locations with gossip-based sync
+- **External Validation**: Overwatch nodes independently verify agent health claims
 
 ### Operations
 - **Hot Reload**: Update configuration without restart via SIGHUP signal
 - **Structured Logging**: JSON or text format with configurable log levels
 - **Prometheus Metrics**: DNS queries, health check results, routing decisions, and more
 - **Health Status API**: JSON endpoint for current server health status
+- **Server Management API**: CRUD operations for dynamic server management (v1.1.0)
+- **CLI Management Tool**: gslbctl for server and domain management
 
 ### Deployment
 - **Single Binary**: No runtime dependencies
@@ -109,12 +117,15 @@ regions:
       - address: "10.0.1.10"
         port: 80
         weight: 100
+        service: "app.example.com"  # Required in v1.1.0
       - address: "10.0.1.11"
         port: 80
         weight: 100
+        service: "app.example.com"
       - address: "2001:db8::1"    # IPv6 support
         port: 80
         weight: 100
+        service: "app.example.com"
     health_check:
       type: http
       interval: 30s
@@ -128,6 +139,7 @@ regions:
       - address: "10.0.2.10"
         port: 80
         weight: 100
+        service: "app.example.com"
     health_check:
       type: http
       interval: 30s
@@ -138,6 +150,7 @@ regions:
     servers:
       - address: "10.0.3.10"
         port: 5432
+        service: "db.example.com"
     health_check:
       type: tcp              # TCP health check for non-HTTP
       interval: 15s
@@ -185,6 +198,9 @@ domains:
 - ✅ Agent-Overwatch distributed architecture
 - ✅ Multi-file configuration with includes
 - ✅ CLI management tool (gslbctl)
+- ✅ **NEW in v1.1.0**: Unified server architecture (static, agent, API)
+- ✅ **NEW in v1.1.0**: Server management CRUD API
+- ✅ **NEW in v1.1.0**: Dynamic DNS registration for API/agent servers
 
 ### Planned
 - 🔲 Web UI dashboard

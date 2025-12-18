@@ -527,21 +527,13 @@ Get backends for a domain.
 
 ## Server API
 
-Manage backend server configurations.
+**NEW in v1.1.0:** Manage backend server configurations dynamically. The unified server architecture allows creating, updating, and deleting servers via API without configuration file changes.
 
 ### GET /api/v1/servers
 
-List all configured servers.
+List all configured servers (static, agent-registered, and API-created).
 
 **ACL Protected:** Yes
-
-**Query Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `region` | string | Filter by region |
-| `enabled` | bool | Filter by enabled status |
-| `healthy` | bool | Filter by health status |
 
 **Response:** `200 OK`
 
@@ -549,34 +541,57 @@ List all configured servers.
 {
   "servers": [
     {
-      "id": "s1",
-      "name": "web-server-1",
+      "id": "app.example.com:10.0.1.10:80",
+      "service": "app.example.com",
       "address": "10.0.1.10",
       "port": 80,
-      "protocol": "http",
       "weight": 100,
-      "priority": 1,
       "region": "us-east-1",
-      "enabled": true,
-      "healthy": true,
-      "status": {
-        "healthy": true,
-        "last_check": "2025-01-15T10:30:00Z",
-        "consecutive_failures": 0,
-        "consecutive_successes": 5
-      }
+      "source": "static",
+      "effective_status": "healthy",
+      "agent_healthy": null,
+      "draining": false,
+      "created_at": "2025-01-15T10:00:00Z",
+      "updated_at": "2025-01-15T10:00:00Z"
+    },
+    {
+      "id": "app.example.com:10.0.2.10:80",
+      "service": "app.example.com",
+      "address": "10.0.2.10",
+      "port": 80,
+      "weight": 150,
+      "region": "us-west-2",
+      "source": "api",
+      "effective_status": "healthy",
+      "agent_healthy": null,
+      "draining": false,
+      "created_at": "2025-01-15T11:00:00Z",
+      "updated_at": "2025-01-15T11:00:00Z"
     }
-  ],
-  "total": 1,
-  "generated_at": "2025-01-15T10:30:00Z"
+  ]
 }
 ```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Server ID format: `{service}:{address}:{port}` |
+| `service` | string | Domain/service this server belongs to |
+| `address` | string | Server IP address |
+| `port` | int | Server port |
+| `weight` | int | Load balancing weight (1-1000) |
+| `region` | string | Geographic region |
+| `source` | string | Registration source: `static`, `agent`, or `api` |
+| `effective_status` | string | Current health status: `healthy`, `unhealthy`, `stale` |
+| `agent_healthy` | bool | Agent-reported health (null for static/API servers) |
+| `draining` | bool | Whether server is being drained |
 
 ---
 
 ### POST /api/v1/servers
 
-Create a new server.
+Create a new server dynamically (**v1.1.0**).
 
 **ACL Protected:** Yes
 
@@ -584,56 +599,136 @@ Create a new server.
 
 ```json
 {
-  "name": "web-server-1",
-  "address": "10.0.1.10",
+  "service": "app.example.com",
+  "address": "10.0.3.10",
   "port": 80,
-  "protocol": "http",
   "weight": 100,
-  "region": "us-east-1",
-  "enabled": true,
-  "health_check": {
-    "enabled": true,
-    "type": "http",
-    "path": "/health",
-    "interval": "30s",
-    "timeout": "5s",
-    "healthy_threshold": 2,
-    "unhealthy_threshold": 3
-  }
+  "region": "eu-west-1"
 }
 ```
 
+**Request Fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `service` | string | **Yes** | Domain/service name (must match configured domain) |
+| `address` | string | **Yes** | Server IP address |
+| `port` | int | **Yes** | Server port |
+| `weight` | int | No | Load balancing weight (default: 100) |
+| `region` | string | **Yes** | Geographic region |
+
 **Response:** `201 Created`
+
+```json
+{
+  "message": "server created",
+  "id": "app.example.com:10.0.3.10:80"
+}
+```
+
+**Error Response:** `400 Bad Request`
+
+```json
+{
+  "error": "server already exists: app.example.com:10.0.3.10:80"
+}
+```
 
 ---
 
 ### GET /api/v1/servers/{id}
 
-Get a specific server.
+Get a specific server by ID.
 
 **ACL Protected:** Yes
 
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | string | Server ID format: `{service}:{address}:{port}` |
+
+**Example:** `GET /api/v1/servers/app.example.com:10.0.1.10:80`
+
 **Response:** `200 OK`
+
+```json
+{
+  "id": "app.example.com:10.0.1.10:80",
+  "service": "app.example.com",
+  "address": "10.0.1.10",
+  "port": 80,
+  "weight": 100,
+  "region": "us-east-1",
+  "source": "static",
+  "effective_status": "healthy"
+}
+```
 
 ---
 
-### PUT /api/v1/servers/{id}
+### PATCH /api/v1/servers/{id}
 
-Update a server.
+Update a server's weight and region (**v1.1.0**).
 
 **ACL Protected:** Yes
 
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | string | Server ID format: `{service}:{address}:{port}` |
+
+**Request Body:**
+
+```json
+{
+  "weight": 150,
+  "region": "us-east-1"
+}
+```
+
+**Request Fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `weight` | int | No | New load balancing weight |
+| `region` | string | No | New geographic region |
+
 **Response:** `200 OK`
+
+```json
+{
+  "message": "server updated",
+  "id": "app.example.com:10.0.1.10:80"
+}
+```
 
 ---
 
 ### DELETE /api/v1/servers/{id}
 
-Delete a server.
+Delete a dynamically-created server (**v1.1.0**).
+
+**Note:** Only servers created via API (`source: "api"`) can be deleted. Static servers from configuration cannot be deleted via API.
 
 **ACL Protected:** Yes
 
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | string | Server ID format: `{service}:{address}:{port}` |
+
 **Response:** `204 No Content`
+
+**Error Response:** `400 Bad Request`
+
+```json
+{
+  "error": "cannot delete static server"
+}
+```
 
 ---
 

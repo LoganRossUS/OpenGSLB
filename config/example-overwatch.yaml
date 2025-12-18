@@ -80,12 +80,25 @@ dns:
 regions:
   - name: us-east
     servers:
+      # Webapp backend servers
       - address: 10.0.1.10
         port: 8080
         weight: 100
+        service: webapp.gslb.example.com  # v1.1.0: Required - domain this server belongs to
       - address: 10.0.1.11
         port: 8080
         weight: 100
+        service: webapp.gslb.example.com
+
+      # API backend servers
+      - address: 10.0.1.20
+        port: 8080
+        weight: 100
+        service: api.gslb.example.com
+      - address: 10.0.1.21
+        port: 8080
+        weight: 100
+        service: api.gslb.example.com
     health_check:
       type: http
       interval: 30s
@@ -96,9 +109,17 @@ regions:
 
   - name: us-west
     servers:
+      # Webapp backend
       - address: 10.0.2.10
         port: 8080
         weight: 100
+        service: webapp.gslb.example.com
+
+      # API backend
+      - address: 10.0.2.20
+        port: 8080
+        weight: 100
+        service: api.gslb.example.com
     health_check:
       type: http
       interval: 30s
@@ -109,9 +130,11 @@ regions:
 
   - name: eu-west
     servers:
+      # Webapp backend (API not deployed in EU in this example)
       - address: 10.0.3.10
         port: 8080
         weight: 100
+        service: webapp.gslb.example.com
     health_check:
       type: http
       interval: 30s

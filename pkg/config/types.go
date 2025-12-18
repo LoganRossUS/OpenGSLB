@@ -325,6 +325,7 @@ type Server struct {
 	Address string `yaml:"address"`
 	Port    int    `yaml:"port"`
 	Weight  int    `yaml:"weight"`
+	Service string `yaml:"service"` // Required in v1.1.0: Domain/service this server belongs to
 	Host    string `yaml:"host"`
 }
 

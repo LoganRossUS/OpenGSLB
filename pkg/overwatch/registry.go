@@ -37,6 +37,19 @@ const (
 	StatusDraining BackendStatus = "draining"
 )
 
+// RegistrationSource indicates how a backend was registered.
+// v1.1.0: Added to support unified server registration architecture.
+type RegistrationSource string
+
+const (
+	// SourceStatic indicates the backend was defined in the config file.
+	SourceStatic RegistrationSource = "static"
+	// SourceAgent indicates the backend was registered via agent gossip.
+	SourceAgent RegistrationSource = "agent"
+	// SourceAPI indicates the backend was registered via API.
+	SourceAPI RegistrationSource = "api"
+)
+
 // Backend represents a registered backend from an agent.
 type Backend struct {
 	// Service is the service name (maps to DNS domain).
@@ -49,9 +62,18 @@ type Backend struct {
 	Weight int `json:"weight"`
 
 	// AgentID is the ID of the agent that registered this backend.
-	AgentID string `json:"agent_id"`
+	// Empty for static/API-registered backends.
+	AgentID string `json:"agent_id,omitempty"`
 	// Region is the geographic region.
 	Region string `json:"region"`
+
+	// Source indicates how this backend was registered (static, agent, api).
+	// v1.1.0: Added to support unified server registration architecture.
+	Source RegistrationSource `json:"source"`
+	// CreatedAt is when this backend was first registered.
+	CreatedAt time.Time `json:"created_at"`
+	// UpdatedAt is when this backend was last updated.
+	UpdatedAt time.Time `json:"updated_at"`
 
 	// AgentHealthy is the health status claimed by the agent.
 	AgentHealthy bool `json:"agent_healthy"`
@@ -197,7 +219,6 @@ func (r *Registry) OnStatusChange(fn func(backend *Backend, oldStatus, newStatus
 // Register registers or updates a backend from an agent heartbeat.
 func (r *Registry) Register(agentID, region, service, address string, port, weight int, healthy bool) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	key := backendKey(service, address, port)
 	now := time.Now()
@@ -211,6 +232,9 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 			Weight:          weight,
 			AgentID:         agentID,
 			Region:          region,
+			Source:          SourceAgent, // v1.1.0: Track registration source
+			CreatedAt:       now,
+			UpdatedAt:       now,
 			AgentHealthy:    healthy,
 			AgentLastSeen:   now,
 			EffectiveStatus: StatusHealthy,
@@ -222,6 +246,7 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 			"port", port,
 			"agent_id", agentID,
 			"region", region,
+			"source", "agent",
 		)
 	} else {
 		backend.AgentID = agentID
@@ -229,14 +254,16 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 		backend.Weight = weight
 		backend.AgentHealthy = healthy
 		backend.AgentLastSeen = now
+		backend.UpdatedAt = now // v1.1.0: Track updates
 	}
 
 	oldStatus := backend.EffectiveStatus
 	r.computeEffectiveStatus(backend)
+	newStatus := backend.EffectiveStatus
+	statusChanged := oldStatus != newStatus
 
-	if oldStatus != backend.EffectiveStatus && r.onStatusChange != nil {
-		r.onStatusChange(backend, oldStatus, backend.EffectiveStatus)
-	}
+	// Make a copy for the callback
+	backendCopy := *backend
 
 	// Persist to store
 	if r.store != nil {
@@ -245,19 +272,213 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 		}
 	}
 
+	// Release lock before calling callback
+	r.mu.Unlock()
+
+	// Call callback outside the lock
+	if statusChanged && r.onStatusChange != nil {
+		r.onStatusChange(&backendCopy, oldStatus, newStatus)
+	}
+
+	return nil
+}
+
+// RegisterStatic registers a static backend from config file.
+// v1.1.0: Unified architecture - static servers use same validation as agent servers.
+func (r *Registry) RegisterStatic(service, address string, port, weight int, region string) error {
+	r.mu.Lock()
+
+	key := backendKey(service, address, port)
+	now := time.Now()
+
+	backend, exists := r.backends[key]
+	if !exists {
+		backend = &Backend{
+			Service:         service,
+			Address:         address,
+			Port:            port,
+			Weight:          weight,
+			Region:          region,
+			Source:          SourceStatic, // v1.1.0: Mark as static
+			CreatedAt:       now,
+			UpdatedAt:       now,
+			AgentID:         "", // No agent for static servers
+			AgentHealthy:    false,
+			EffectiveStatus: StatusHealthy, // Assume healthy until validated
+		}
+		r.backends[key] = backend
+		r.config.Logger.Info("static backend registered",
+			"service", service,
+			"address", address,
+			"port", port,
+			"region", region,
+			"source", "static",
+		)
+	} else {
+		// Update existing backend (e.g., on config reload)
+		backend.Weight = weight
+		backend.Region = region
+		backend.UpdatedAt = now
+		r.config.Logger.Debug("static backend updated",
+			"service", service,
+			"address", address,
+			"port", port,
+		)
+	}
+
+	oldStatus := backend.EffectiveStatus
+	r.computeEffectiveStatus(backend)
+	newStatus := backend.EffectiveStatus
+	statusChanged := oldStatus != newStatus
+
+	// Make a copy for the callback to avoid races
+	backendCopy := *backend
+
+	// Persist to store
+	if r.store != nil {
+		if err := r.persistBackend(backend); err != nil {
+			r.config.Logger.Warn("failed to persist backend", "key", key, "error", err)
+		}
+	}
+
+	// Release lock before calling callback to avoid deadlock
+	r.mu.Unlock()
+
+	// Call status change callback outside the lock
+	if statusChanged && r.onStatusChange != nil {
+		r.onStatusChange(&backendCopy, oldStatus, newStatus)
+	}
+
+	return nil
+}
+
+// RegisterAPI registers a backend via API call.
+// v1.1.0: API-registered servers use same validation as agent and static servers.
+func (r *Registry) RegisterAPI(service, address string, port, weight int, region string) error {
+	r.mu.Lock()
+
+	key := backendKey(service, address, port)
+
+	// Check if already exists
+	if _, exists := r.backends[key]; exists {
+		r.mu.Unlock()
+		return fmt.Errorf("server already exists: %s", key)
+	}
+
+	now := time.Now()
+	backend := &Backend{
+		Service:         service,
+		Address:         address,
+		Port:            port,
+		Weight:          weight,
+		Region:          region,
+		Source:          SourceAPI, // v1.1.0: Mark as API-registered
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		AgentID:         "", // No agent for API-registered servers
+		AgentHealthy:    false,
+		AgentLastSeen:   now,           // Initialize to prevent immediate staleness
+		EffectiveStatus: StatusHealthy, // Assume healthy until validated
+	}
+
+	r.backends[key] = backend
+	r.computeEffectiveStatus(backend)
+	newStatus := backend.EffectiveStatus
+
+	// Make a copy for the callback
+	backendCopy := *backend
+
+	// Persist to store
+	if r.store != nil {
+		if err := r.persistBackend(backend); err != nil {
+			r.config.Logger.Warn("failed to persist backend", "key", key, "error", err)
+		}
+	}
+
+	r.config.Logger.Info("API backend registered",
+		"service", service,
+		"address", address,
+		"port", port,
+		"region", region,
+		"source", "api",
+	)
+
+	// Release lock before calling callback
+	r.mu.Unlock()
+
+	// Notify status change (new backend) outside the lock
+	if r.onStatusChange != nil {
+		r.onStatusChange(&backendCopy, "", newStatus)
+	}
+
+	return nil
+}
+
+// Update updates an existing backend's weight and/or region.
+// v1.1.0: Supports updating backends registered via API or static config.
+func (r *Registry) Update(service, address string, port, weight int, region string) error {
+	r.mu.Lock()
+
+	key := backendKey(service, address, port)
+	backend, exists := r.backends[key]
+	if !exists {
+		r.mu.Unlock()
+		return fmt.Errorf("backend %s not found", key)
+	}
+
+	// Update fields
+	backend.Weight = weight
+	backend.Region = region
+	backend.UpdatedAt = time.Now()
+
+	oldStatus := backend.EffectiveStatus
+	r.computeEffectiveStatus(backend)
+	newStatus := backend.EffectiveStatus
+	statusChanged := oldStatus != newStatus
+
+	// Make a copy for the callback
+	backendCopy := *backend
+
+	// Persist to store
+	if r.store != nil {
+		if err := r.persistBackend(backend); err != nil {
+			r.config.Logger.Warn("failed to persist backend", "key", key, "error", err)
+		}
+	}
+
+	r.config.Logger.Info("backend updated",
+		"service", service,
+		"address", address,
+		"port", port,
+		"weight", weight,
+		"region", region,
+	)
+
+	// Release lock before calling callback
+	r.mu.Unlock()
+
+	// Call callback outside the lock
+	if statusChanged && r.onStatusChange != nil {
+		r.onStatusChange(&backendCopy, oldStatus, newStatus)
+	}
+
 	return nil
 }
 
 // Deregister removes a backend.
 func (r *Registry) Deregister(service, address string, port int) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	key := backendKey(service, address, port)
 	backend, exists := r.backends[key]
 	if !exists {
+		r.mu.Unlock()
 		return fmt.Errorf("backend %s not found", key)
 	}
+
+	// Make a copy before deletion
+	backendCopy := *backend
+	oldStatus := backend.EffectiveStatus
 
 	delete(r.backends, key)
 
@@ -274,8 +495,12 @@ func (r *Registry) Deregister(service, address string, port int) error {
 		}
 	}
 
+	// Release lock before calling callback
+	r.mu.Unlock()
+
+	// Notify callback outside the lock
 	if r.onStatusChange != nil {
-		r.onStatusChange(backend, backend.EffectiveStatus, "")
+		r.onStatusChange(&backendCopy, oldStatus, "")
 	}
 
 	return nil
@@ -658,18 +883,23 @@ func (r *Registry) computeEffectiveStatus(backend *Backend) {
 		return
 	}
 
-	// No validation result - check staleness
-	// Only mark stale if we have no external validation to rely on
-	if isStale {
+	// No validation result - check staleness (only for agent-registered backends)
+	// Static and API backends don't send heartbeats, so staleness doesn't apply
+	if backend.Source == SourceAgent && isStale {
 		backend.EffectiveStatus = StatusStale
 		return
 	}
 
-	// Fall back to agent claim
-	if backend.AgentHealthy {
-		backend.EffectiveStatus = StatusHealthy
+	// Fall back to agent claim for agent backends, assume healthy for static/API
+	if backend.Source == SourceAgent {
+		if backend.AgentHealthy {
+			backend.EffectiveStatus = StatusHealthy
+		} else {
+			backend.EffectiveStatus = StatusUnhealthy
+		}
 	} else {
-		backend.EffectiveStatus = StatusUnhealthy
+		// Static and API backends are healthy by default (unless validation says otherwise)
+		backend.EffectiveStatus = StatusHealthy
 	}
 }
 
@@ -796,6 +1026,14 @@ func (r *Registry) loadFromStore() error {
 
 		// Recompute effective status
 		r.computeEffectiveStatus(&backend)
+
+		// v1.1.0: Trigger status change callback for loaded backends
+		// This ensures API-registered servers loaded from persistence get registered in DNS
+		if r.onStatusChange != nil {
+			// Treat as new registration (oldStatus = "") to trigger DNS registration
+			backendCopy := backend
+			r.onStatusChange(&backendCopy, "", backend.EffectiveStatus)
+		}
 	}
 
 	r.config.Logger.Info("loaded backends from store", "count", len(r.backends))
