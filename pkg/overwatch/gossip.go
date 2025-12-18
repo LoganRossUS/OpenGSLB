@@ -137,29 +137,45 @@ type GossipReceiverConfig struct {
 	Logger *slog.Logger
 }
 
+// DNSRegistry defines the interface for dynamic DNS server registration.
+// v1.1.0: Allows agent-registered servers to be added to DNS responses.
+type DNSRegistry interface {
+	RegisterServer(service string, address string, port int, weight int, region string) error
+	DeregisterServer(service string, address string, port int) error
+}
+
 // GossipHandler processes gossip messages and updates the registry.
 type GossipHandler struct {
-	registry *Registry
-	auth     *AgentAuth
-	logger   *slog.Logger
-	ctx      context.Context
-	cancel   context.CancelFunc
+	registry    *Registry
+	dnsRegistry DNSRegistry // v1.1.0: For dynamic DNS registration
+	auth        *AgentAuth
+	logger      *slog.Logger
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // NewGossipHandler creates a new gossip message handler.
-func NewGossipHandler(registry *Registry, logger *slog.Logger) *GossipHandler {
+// v1.1.0: Now accepts optional DNS registry for dynamic server registration.
+func NewGossipHandler(registry *Registry, dnsRegistry DNSRegistry, logger *slog.Logger) *GossipHandler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &GossipHandler{
-		registry: registry,
-		logger:   logger,
+		registry:    registry,
+		dnsRegistry: dnsRegistry,
+		logger:      logger,
 	}
 }
 
 // SetAuth sets the agent authenticator for TOFU authentication.
 func (h *GossipHandler) SetAuth(auth *AgentAuth) {
 	h.auth = auth
+}
+
+// SetDNSRegistry sets the DNS registry for dynamic server registration.
+// v1.1.0: Called after DNS registry is initialized.
+func (h *GossipHandler) SetDNSRegistry(dnsRegistry DNSRegistry) {
+	h.dnsRegistry = dnsRegistry
 }
 
 // Start begins processing gossip messages from the receiver.
@@ -275,6 +291,7 @@ func (h *GossipHandler) handleHeartbeat(msg GossipMessage) {
 	}
 
 	for _, backend := range payload.Backends {
+		// Register in backend registry (for health tracking and validation)
 		if err := h.registry.Register(
 			msg.AgentID,
 			msg.Region,
@@ -290,6 +307,33 @@ func (h *GossipHandler) handleHeartbeat(msg GossipMessage) {
 				"address", backend.Address,
 				"error", err,
 			)
+			continue // Skip DNS registration if backend registry fails
+		}
+
+		// v1.1.0: Also register in DNS registry (for DNS responses)
+		if h.dnsRegistry != nil {
+			if err := h.dnsRegistry.RegisterServer(
+				backend.Service,
+				backend.Address,
+				backend.Port,
+				backend.Weight,
+				msg.Region,
+			); err != nil {
+				h.logger.Warn("failed to register backend in DNS registry",
+					"agent_id", msg.AgentID,
+					"service", backend.Service,
+					"address", backend.Address,
+					"error", err,
+				)
+			} else {
+				h.logger.Debug("registered backend in DNS registry",
+					"agent_id", msg.AgentID,
+					"service", backend.Service,
+					"address", backend.Address,
+					"port", backend.Port,
+					"region", msg.Region,
+				)
+			}
 		}
 	}
 

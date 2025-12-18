@@ -361,11 +361,30 @@ func (a *Application) initializeBackendRegistry() error {
 
 	a.backendRegistry = overwatch.NewRegistry(registryCfg, a.overwatchStore)
 
-	// Set up status change callback for metrics
+	// Set up status change callback for metrics and DNS deregistration
 	a.backendRegistry.OnStatusChange(func(backend *overwatch.Backend, oldStatus, newStatus overwatch.BackendStatus) {
 		overwatch.RecordBackendStatusChange(backend.Service, oldStatus, newStatus)
 		// Update registry metrics
 		overwatch.UpdateRegistryMetrics(a.backendRegistry)
+
+		// v1.1.0: Deregister from DNS when backend is removed (newStatus is empty string)
+		if newStatus == "" && a.dnsRegistry != nil {
+			if err := a.dnsRegistry.DeregisterServer(backend.Service, backend.Address, backend.Port); err != nil {
+				a.logger.Warn("failed to deregister backend from DNS",
+					"service", backend.Service,
+					"address", backend.Address,
+					"port", backend.Port,
+					"error", err,
+				)
+			} else {
+				a.logger.Info("deregistered backend from DNS",
+					"service", backend.Service,
+					"address", backend.Address,
+					"port", backend.Port,
+					"reason", "backend removed from registry",
+				)
+			}
+		}
 	})
 
 	a.logger.Info("backend registry initialized",
@@ -415,7 +434,8 @@ func (a *Application) initializeValidator() error {
 
 // initializeGossipHandler creates and configures the gossip message handler.
 func (a *Application) initializeGossipHandler() error {
-	a.gossipHandler = overwatch.NewGossipHandler(a.backendRegistry, a.logger)
+	// v1.1.0: DNS registry will be set later via SetDNSRegistry after DNS initialization
+	a.gossipHandler = overwatch.NewGossipHandler(a.backendRegistry, nil, a.logger)
 
 	// Initialize gossip receiver if configured
 	if a.config.Overwatch.Gossip.EncryptionKey != "" {
@@ -466,6 +486,12 @@ func (a *Application) initializeDNSServer() error {
 		return fmt.Errorf("failed to build DNS registry: %w", err)
 	}
 	a.dnsRegistry = registry
+
+	// v1.1.0: Wire up DNS registry to gossip handler for dynamic agent registration
+	if a.gossipHandler != nil {
+		a.gossipHandler.SetDNSRegistry(registry)
+		a.logger.Info("wired DNS registry to gossip handler for dynamic registration")
+	}
 
 	for _, domainName := range registry.Domains() {
 		entry := registry.Lookup(domainName)

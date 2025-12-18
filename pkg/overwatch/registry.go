@@ -37,6 +37,19 @@ const (
 	StatusDraining BackendStatus = "draining"
 )
 
+// RegistrationSource indicates how a backend was registered.
+// v1.1.0: Added to support unified server registration architecture.
+type RegistrationSource string
+
+const (
+	// SourceStatic indicates the backend was defined in the config file.
+	SourceStatic RegistrationSource = "static"
+	// SourceAgent indicates the backend was registered via agent gossip.
+	SourceAgent RegistrationSource = "agent"
+	// SourceAPI indicates the backend was registered via API.
+	SourceAPI RegistrationSource = "api"
+)
+
 // Backend represents a registered backend from an agent.
 type Backend struct {
 	// Service is the service name (maps to DNS domain).
@@ -49,9 +62,18 @@ type Backend struct {
 	Weight int `json:"weight"`
 
 	// AgentID is the ID of the agent that registered this backend.
-	AgentID string `json:"agent_id"`
+	// Empty for static/API-registered backends.
+	AgentID string `json:"agent_id,omitempty"`
 	// Region is the geographic region.
 	Region string `json:"region"`
+
+	// Source indicates how this backend was registered (static, agent, api).
+	// v1.1.0: Added to support unified server registration architecture.
+	Source RegistrationSource `json:"source"`
+	// CreatedAt is when this backend was first registered.
+	CreatedAt time.Time `json:"created_at"`
+	// UpdatedAt is when this backend was last updated.
+	UpdatedAt time.Time `json:"updated_at"`
 
 	// AgentHealthy is the health status claimed by the agent.
 	AgentHealthy bool `json:"agent_healthy"`
@@ -211,6 +233,9 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 			Weight:          weight,
 			AgentID:         agentID,
 			Region:          region,
+			Source:          SourceAgent, // v1.1.0: Track registration source
+			CreatedAt:       now,
+			UpdatedAt:       now,
 			AgentHealthy:    healthy,
 			AgentLastSeen:   now,
 			EffectiveStatus: StatusHealthy,
@@ -222,6 +247,7 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 			"port", port,
 			"agent_id", agentID,
 			"region", region,
+			"source", "agent",
 		)
 	} else {
 		backend.AgentID = agentID
@@ -229,6 +255,7 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 		backend.Weight = weight
 		backend.AgentHealthy = healthy
 		backend.AgentLastSeen = now
+		backend.UpdatedAt = now // v1.1.0: Track updates
 	}
 
 	oldStatus := backend.EffectiveStatus
