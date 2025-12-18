@@ -120,6 +120,10 @@ type Backend struct {
 	LatencySamples int `json:"latency_samples,omitempty"`
 	// LastLatency is the most recent raw latency measurement
 	LastLatency time.Duration `json:"last_latency,omitempty"`
+
+	// HealthCheckType is the type of health check to use for validation (http, tcp).
+	// v1.1.1: Added to fix latency routing fallback to round-robin when using TCP health checks.
+	HealthCheckType string `json:"health_check_type,omitempty"`
 }
 
 // RegistryConfig configures the backend registry.
@@ -285,11 +289,17 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 
 // RegisterStatic registers a static backend from config file.
 // v1.1.0: Unified architecture - static servers use same validation as agent servers.
-func (r *Registry) RegisterStatic(service, address string, port, weight int, region string) error {
+// v1.1.1: Added healthCheckType parameter to fix latency routing with TCP health checks.
+func (r *Registry) RegisterStatic(service, address string, port, weight int, region, healthCheckType string) error {
 	r.mu.Lock()
 
 	key := backendKey(service, address, port)
 	now := time.Now()
+
+	// Default to http if not specified
+	if healthCheckType == "" {
+		healthCheckType = "http"
+	}
 
 	backend, exists := r.backends[key]
 	if !exists {
@@ -305,6 +315,7 @@ func (r *Registry) RegisterStatic(service, address string, port, weight int, reg
 			AgentID:         "", // No agent for static servers
 			AgentHealthy:    false,
 			EffectiveStatus: StatusHealthy, // Assume healthy until validated
+			HealthCheckType: healthCheckType,
 		}
 		r.backends[key] = backend
 		r.config.Logger.Info("static backend registered",
@@ -313,16 +324,19 @@ func (r *Registry) RegisterStatic(service, address string, port, weight int, reg
 			"port", port,
 			"region", region,
 			"source", "static",
+			"health_check_type", healthCheckType,
 		)
 	} else {
 		// Update existing backend (e.g., on config reload)
 		backend.Weight = weight
 		backend.Region = region
+		backend.HealthCheckType = healthCheckType
 		backend.UpdatedAt = now
 		r.config.Logger.Debug("static backend updated",
 			"service", service,
 			"address", address,
 			"port", port,
+			"health_check_type", healthCheckType,
 		)
 	}
 
@@ -932,6 +946,18 @@ func (r *Registry) checkStaleBackends() {
 	var toRemove []string
 
 	for key, backend := range r.backends {
+		// v1.1.1: Skip staleness check for static servers - they don't have agent heartbeats
+		// Static servers are defined in config and validated externally, not via agent gossip
+		if backend.Source == SourceStatic {
+			// Still recompute effective status for static servers (validation results, overrides)
+			oldStatus := backend.EffectiveStatus
+			r.computeEffectiveStatus(backend)
+			if oldStatus != backend.EffectiveStatus && r.onStatusChange != nil {
+				r.onStatusChange(backend, oldStatus, backend.EffectiveStatus)
+			}
+			continue
+		}
+
 		timeSinceLastSeen := now.Sub(backend.AgentLastSeen)
 
 		// Check if backend should be removed (no heartbeat for too long)
