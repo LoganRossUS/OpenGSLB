@@ -8,6 +8,7 @@ package dns
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 
@@ -26,9 +27,11 @@ type Registry struct {
 
 // NewRegistry creates a new empty registry.
 func NewRegistry() *Registry {
-	return &Registry{
+	r := &Registry{
 		domains: make(map[string]*DomainEntry),
 	}
+	slog.Debug("DNS registry created", "registry_ptr", fmt.Sprintf("%p", r))
+	return r
 }
 
 // BuildRegistry creates a registry from configuration.
@@ -109,6 +112,12 @@ func (r *Registry) Register(entry *DomainEntry) {
 	name := normalizeDomain(entry.Name)
 	entry.Name = name
 	r.domains[name] = entry
+	// Log registry state after registration (INFO level for runtime visibility)
+	slog.Info("domain registered in DNS registry",
+		"name", name,
+		"registry_count", len(r.domains),
+		"registry_ptr", fmt.Sprintf("%p", r),
+	)
 }
 
 // Lookup retrieves a domain entry by name.
@@ -116,7 +125,25 @@ func (r *Registry) Register(entry *DomainEntry) {
 func (r *Registry) Lookup(name string) *DomainEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.domains[normalizeDomain(name)]
+	normalizedName := normalizeDomain(name)
+	entry := r.domains[normalizedName]
+	// Log lookup details at appropriate level
+	if entry == nil {
+		// Log at INFO level when not found - helps diagnose issues
+		slog.Info("DNS registry lookup - domain not found",
+			"query_name", name,
+			"normalized_name", normalizedName,
+			"registry_count", len(r.domains),
+			"registry_ptr", fmt.Sprintf("%p", r),
+		)
+	} else {
+		slog.Debug("DNS registry lookup - found",
+			"query_name", name,
+			"normalized_name", normalizedName,
+			"registry_ptr", fmt.Sprintf("%p", r),
+		)
+	}
+	return entry
 }
 
 // Remove deletes a domain from the registry.
@@ -267,6 +294,46 @@ func (r *Registry) UpdateServerWeight(service string, address string, port int, 
 	}
 
 	return fmt.Errorf("server %s:%d not found in domain %q", address, port, service)
+}
+
+// RegisterDomain creates and registers a new domain entry with the given parameters.
+// This is used for dynamic domain creation via API.
+// The domain is created with an empty server list; servers are added via RegisterServer.
+func (r *Registry) RegisterDomain(name string, ttl uint32, algorithm string, routerFactory RouterFactory) error {
+	router, err := routerFactory(algorithm)
+	if err != nil {
+		return fmt.Errorf("failed to create router for domain %s: %w", name, err)
+	}
+
+	entry := &DomainEntry{
+		Name:             name,
+		TTL:              ttl,
+		RoutingAlgorithm: algorithm,
+		Router:           router,
+		Servers:          []ServerInfo{}, // Start with no servers
+	}
+
+	r.Register(entry)
+	return nil
+}
+
+// RegisterDomainDynamic creates and registers a new domain entry with a generic factory.
+// This is used by the API layer where the concrete routing.Router type isn't available.
+// The routerFactory must return a routing.Router compatible type.
+func (r *Registry) RegisterDomainDynamic(name string, ttl uint32, algorithm string, routerFactory func(string) (interface{}, error)) error {
+	// Wrap the generic factory to return the typed Router
+	typedFactory := func(alg string) (routing.Router, error) {
+		result, err := routerFactory(alg)
+		if err != nil {
+			return nil, err
+		}
+		router, ok := result.(routing.Router)
+		if !ok {
+			return nil, fmt.Errorf("router factory returned non-Router type: %T", result)
+		}
+		return router, nil
+	}
+	return r.RegisterDomain(name, ttl, algorithm, typedFactory)
 }
 
 // normalizeDomain ensures domain names are in a consistent format.

@@ -5,6 +5,43 @@ All notable changes to OpenGSLB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2025-12-18
+
+### Added
+
+#### Dynamic DNS Registration for API-Created Domains
+- **Immediate DNS resolution**: Domains created via `POST /api/v1/domains` are now automatically registered with the DNS server
+- **Dynamic backend registration**: Backends added via `POST /api/v1/domains/{name}/backends` immediately appear in DNS responses
+- **Automatic cleanup**: Deleting domains or backends via API automatically deregisters them from the DNS server
+- **No restart required**: API-created domains work immediately without SIGHUP or restart
+
+### Changed
+- Domain provider now integrates with DNS registry for real-time updates
+- Added `RegisterDomainDynamic` method to DNS registry for API integration
+
+---
+
+## [1.1.1] - 2025-12-18
+
+### Added
+
+#### Full Domain CRUD API
+- **POST /api/v1/domains**: Create new domains dynamically without config changes
+- **PUT /api/v1/domains/{name}**: Update domain settings (TTL, routing policy, etc.)
+- **DELETE /api/v1/domains/{name}**: Remove API-created domains
+- **POST /api/v1/domains/{name}/backends**: Add backends to domains
+- **DELETE /api/v1/domains/{name}/backends/{id}**: Remove backends from domains
+
+#### Version Endpoint
+- **GET /api/v1/version**: Returns build version, Go version, git commit, and build date
+- Endpoint is not ACL-protected for easy health monitoring integration
+
+#### Persistent Storage
+- API-created domains and backends persist across restarts using bbolt storage
+- Store prefixes: `domains/` for domains, `domain-backends/` for backends
+
+---
+
 ## [1.1.0] - 2025-12-18
 
 ### Added

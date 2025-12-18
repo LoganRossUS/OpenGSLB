@@ -38,12 +38,28 @@ type RegistryInterface interface {
 	GetBackend(service, address string, port int) (*overwatch.Backend, bool)
 }
 
+// DNSRegistryInterface defines the methods needed from the DNS registry.
+// This allows API-created domains to be dynamically registered with the DNS server.
+type DNSRegistryInterface interface {
+	// RegisterDomainDynamic creates and registers a new domain entry with the given parameters.
+	// The routerFactory must return a routing.Router compatible type.
+	RegisterDomainDynamic(name string, ttl uint32, algorithm string, routerFactory func(string) (interface{}, error)) error
+	// Remove deletes a domain from the DNS registry.
+	Remove(name string)
+	// RegisterServer dynamically adds or updates a server in the DNS registry.
+	RegisterServer(service string, address string, port int, weight int, region string) error
+	// DeregisterServer removes a server from the DNS registry.
+	DeregisterServer(service string, address string, port int) error
+}
+
 // RegistryDomainProvider implements DomainProvider using the backend registry.
 type RegistryDomainProvider struct {
-	registry RegistryInterface
-	config   *config.Config
-	store    store.Store
-	logger   *slog.Logger
+	registry      RegistryInterface
+	config        *config.Config
+	store         store.Store
+	logger        *slog.Logger
+	dnsRegistry   DNSRegistryInterface
+	routerFactory func(string) (interface{}, error)
 }
 
 // NewRegistryDomainProvider creates a new RegistryDomainProvider.
@@ -61,6 +77,121 @@ func NewRegistryDomainProvider(registry RegistryInterface, cfg *config.Config, l
 // SetStore sets the store for persistence operations.
 func (p *RegistryDomainProvider) SetStore(s store.Store) {
 	p.store = s
+}
+
+// SetDNSRegistry sets the DNS registry for dynamic domain registration.
+// This enables API-created domains to be automatically registered with the DNS server.
+func (p *RegistryDomainProvider) SetDNSRegistry(registry DNSRegistryInterface) {
+	p.dnsRegistry = registry
+	p.logger.Info("DNS registry set for domain provider",
+		"registry_type", fmt.Sprintf("%T", registry),
+		"registry_ptr", fmt.Sprintf("%p", registry),
+	)
+}
+
+// SetRouterFactory sets the router factory for creating routers for new domains.
+// The factory must return a routing.Router compatible type.
+func (p *RegistryDomainProvider) SetRouterFactory(factory func(string) (interface{}, error)) {
+	p.routerFactory = factory
+}
+
+// LoadStoredDomainsIntoDNS loads API-created domains and their backends from the store
+// and registers them with the DNS registry. This should be called on startup after
+// the DNS registry and router factory are set.
+func (p *RegistryDomainProvider) LoadStoredDomainsIntoDNS() error {
+	if p.store == nil {
+		p.logger.Debug("no store configured, skipping stored domain loading")
+		return nil
+	}
+	if p.dnsRegistry == nil {
+		p.logger.Debug("no DNS registry configured, skipping stored domain loading")
+		return nil
+	}
+	if p.routerFactory == nil {
+		p.logger.Debug("no router factory configured, skipping stored domain loading")
+		return nil
+	}
+
+	// Load all stored domains
+	pairs, err := p.store.List(context.Background(), store.PrefixDomains)
+	if err != nil {
+		return fmt.Errorf("failed to list stored domains: %w", err)
+	}
+
+	loadedDomains := 0
+	loadedBackends := 0
+
+	for _, pair := range pairs {
+		var domain Domain
+		if err := json.Unmarshal(pair.Value, &domain); err != nil {
+			p.logger.Warn("failed to unmarshal stored domain", "key", pair.Key, "error", err)
+			continue
+		}
+
+		// Register domain with DNS registry
+		ttl := uint32(domain.TTL)
+		if ttl == 0 {
+			ttl = uint32(config.DefaultTTL)
+		}
+		algorithm := domain.RoutingPolicy
+		if algorithm == "" {
+			algorithm = config.DefaultRoutingAlgorithm
+		}
+
+		if err := p.dnsRegistry.RegisterDomainDynamic(domain.Name, ttl, algorithm, p.routerFactory); err != nil {
+			p.logger.Warn("failed to register stored domain with DNS",
+				"domain", domain.Name,
+				"error", err,
+			)
+			continue
+		}
+		loadedDomains++
+
+		// Load backends for this domain
+		backendPrefix := store.PrefixDomainBackends + domain.Name + "/"
+		backendPairs, err := p.store.List(context.Background(), backendPrefix)
+		if err != nil {
+			p.logger.Warn("failed to list backends for stored domain",
+				"domain", domain.Name,
+				"error", err,
+			)
+			continue
+		}
+
+		for _, bp := range backendPairs {
+			var backend DomainBackend
+			if err := json.Unmarshal(bp.Value, &backend); err != nil {
+				p.logger.Warn("failed to unmarshal stored backend",
+					"key", bp.Key,
+					"error", err,
+				)
+				continue
+			}
+
+			if err := p.dnsRegistry.RegisterServer(
+				domain.Name,
+				backend.Address,
+				backend.Port,
+				backend.Weight,
+				backend.Region,
+			); err != nil {
+				p.logger.Warn("failed to register stored backend with DNS",
+					"domain", domain.Name,
+					"backend", backend.ID,
+					"error", err,
+				)
+				continue
+			}
+			loadedBackends++
+		}
+	}
+
+	p.logger.Info("loaded stored domains into DNS registry",
+		"domains", loadedDomains,
+		"backends", loadedBackends,
+	)
+
+	return nil
 }
 
 // ListDomains returns all configured domains.
@@ -289,6 +420,14 @@ func (p *RegistryDomainProvider) CreateDomain(domain Domain) error {
 	domain.CreatedAt = now
 	domain.UpdatedAt = now
 
+	// Set defaults if not provided
+	if domain.TTL == 0 {
+		domain.TTL = config.DefaultTTL
+	}
+	if domain.RoutingPolicy == "" {
+		domain.RoutingPolicy = config.DefaultRoutingAlgorithm
+	}
+
 	// Serialize and store
 	data, err := json.Marshal(domain)
 	if err != nil {
@@ -297,6 +436,25 @@ func (p *RegistryDomainProvider) CreateDomain(domain Domain) error {
 
 	if err := p.store.Set(context.Background(), key, data); err != nil {
 		return fmt.Errorf("failed to store domain: %w", err)
+	}
+
+	// Register with DNS registry if available
+	if p.dnsRegistry != nil && p.routerFactory != nil {
+		if err := p.dnsRegistry.RegisterDomainDynamic(
+			domain.Name,
+			uint32(domain.TTL),
+			domain.RoutingPolicy,
+			p.routerFactory,
+		); err != nil {
+			// Log the error but don't fail the domain creation
+			// The domain is persisted and will be available after restart
+			p.logger.Warn("failed to register domain with DNS server",
+				"name", domain.Name,
+				"error", err,
+			)
+		} else {
+			p.logger.Info("domain registered with DNS server", "name", domain.Name)
+		}
 	}
 
 	p.logger.Info("domain created via API", "name", domain.Name)
@@ -382,6 +540,12 @@ func (p *RegistryDomainProvider) DeleteDomain(name string) error {
 	// Delete the domain
 	if err := p.store.Delete(context.Background(), key); err != nil {
 		return fmt.Errorf("failed to delete domain: %w", err)
+	}
+
+	// Remove from DNS registry if available
+	if p.dnsRegistry != nil {
+		p.dnsRegistry.Remove(name)
+		p.logger.Info("domain removed from DNS server", "name", name)
 	}
 
 	p.logger.Info("domain deleted via API", "name", name)
@@ -494,6 +658,11 @@ func (p *RegistryDomainProvider) AddDomainBackend(domainName string, backend Dom
 		backend.ID = fmt.Sprintf("%s:%s:%d", domainName, backend.Address, backend.Port)
 	}
 
+	// Set default weight if not provided
+	if backend.Weight == 0 {
+		backend.Weight = 1
+	}
+
 	// Check if backend already exists
 	key := store.PrefixDomainBackends + domainName + "/" + backend.ID
 	_, err = p.store.Get(context.Background(), key)
@@ -511,6 +680,30 @@ func (p *RegistryDomainProvider) AddDomainBackend(domainName string, backend Dom
 		return fmt.Errorf("failed to store backend: %w", err)
 	}
 
+	// Register with DNS registry if available
+	if p.dnsRegistry != nil {
+		if err := p.dnsRegistry.RegisterServer(
+			domainName,
+			backend.Address,
+			backend.Port,
+			backend.Weight,
+			backend.Region,
+		); err != nil {
+			// Log the error but don't fail the backend addition
+			// The backend is persisted and will be available after restart
+			p.logger.Warn("failed to register backend with DNS server",
+				"domain", domainName,
+				"backend", backend.ID,
+				"error", err,
+			)
+		} else {
+			p.logger.Info("backend registered with DNS server",
+				"domain", domainName,
+				"backend", backend.ID,
+			)
+		}
+	}
+
 	p.logger.Info("backend added to domain via API", "domain", domainName, "backend", backend.ID)
 	return nil
 }
@@ -523,7 +716,7 @@ func (p *RegistryDomainProvider) RemoveDomainBackend(domainName string, backendI
 
 	// Check if backend exists in store
 	key := store.PrefixDomainBackends + domainName + "/" + backendID
-	_, err := p.store.Get(context.Background(), key)
+	backendData, err := p.store.Get(context.Background(), key)
 	if err != nil {
 		// Check if it's a config-based backend
 		if p.config != nil {
@@ -547,9 +740,36 @@ func (p *RegistryDomainProvider) RemoveDomainBackend(domainName string, backendI
 		return fmt.Errorf("backend %q not found for domain %q", backendID, domainName)
 	}
 
+	// Parse backend data to get address and port for DNS deregistration
+	var backend DomainBackend
+	if err := json.Unmarshal(backendData, &backend); err != nil {
+		p.logger.Warn("failed to parse backend data for DNS deregistration",
+			"domain", domainName,
+			"backend", backendID,
+			"error", err,
+		)
+	}
+
 	// Delete the backend
 	if err := p.store.Delete(context.Background(), key); err != nil {
 		return fmt.Errorf("failed to delete backend: %w", err)
+	}
+
+	// Deregister from DNS registry if available
+	if p.dnsRegistry != nil && backend.Address != "" && backend.Port > 0 {
+		if err := p.dnsRegistry.DeregisterServer(domainName, backend.Address, backend.Port); err != nil {
+			// Log the error but don't fail the backend removal
+			p.logger.Warn("failed to deregister backend from DNS server",
+				"domain", domainName,
+				"backend", backendID,
+				"error", err,
+			)
+		} else {
+			p.logger.Info("backend deregistered from DNS server",
+				"domain", domainName,
+				"backend", backendID,
+			)
+		}
 	}
 
 	p.logger.Info("backend removed from domain via API", "domain", domainName, "backend", backendID)

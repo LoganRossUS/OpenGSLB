@@ -76,7 +76,8 @@ api:
   enabled: true
   address: "0.0.0.0:8080"
   allowed_networks:
-    - 0.0.0.0/0  # Allow all for demo - NOT for production!
+    - 0.0.0.0/0  # Allow all IPv4 for demo - NOT for production!
+    - "::/0"     # Allow all IPv6 for demo - NOT for production!
   trust_proxy_headers: false
 
 # Metrics Server
