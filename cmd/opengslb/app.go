@@ -256,10 +256,23 @@ func (a *Application) initializeHealthManager() error {
 }
 
 // registerHealthCheckServers registers all configured servers with the health manager.
+// v1.1.0: Deduplicates servers by address:port since the same backend can serve multiple services.
 func (a *Application) registerHealthCheckServers() error {
+	// v1.1.0: Track registered servers by address:port to avoid duplicates
+	// Same backend (address:port) can serve multiple services/domains
+	registered := make(map[string]bool)
+
 	for _, region := range a.config.Regions {
 		hc := region.HealthCheck
 		for _, server := range region.Servers {
+			// Create unique key for this address:port combination
+			key := fmt.Sprintf("%s:%d", server.Address, server.Port)
+
+			// Skip if already registered
+			if registered[key] {
+				continue
+			}
+
 			scheme := hc.Type
 			if scheme == "" {
 				scheme = "http"
@@ -279,6 +292,8 @@ func (a *Application) registerHealthCheckServers() error {
 				return fmt.Errorf("failed to add server %s:%d to health manager: %w",
 					server.Address, server.Port, err)
 			}
+
+			registered[key] = true
 
 			a.logger.Debug("registered server for health checks",
 				"region", region.Name,
