@@ -8,6 +8,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -28,6 +29,10 @@ type DomainProvider interface {
 	DeleteDomain(name string) error
 	// GetDomainBackends returns the backends for a domain.
 	GetDomainBackends(name string) ([]DomainBackend, error)
+	// AddDomainBackend adds a backend to a domain.
+	AddDomainBackend(domainName string, backend DomainBackend) error
+	// RemoveDomainBackend removes a backend from a domain.
+	RemoveDomainBackend(domainName string, backendID string) error
 }
 
 // Domain represents a DNS domain configuration.
@@ -86,6 +91,21 @@ type DomainBackendsResponse struct {
 	Backends    []DomainBackend `json:"backends"`
 	Total       int             `json:"total"`
 	GeneratedAt time.Time       `json:"generated_at"`
+}
+
+// DomainBackendCreateRequest is the request body for adding a backend to a domain.
+type DomainBackendCreateRequest struct {
+	Address  string `json:"address"`
+	Port     int    `json:"port"`
+	Weight   int    `json:"weight"`
+	Priority int    `json:"priority"`
+	Region   string `json:"region"`
+	Enabled  bool   `json:"enabled"`
+}
+
+// DomainBackendResponse is the response for single backend operations.
+type DomainBackendResponse struct {
+	Backend DomainBackend `json:"backend"`
 }
 
 // DomainCreateRequest is the request body for creating a domain.
@@ -337,16 +357,37 @@ func (h *DomainHandlers) deleteDomain(w http.ResponseWriter, r *http.Request, na
 
 // handleDomainBackends handles /api/v1/domains/{name}/backends.
 func (h *DomainHandlers) handleDomainBackends(w http.ResponseWriter, r *http.Request, domainName string) {
-	if r.Method != http.MethodGet {
-		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
 	if h.provider == nil {
 		h.writeError(w, http.StatusServiceUnavailable, "domain provider not configured")
 		return
 	}
 
+	// Parse path to check for specific backend ID: /api/v1/domains/{name}/backends/{id}
+	path := r.URL.Path
+	backendsPrefix := "/api/v1/domains/" + domainName + "/backends"
+	backendID := ""
+	if strings.HasPrefix(path, backendsPrefix+"/") {
+		backendID = strings.TrimPrefix(path, backendsPrefix+"/")
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		h.listDomainBackends(w, r, domainName)
+	case http.MethodPost:
+		h.addDomainBackend(w, r, domainName)
+	case http.MethodDelete:
+		if backendID == "" {
+			h.writeError(w, http.StatusBadRequest, "backend ID required for delete")
+			return
+		}
+		h.removeDomainBackend(w, r, domainName, backendID)
+	default:
+		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// listDomainBackends handles GET /api/v1/domains/{name}/backends.
+func (h *DomainHandlers) listDomainBackends(w http.ResponseWriter, r *http.Request, domainName string) {
 	backends, err := h.provider.GetDomainBackends(domainName)
 	if err != nil {
 		h.writeError(w, http.StatusNotFound, "domain not found: "+err.Error())
@@ -360,6 +401,66 @@ func (h *DomainHandlers) handleDomainBackends(w http.ResponseWriter, r *http.Req
 	}
 
 	h.writeJSON(w, http.StatusOK, resp)
+}
+
+// addDomainBackend handles POST /api/v1/domains/{name}/backends.
+func (h *DomainHandlers) addDomainBackend(w http.ResponseWriter, r *http.Request, domainName string) {
+	var req DomainBackendCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	// Validate required fields
+	if req.Address == "" {
+		h.writeError(w, http.StatusBadRequest, "address is required")
+		return
+	}
+	if req.Port == 0 {
+		h.writeError(w, http.StatusBadRequest, "port is required")
+		return
+	}
+
+	backend := DomainBackend{
+		ID:       fmt.Sprintf("%s:%s:%d", domainName, req.Address, req.Port),
+		Address:  req.Address,
+		Port:     req.Port,
+		Weight:   req.Weight,
+		Priority: req.Priority,
+		Region:   req.Region,
+		Enabled:  req.Enabled,
+		Healthy:  true, // Assume healthy until checked
+	}
+
+	// Set defaults
+	if backend.Weight == 0 {
+		backend.Weight = 1
+	}
+
+	if err := h.provider.AddDomainBackend(domainName, backend); err != nil {
+		h.logger.Error("failed to add backend to domain", "domain", domainName, "error", err)
+		h.writeError(w, http.StatusInternalServerError, "failed to add backend: "+err.Error())
+		return
+	}
+
+	h.logger.Info("backend added to domain", "domain", domainName, "address", req.Address, "port", req.Port)
+	h.writeJSON(w, http.StatusCreated, DomainBackendResponse{Backend: backend})
+}
+
+// removeDomainBackend handles DELETE /api/v1/domains/{name}/backends/{id}.
+func (h *DomainHandlers) removeDomainBackend(w http.ResponseWriter, r *http.Request, domainName, backendID string) {
+	if err := h.provider.RemoveDomainBackend(domainName, backendID); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			h.writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		h.logger.Error("failed to remove backend from domain", "domain", domainName, "backend", backendID, "error", err)
+		h.writeError(w, http.StatusInternalServerError, "failed to remove backend: "+err.Error())
+		return
+	}
+
+	h.logger.Info("backend removed from domain", "domain", domainName, "backend", backendID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // writeJSON writes a JSON response with the given status code.

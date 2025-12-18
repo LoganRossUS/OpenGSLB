@@ -667,7 +667,11 @@ func (a *Application) initializeAPIServer() error {
 
 		// Set up dashboard/management API handlers
 		// Domain handlers - provides domain/service information from the registry
+		// v1.1.1: Full CRUD support with store persistence
 		domainProvider := api.NewRegistryDomainProvider(a.backendRegistry, a.config, a.logger)
+		if a.overwatchStore != nil {
+			domainProvider.SetStore(a.overwatchStore)
+		}
 		server.SetDomainHandlers(api.NewDomainHandlers(domainProvider, a.logger))
 		a.logger.Debug("domain API handlers registered")
 
@@ -678,7 +682,11 @@ func (a *Application) initializeAPIServer() error {
 		a.logger.Debug("server API handlers registered")
 
 		// Region handlers - provides region information derived from backends
+		// v1.1.1: Full CRUD support with store persistence
 		regionProvider := api.NewConfigRegionProvider(a.config, a.backendRegistry, a.logger)
+		if a.overwatchStore != nil {
+			regionProvider.SetStore(a.overwatchStore)
+		}
 		server.SetRegionHandlers(api.NewRegionHandlers(regionProvider, a.logger))
 		a.logger.Debug("region API handlers registered")
 
