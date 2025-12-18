@@ -219,7 +219,6 @@ func (r *Registry) OnStatusChange(fn func(backend *Backend, oldStatus, newStatus
 // Register registers or updates a backend from an agent heartbeat.
 func (r *Registry) Register(agentID, region, service, address string, port, weight int, healthy bool) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	key := backendKey(service, address, port)
 	now := time.Now()
@@ -260,16 +259,25 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 
 	oldStatus := backend.EffectiveStatus
 	r.computeEffectiveStatus(backend)
+	newStatus := backend.EffectiveStatus
+	statusChanged := oldStatus != newStatus
 
-	if oldStatus != backend.EffectiveStatus && r.onStatusChange != nil {
-		r.onStatusChange(backend, oldStatus, backend.EffectiveStatus)
-	}
+	// Make a copy for the callback
+	backendCopy := *backend
 
 	// Persist to store
 	if r.store != nil {
 		if err := r.persistBackend(backend); err != nil {
 			r.config.Logger.Warn("failed to persist backend", "key", key, "error", err)
 		}
+	}
+
+	// Release lock before calling callback
+	r.mu.Unlock()
+
+	// Call callback outside the lock
+	if statusChanged && r.onStatusChange != nil {
+		r.onStatusChange(&backendCopy, oldStatus, newStatus)
 	}
 
 	return nil
@@ -279,7 +287,6 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 // v1.1.0: Unified architecture - static servers use same validation as agent servers.
 func (r *Registry) RegisterStatic(service, address string, port, weight int, region string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	key := backendKey(service, address, port)
 	now := time.Now()
@@ -321,16 +328,25 @@ func (r *Registry) RegisterStatic(service, address string, port, weight int, reg
 
 	oldStatus := backend.EffectiveStatus
 	r.computeEffectiveStatus(backend)
+	newStatus := backend.EffectiveStatus
+	statusChanged := oldStatus != newStatus
 
-	if oldStatus != backend.EffectiveStatus && r.onStatusChange != nil {
-		r.onStatusChange(backend, oldStatus, backend.EffectiveStatus)
-	}
+	// Make a copy for the callback to avoid races
+	backendCopy := *backend
 
 	// Persist to store
 	if r.store != nil {
 		if err := r.persistBackend(backend); err != nil {
 			r.config.Logger.Warn("failed to persist backend", "key", key, "error", err)
 		}
+	}
+
+	// Release lock before calling callback to avoid deadlock
+	r.mu.Unlock()
+
+	// Call status change callback outside the lock
+	if statusChanged && r.onStatusChange != nil {
+		r.onStatusChange(&backendCopy, oldStatus, newStatus)
 	}
 
 	return nil
@@ -340,12 +356,12 @@ func (r *Registry) RegisterStatic(service, address string, port, weight int, reg
 // v1.1.0: API-registered servers use same validation as agent and static servers.
 func (r *Registry) RegisterAPI(service, address string, port, weight int, region string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	key := backendKey(service, address, port)
 
 	// Check if already exists
 	if _, exists := r.backends[key]; exists {
+		r.mu.Unlock()
 		return fmt.Errorf("server already exists: %s", key)
 	}
 
@@ -367,11 +383,10 @@ func (r *Registry) RegisterAPI(service, address string, port, weight int, region
 
 	r.backends[key] = backend
 	r.computeEffectiveStatus(backend)
+	newStatus := backend.EffectiveStatus
 
-	// Notify status change (new backend)
-	if r.onStatusChange != nil {
-		r.onStatusChange(backend, "", backend.EffectiveStatus)
-	}
+	// Make a copy for the callback
+	backendCopy := *backend
 
 	// Persist to store
 	if r.store != nil {
@@ -388,19 +403,31 @@ func (r *Registry) RegisterAPI(service, address string, port, weight int, region
 		"source", "api",
 	)
 
+	// Release lock before calling callback
+	r.mu.Unlock()
+
+	// Notify status change (new backend) outside the lock
+	if r.onStatusChange != nil {
+		r.onStatusChange(&backendCopy, "", newStatus)
+	}
+
 	return nil
 }
 
 // Deregister removes a backend.
 func (r *Registry) Deregister(service, address string, port int) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	key := backendKey(service, address, port)
 	backend, exists := r.backends[key]
 	if !exists {
+		r.mu.Unlock()
 		return fmt.Errorf("backend %s not found", key)
 	}
+
+	// Make a copy before deletion
+	backendCopy := *backend
+	oldStatus := backend.EffectiveStatus
 
 	delete(r.backends, key)
 
@@ -417,8 +444,12 @@ func (r *Registry) Deregister(service, address string, port int) error {
 		}
 	}
 
+	// Release lock before calling callback
+	r.mu.Unlock()
+
+	// Notify callback outside the lock
 	if r.onStatusChange != nil {
-		r.onStatusChange(backend, backend.EffectiveStatus, "")
+		r.onStatusChange(&backendCopy, oldStatus, "")
 	}
 
 	return nil
