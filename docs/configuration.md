@@ -309,9 +309,11 @@ regions:
       - address: 10.0.1.10
         port: 80
         weight: 100
+        service: "app.example.com"  # REQUIRED in v1.1.0
       - address: 10.0.1.11
         port: 80
         weight: 100
+        service: "app.example.com"  # REQUIRED in v1.1.0
     health_check:
       type: http
       interval: 30s
@@ -333,10 +335,13 @@ regions:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `service` | string | **Required** | **v1.1.0+**: Domain/service this server belongs to (must match a configured domain name) |
 | `address` | string | Required | IP address of the backend server |
 | `port` | integer | `80` | Port number for health checks |
 | `weight` | integer | `100` | Server weight for weighted routing (1-1000) |
 | `host` | string | (empty) | Hostname for HTTPS health checks (for TLS SNI and certificate validation) |
+
+**BREAKING CHANGE (v1.1.0):** The `service` field is now required for all servers. This enables the unified server architecture where static, agent-registered, and API-registered servers all use the same validation system. The service field specifies which domain/service the server belongs to.
 
 #### Health Check Fields
 

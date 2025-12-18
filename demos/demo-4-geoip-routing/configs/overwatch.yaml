@@ -130,9 +130,11 @@ regions:
       - address: 172.28.1.10
         port: 80
         weight: 100
+        service: app.global.example.com  # v1.1.0: Required - domain this server belongs to
       - address: 172.28.1.11
         port: 80
         weight: 100
+        service: app.global.example.com
     health_check:
       type: http
       path: /health
@@ -166,9 +168,11 @@ regions:
       - address: 172.28.2.10
         port: 80
         weight: 100
+        service: app.global.example.com
       - address: 172.28.2.11
         port: 80
         weight: 100
+        service: app.global.example.com
     health_check:
       type: http
       path: /health
@@ -200,9 +204,11 @@ regions:
       - address: 172.28.3.10
         port: 80
         weight: 100
+        service: app.global.example.com
       - address: 172.28.3.11
         port: 80
         weight: 100
+        service: app.global.example.com
     health_check:
       type: http
       path: /health
@@ -218,6 +224,7 @@ regions:
       - address: 172.28.4.10
         port: 80
         weight: 100
+        service: app.global.example.com
     health_check:
       type: http
       path: /health
@@ -233,6 +240,7 @@ regions:
       - address: 172.28.5.10
         port: 80
         weight: 100
+        service: app.global.example.com
     health_check:
       type: http
       path: /health
@@ -248,6 +256,7 @@ regions:
       - address: 172.28.6.10
         port: 80
         weight: 100
+        service: app.global.example.com
     health_check:
       type: http
       path: /health

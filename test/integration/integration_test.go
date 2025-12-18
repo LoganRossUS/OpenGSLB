@@ -21,6 +21,7 @@
 package integration
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -183,12 +184,37 @@ regions:
       - address: "172.28.0.2"
         port: 80
         weight: 300
+        service: roundrobin.test  # v1.1.0: Required
       - address: "172.28.0.3"
         port: 80
         weight: 100
+        service: roundrobin.test  # v1.1.0: Required
       - address: "172.28.0.4"
         port: 80
         weight: 100
+        service: roundrobin.test  # v1.1.0: Required
+      # Servers for weighted.test domain
+      - address: "172.28.0.2"
+        port: 80
+        weight: 300
+        service: weighted.test
+      - address: "172.28.0.3"
+        port: 80
+        weight: 100
+        service: weighted.test
+      - address: "172.28.0.4"
+        port: 80
+        weight: 100
+        service: weighted.test
+      # Servers for failover.test domain
+      - address: "172.28.0.2"
+        port: 80
+        weight: 100
+        service: failover.test
+      - address: "172.28.0.3"
+        port: 80
+        weight: 100
+        service: failover.test
     health_check:
       type: http
       interval: 2s
@@ -202,6 +228,7 @@ regions:
       - address: "172.28.0.5"
         port: 9000
         weight: 100
+        service: tcp.test  # v1.1.0: Required
     health_check:
       type: tcp
       interval: 2s
@@ -532,4 +559,184 @@ func TestHealthAPIReadiness(t *testing.T) {
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("unexpected status %d, expected 200 or 503", resp.StatusCode)
 	}
+}
+
+// TestAPIServerCRUD tests the v1.1.0 server CRUD API endpoints
+func TestAPIServerCRUD(t *testing.T) {
+	client := &http.Client{Timeout: httpTimeout}
+	
+	// Test POST - Create new server
+	t.Run("CreateServer", func(t *testing.T) {
+		reqBody := map[string]interface{}{
+			"name":     "api-test-server",
+			"address":  "172.28.0.100",
+			"port":     8080,
+			"weight":   150,
+			"region":   "test-region",
+			"enabled":  true,
+			"metadata": map[string]string{
+				"service": "roundrobin.test",
+			},
+		}
+		
+		jsonBody, _ := json.Marshal(reqBody)
+		resp, err := client.Post(
+			"http://"+gslbAPIAddr+"/api/v1/servers",
+			"application/json",
+			bytes.NewBuffer(jsonBody),
+		)
+		if err != nil {
+			t.Fatalf("failed to create server: %v", err)
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != http.StatusCreated {
+			t.Errorf("expected status 201, got %d", resp.StatusCode)
+		}
+		
+		// Wait for DNS propagation
+		time.Sleep(2 * time.Second)
+
+		// Verify server appears in DNS responses (round-robin, so query multiple times)
+		// We now have 4 servers total (3 static + 1 API-created), so query enough times to see them all
+		found := false
+		seenIPs := make(map[string]bool)
+		for i := 0; i < 20; i++ {
+			ips, err := queryDNSGetIPs("roundrobin.test")
+			if err != nil {
+				t.Fatalf("DNS query %d failed: %v", i, err)
+			}
+			for _, ip := range ips {
+				seenIPs[ip] = true
+				if ip == "172.28.0.100" {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			t.Errorf("API-created server 172.28.0.100 not found in DNS responses after 20 queries. Seen IPs: %v", seenIPs)
+		}
+	})
+	
+	// Test GET - List servers
+	t.Run("ListServers", func(t *testing.T) {
+		resp, err := client.Get("http://" + gslbAPIAddr + "/api/v1/servers")
+		if err != nil {
+			t.Fatalf("failed to list servers: %v", err)
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected status 200, got %d", resp.StatusCode)
+		}
+		
+		var response struct {
+			Servers []struct {
+				ID      string            `json:"id"`
+				Address string            `json:"address"`
+				Port    int               `json:"port"`
+				Metadata map[string]string `json:"metadata"`
+			} `json:"servers"`
+		}
+		
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		
+		// Should have both static and API-registered servers
+		if len(response.Servers) < 4 {
+			t.Errorf("expected at least 4 servers, got %d", len(response.Servers))
+		}
+		
+		// Verify source tracking
+		hasStatic := false
+		hasAPI := false
+		for _, s := range response.Servers {
+			if source, ok := s.Metadata["source"]; ok {
+				if source == "static" {
+					hasStatic = true
+				}
+				if source == "api" {
+					hasAPI = true
+				}
+			}
+		}
+		
+		if !hasStatic {
+			t.Error("no static servers found in list")
+		}
+		if !hasAPI {
+			t.Error("no API-registered servers found in list")
+		}
+		
+		t.Logf("Server list returned %d servers (static=%v, api=%v)", 
+			len(response.Servers), hasStatic, hasAPI)
+	})
+	
+	// Test PATCH - Update server
+	t.Run("UpdateServer", func(t *testing.T) {
+		serverID := "roundrobin.test:172.28.0.100:8080"
+		
+		reqBody := map[string]interface{}{
+			"weight": 250,
+		}
+		
+		jsonBody, _ := json.Marshal(reqBody)
+		req, _ := http.NewRequest(
+			"PATCH",
+			"http://"+gslbAPIAddr+"/api/v1/servers/"+serverID,
+			bytes.NewBuffer(jsonBody),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("failed to update server: %v", err)
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected status 200, got %d", resp.StatusCode)
+		}
+	})
+	
+	// Test DELETE - Remove server
+	t.Run("DeleteServer", func(t *testing.T) {
+		serverID := "roundrobin.test:172.28.0.100:8080"
+		
+		req, _ := http.NewRequest(
+			"DELETE",
+			"http://"+gslbAPIAddr+"/api/v1/servers/"+serverID,
+			nil,
+		)
+		
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("failed to delete server: %v", err)
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+			t.Errorf("expected status 204 or 200, got %d", resp.StatusCode)
+		}
+		
+		// Wait for DNS propagation
+		time.Sleep(2 * time.Second)
+		
+		// Verify server no longer in DNS responses
+		ips, err := queryDNSGetIPs("roundrobin.test")
+		if err != nil {
+			t.Fatalf("DNS query failed: %v", err)
+		}
+		
+		for _, ip := range ips {
+			if ip == "172.28.0.100" {
+				t.Errorf("deleted server still appears in DNS responses")
+			}
+		}
+	})
 }

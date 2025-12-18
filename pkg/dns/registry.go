@@ -35,23 +35,33 @@ func NewRegistry() *Registry {
 func BuildRegistry(cfg *config.Config, routerFactory RouterFactory) (*Registry, error) {
 	registry := NewRegistry()
 
-	// Build a map of region name -> servers for quick lookup
-	regionServers := make(map[string][]ServerInfo)
+	// v1.1.0: Build a map of (region, service) -> servers for filtered lookup
+	// This allows servers in the same region to be filtered by service
+	type regionServiceKey struct {
+		region  string
+		service string
+	}
+	regionServiceServers := make(map[regionServiceKey][]ServerInfo)
+
 	for _, region := range cfg.Regions {
-		var servers []ServerInfo
 		for _, server := range region.Servers {
 			ip := net.ParseIP(server.Address)
 			if ip == nil {
 				return nil, fmt.Errorf("invalid IP address for server in region %s: %s", region.Name, server.Address)
 			}
-			servers = append(servers, ServerInfo{
+
+			key := regionServiceKey{
+				region:  region.Name,
+				service: server.Service, // v1.1.0: Service is required
+			}
+
+			regionServiceServers[key] = append(regionServiceServers[key], ServerInfo{
 				Address: ip,
 				Port:    server.Port,
 				Weight:  server.Weight,
 				Region:  region.Name,
 			})
 		}
-		regionServers[region.Name] = servers
 	}
 
 	// Build domain entries
@@ -61,10 +71,14 @@ func BuildRegistry(cfg *config.Config, routerFactory RouterFactory) (*Registry, 
 			return nil, fmt.Errorf("failed to create router for domain %s: %w", domain.Name, err)
 		}
 
-		// Collect servers from all regions for this domain
+		// v1.1.0: Collect servers that match this domain's service name from specified regions
 		var servers []ServerInfo
 		for _, regionName := range domain.Regions {
-			if regionServerList, ok := regionServers[regionName]; ok {
+			key := regionServiceKey{
+				region:  regionName,
+				service: domain.Name, // Match servers where service == domain name
+			}
+			if regionServerList, ok := regionServiceServers[key]; ok {
 				servers = append(servers, regionServerList...)
 			}
 		}
@@ -149,6 +163,110 @@ func (r *Registry) ReplaceAll(entries []*DomainEntry) {
 	r.mu.Lock()
 	r.domains = newDomains
 	r.mu.Unlock()
+}
+
+// RegisterServer dynamically adds or updates a server in the DNS registry.
+// This is called when:
+// - An agent heartbeat is received (agent self-registration)
+// - A server is added via API
+// v1.1.0: Enables dynamic server registration for unified architecture
+func (r *Registry) RegisterServer(service string, address string, port int, weight int, region string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	domainName := normalizeDomain(service)
+	entry, exists := r.domains[domainName]
+	if !exists {
+		return fmt.Errorf("domain %q not configured", service)
+	}
+
+	// Parse IP address
+	ip := net.ParseIP(address)
+	if ip == nil {
+		return fmt.Errorf("invalid IP address: %s", address)
+	}
+
+	// Create server info
+	serverInfo := ServerInfo{
+		Address: ip,
+		Port:    port,
+		Weight:  weight,
+		Region:  region,
+	}
+
+	// Check if server already exists, update if so
+	serverKey := fmt.Sprintf("%s:%d", address, port)
+	found := false
+	for i, existingServer := range entry.Servers {
+		existingKey := fmt.Sprintf("%s:%d", existingServer.Address.String(), existingServer.Port)
+		if existingKey == serverKey {
+			entry.Servers[i] = serverInfo
+			found = true
+			break
+		}
+	}
+
+	// Add if not found
+	if !found {
+		entry.Servers = append(entry.Servers, serverInfo)
+	}
+
+	return nil
+}
+
+// DeregisterServer removes a server from the DNS registry.
+// This is called when:
+// - An agent goes stale/deregisters
+// - A server is removed via API
+// v1.1.0: Enables dynamic server removal for unified architecture
+func (r *Registry) DeregisterServer(service string, address string, port int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	domainName := normalizeDomain(service)
+	entry, exists := r.domains[domainName]
+	if !exists {
+		return fmt.Errorf("domain %q not configured", service)
+	}
+
+	// Find and remove server
+	serverKey := fmt.Sprintf("%s:%d", address, port)
+	for i, server := range entry.Servers {
+		existingKey := fmt.Sprintf("%s:%d", server.Address.String(), server.Port)
+		if existingKey == serverKey {
+			// Remove by swapping with last element and truncating
+			entry.Servers[i] = entry.Servers[len(entry.Servers)-1]
+			entry.Servers = entry.Servers[:len(entry.Servers)-1]
+			return nil
+		}
+	}
+
+	return fmt.Errorf("server %s:%d not found in domain %q", address, port, service)
+}
+
+// UpdateServerWeight updates the weight of an existing server.
+// v1.1.0: Enables dynamic weight adjustment
+func (r *Registry) UpdateServerWeight(service string, address string, port int, weight int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	domainName := normalizeDomain(service)
+	entry, exists := r.domains[domainName]
+	if !exists {
+		return fmt.Errorf("domain %q not configured", service)
+	}
+
+	// Find and update server
+	serverKey := fmt.Sprintf("%s:%d", address, port)
+	for i, server := range entry.Servers {
+		existingKey := fmt.Sprintf("%s:%d", server.Address.String(), server.Port)
+		if existingKey == serverKey {
+			entry.Servers[i].Weight = weight
+			return nil
+		}
+	}
+
+	return fmt.Errorf("server %s:%d not found in domain %q", address, port, service)
 }
 
 // normalizeDomain ensures domain names are in a consistent format.

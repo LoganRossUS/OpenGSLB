@@ -58,6 +58,11 @@ func (c *APIClient) Post(path string, body interface{}, result interface{}) erro
 	return c.doJSON(http.MethodPost, path, body, result)
 }
 
+// Patch performs a PATCH request to the API.
+func (c *APIClient) Patch(path string, body interface{}, result interface{}) error {
+	return c.doJSON(http.MethodPatch, path, body, result)
+}
+
 // Delete performs a DELETE request to the API.
 func (c *APIClient) Delete(path string) error {
 	url := c.BaseURL + path

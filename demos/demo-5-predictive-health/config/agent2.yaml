@@ -1,8 +1,8 @@
 # OpenGSLB Demo 5: Agent Configuration (backend-2)
 #
 # This agent monitors the local demo-app and reports health to Overwatch.
-# PREDICTIVE MONITORING IS ENABLED - the agent watches CPU, memory, and error rates
-# and sends "bleed" signals when thresholds are exceeded.
+# PREDICTIVE MONITORING IS DISABLED on this backend - only backend-3 (chaos target)
+# has it enabled. This avoids all backends draining when Docker shares host CPU.
 
 mode: agent
 
@@ -13,9 +13,10 @@ agent:
     service_token: "demo-token-12345"
 
   # Backend service this agent monitors
+  # IMPORTANT: Use the container's external IP so it matches the DNS config in overwatch.yaml
   backends:
     - service: app.demo.local
-      address: 127.0.0.1
+      address: 10.50.0.22
       port: 8080
       weight: 100
       health_check:
@@ -26,21 +27,11 @@ agent:
         failure_threshold: 2
         success_threshold: 1
 
-  # PREDICTIVE HEALTH MONITORING
-  # This is the key differentiator - detect problems BEFORE they cause failures
+  # PREDICTIVE HEALTH MONITORING - DISABLED
+  # Only backend-3 has predictive monitoring enabled. In Docker, /proc/stat shows
+  # host CPU, so if all agents monitored CPU, they'd ALL drain when chaos hits.
   predictive:
-    enabled: true
-    check_interval: 5s
-    cpu:
-      threshold: 80        # Bleed when CPU exceeds 80%
-      bleed_duration: 30s
-    memory:
-      threshold: 85        # Bleed when memory exceeds 85%
-      bleed_duration: 30s
-    error_rate:
-      threshold: 5         # Bleed when error rate exceeds 5 per minute
-      window: 60s
-      bleed_duration: 30s
+    enabled: false
 
   # Gossip configuration to reach Overwatch
   gossip:

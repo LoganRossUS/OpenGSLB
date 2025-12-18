@@ -5,6 +5,85 @@ All notable changes to OpenGSLB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-12-18
+
+### Added
+
+#### Unified Server Architecture
+- **Unified backend registry**: Static, agent-registered, and API-registered servers all use the same validation and health tracking system
+- **Dynamic DNS registration**: API-created and agent-registered servers automatically appear in DNS responses
+- **Persistent server storage**: API-created servers persist across restarts using bbolt storage
+- **Unified health authority**: Manual overrides > Predictive > Validation > Staleness > Agent claim (applies to all server types)
+- **CRUD API for servers**: Full create, read, update, delete operations for server management via REST API
+
+#### Server Management API
+- **POST /api/v1/servers**: Create new servers dynamically without config changes
+- **GET /api/v1/servers**: List all servers (static, agent, and API-registered)
+- **GET /api/v1/servers/:id**: Get details for a specific server
+- **PATCH /api/v1/servers/:id**: Update server weight and region
+- **DELETE /api/v1/servers/:id**: Remove dynamically-created servers
+
+#### CLI Server Management
+- **gslbctl servers list**: Display all registered servers with their source and status
+- **gslbctl servers create**: Add new servers via API
+- **gslbctl servers update**: Modify server weight/region
+- **gslbctl servers delete**: Remove API-created servers
+
+### Changed
+
+#### Breaking Changes
+- **REQUIRED `service` field**: All servers in configuration must now specify which domain/service they belong to
+  ```yaml
+  servers:
+    - address: "10.0.1.10"
+      port: 80
+      weight: 100
+      service: "app.example.com"  # REQUIRED in v1.1.0
+  ```
+- **Migration required**: Existing configurations must add `service` field to all server definitions
+- **Validation enforced**: OpenGSLB will refuse to start if any server is missing the `service` field
+
+### Fixed
+- **DNS registration for dynamic servers**: API and agent-registered servers now correctly appear in DNS responses
+- **Persistence loading**: Servers loaded from storage on restart are now properly registered in DNS
+- **Status change callbacks**: Backend registry callbacks now trigger DNS registration/deregistration
+
+### Migration Guide
+
+To upgrade from v0.6.0 to v1.1.0:
+
+1. Add `service` field to all server definitions in your configuration:
+   ```yaml
+   # Before (v0.6.0)
+   regions:
+     - name: us-east
+       servers:
+         - address: "10.0.1.10"
+           port: 80
+           weight: 100
+
+   domains:
+     - name: app.example.com
+       regions: [us-east]
+
+   # After (v1.1.0)
+   regions:
+     - name: us-east
+       servers:
+         - address: "10.0.1.10"
+           port: 80
+           weight: 100
+           service: "app.example.com"  # Add service field
+
+   domains:
+     - name: app.example.com
+       regions: [us-east]
+   ```
+
+2. Update your configuration files before upgrading
+3. Test configuration with `opengslb --config config.yaml --validate`
+4. Restart OpenGSLB with updated configuration
+
 ## [0.6.0] - 2025-12-11
 
 ### Added

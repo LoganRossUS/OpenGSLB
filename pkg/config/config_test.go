@@ -35,7 +35,7 @@ func validOverwatchConfig() *Config {
 		},
 		Regions: []Region{{
 			Name:    "us-east-1",
-			Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100}},
+			Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100, Service: "app.example.com"}},
 			HealthCheck: HealthCheck{
 				Type:     "http",
 				Interval: 30 * time.Second,
@@ -580,7 +580,7 @@ func TestValidate_OverwatchNoDomains(t *testing.T) {
 		},
 		Regions: []Region{{
 			Name:    "us-east-1",
-			Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100}},
+			Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100, Service: "app.example.com"}},
 		}},
 		Domains: []Domain{}, // Empty, not nil - validation should check length
 		Logging: LoggingConfig{Level: "info", Format: "json"},
@@ -637,7 +637,7 @@ func TestValidate_OverwatchEmptyDomains(t *testing.T) {
 		},
 		Regions: []Region{{
 			Name:    "us-east-1",
-			Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100}},
+			Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100, Service: "app.example.com"}},
 		}},
 		Domains: []Domain{}, // Empty slice
 		Logging: LoggingConfig{Level: "info", Format: "json"},
@@ -656,8 +656,8 @@ func TestValidate_OverwatchEmptyDomains(t *testing.T) {
 func TestValidate_OverwatchDuplicateRegionNames(t *testing.T) {
 	cfg := validOverwatchConfig()
 	cfg.Regions = []Region{
-		{Name: "us-east-1", Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100}}},
-		{Name: "us-east-1", Servers: []Server{{Address: "10.0.1.11", Port: 80, Weight: 100}}},
+		{Name: "us-east-1", Servers: []Server{{Address: "10.0.1.10", Port: 80, Weight: 100, Service: "app.example.com"}}},
+		{Name: "us-east-1", Servers: []Server{{Address: "10.0.1.11", Port: 80, Weight: 100, Service: "app.example.com"}}},
 	}
 
 	err := cfg.Validate()
@@ -1316,7 +1316,7 @@ agent:
 func TestValidate_IPv6ServerAddress(t *testing.T) {
 	cfg := validOverwatchConfig()
 	cfg.Regions[0].Servers = []Server{
-		{Address: "2001:db8::1", Port: 80, Weight: 100},
+		{Address: "2001:db8::1", Port: 80, Weight: 100, Service: "app.example.com"},
 	}
 
 	err := cfg.Validate()
@@ -1328,8 +1328,8 @@ func TestValidate_IPv6ServerAddress(t *testing.T) {
 func TestValidate_MixedIPv4IPv6(t *testing.T) {
 	cfg := validOverwatchConfig()
 	cfg.Regions[0].Servers = []Server{
-		{Address: "10.0.1.10", Port: 80, Weight: 100},
-		{Address: "2001:db8::1", Port: 80, Weight: 100},
+		{Address: "10.0.1.10", Port: 80, Weight: 100, Service: "app.example.com"},
+		{Address: "2001:db8::1", Port: 80, Weight: 100, Service: "app.example.com"},
 	}
 
 	err := cfg.Validate()

@@ -16,9 +16,10 @@ agent:
     service_token: "demo-token-12345"
 
   # Backend service this agent monitors
+  # IMPORTANT: Use the container's external IP so it matches the DNS config in overwatch.yaml
   backends:
     - service: app.demo.local
-      address: 127.0.0.1
+      address: 10.50.0.23
       port: 8080
       weight: 100
       health_check:
@@ -31,11 +32,12 @@ agent:
 
   # PREDICTIVE HEALTH MONITORING
   # This is the key differentiator - detect problems BEFORE they cause failures
+  # NOTE: In Docker, /proc/stat shows HOST CPU. Lower threshold for demo to work.
   predictive:
     enabled: true
     check_interval: 5s
     cpu:
-      threshold: 80        # Bleed when CPU exceeds 80%
+      threshold: 40        # Bleed when CPU exceeds 40% (lowered for Docker demo)
       bleed_duration: 30s
     memory:
       threshold: 85        # Bleed when memory exceeds 85%
