@@ -1257,9 +1257,10 @@ func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
 	return true
 }
 
-// healthManagerLatencyProvider implements routing.LatencyProvider using the health.Manager.
-type healthManagerLatencyProvider struct {
-	manager *health.Manager
+// backendRegistryLatencyProvider implements routing.LatencyProvider using the backend registry.
+// v1.1.0: Unified latency tracking for static, agent, and API-registered servers.
+type backendRegistryLatencyProvider struct {
+	registry *overwatch.Registry
 }
 
 // GetLatency returns latency information for a server from the backend registry.
