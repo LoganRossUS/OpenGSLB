@@ -195,6 +195,10 @@ api:
 | `cors.allow_credentials` | bool | `false` | Allow credentials in requests |
 | `cors.max_age` | int | `86400` | Preflight cache duration in seconds |
 
+> **Note:** The `allowed_networks` list is matched exactly by IP family. If you want to allow all IPs,
+> you must include both `0.0.0.0/0` (IPv4) and `::/0` (IPv6). Including only `0.0.0.0/0` will block
+> IPv6 clients, including localhost connections via `::1`.
+
 ---
 
 ## Simple Health Check
