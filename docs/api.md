@@ -16,6 +16,8 @@ OpenGSLB provides a comprehensive REST API for health status monitoring, externa
 - [Liveness & Readiness Probes](#liveness--readiness-probes)
   - [GET /api/v1/ready](#get-apiv1ready)
   - [GET /api/v1/live](#get-apiv1live)
+- [Version Endpoint](#version-endpoint)
+  - [GET /api/v1/version](#get-apiv1version)
 - [Domain API](#domain-api)
   - [GET /api/v1/domains](#get-apiv1domains)
   - [GET /api/v1/domains/{name}](#get-apiv1domainsname)
@@ -23,6 +25,8 @@ OpenGSLB provides a comprehensive REST API for health status monitoring, externa
   - [PUT /api/v1/domains/{name}](#put-apiv1domainsname)
   - [DELETE /api/v1/domains/{name}](#delete-apiv1domainsname)
   - [GET /api/v1/domains/{name}/backends](#get-apiv1domainsnamebackends)
+  - [POST /api/v1/domains/{name}/backends](#post-apiv1domainsnamebackends)
+  - [DELETE /api/v1/domains/{name}/backends/{id}](#delete-apiv1domainsnamebackendsid)
 - [Server API](#server-api)
   - [GET /api/v1/servers](#get-apiv1servers)
   - [GET /api/v1/servers/{id}](#get-apiv1serversid)
@@ -137,6 +141,7 @@ The API exposes internal infrastructure details including server addresses, heal
 | `/api/v1/overwatch/*` | Yes |
 | `/api/v1/ready` | **No** |
 | `/api/v1/live` | **No** |
+| `/api/v1/version` | **No** |
 
 By default, the API:
 - Binds to `127.0.0.1:8080` (localhost only)
@@ -376,9 +381,41 @@ Liveness probe. Returns 200 if the process is running.
 
 ---
 
+## Version Endpoint
+
+### GET /api/v1/version
+
+Returns build version and information. This endpoint is **not** ACL protected.
+
+**ACL Protected:** No
+
+**Response:** `200 OK`
+
+```json
+{
+  "version": "1.1.2",
+  "go_version": "go1.21.0",
+  "git_commit": "abc123def",
+  "build_date": "2025-12-18T10:30:00Z"
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `version` | string | OpenGSLB version |
+| `go_version` | string | Go compiler version used to build |
+| `git_commit` | string | Git commit hash of the build |
+| `build_date` | string | ISO 8601 timestamp of when the binary was built |
+
+---
+
 ## Domain API
 
 Manage DNS domain configurations.
+
+**NEW in v1.1.1:** Full CRUD support for domains and backends. API-created domains are automatically registered with the DNS server for immediate DNS resolution (v1.1.2).
 
 ### GET /api/v1/domains
 
@@ -522,6 +559,81 @@ Get backends for a domain.
   "generated_at": "2025-01-15T10:30:00Z"
 }
 ```
+
+---
+
+### POST /api/v1/domains/{name}/backends
+
+Add a backend server to a domain (**v1.1.1**). The backend is automatically registered with the DNS server for immediate DNS resolution (**v1.1.2**).
+
+**ACL Protected:** Yes
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | string | Domain name |
+
+**Request Body:**
+
+```json
+{
+  "address": "10.0.2.10",
+  "port": 443,
+  "weight": 100,
+  "region": "us-west-2"
+}
+```
+
+**Request Fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `address` | string | **Yes** | Server IP address |
+| `port` | int | **Yes** | Server port |
+| `weight` | int | No | Load balancing weight (default: 1) |
+| `region` | string | No | Geographic region |
+
+**Response:** `201 Created`
+
+```json
+{
+  "message": "backend added",
+  "id": "api.example.com:10.0.2.10:443"
+}
+```
+
+**Error Responses:**
+
+- `400 Bad Request` - Domain not found or backend already exists
+- `501 Not Implemented` - Store not configured
+
+---
+
+### DELETE /api/v1/domains/{name}/backends/{id}
+
+Remove a backend from a domain (**v1.1.1**). The backend is automatically deregistered from the DNS server (**v1.1.2**).
+
+**Note:** Only API-created backends can be deleted. Config-based backends cannot be deleted via API.
+
+**ACL Protected:** Yes
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | string | Domain name |
+| `id` | string | Backend ID format: `{domain}:{address}:{port}` |
+
+**Example:** `DELETE /api/v1/domains/api.example.com/backends/api.example.com:10.0.2.10:443`
+
+**Response:** `204 No Content`
+
+**Error Responses:**
+
+- `400 Bad Request` - Cannot delete config-based backend
+- `404 Not Found` - Backend not found
+- `501 Not Implemented` - Store not configured
 
 ---
 
@@ -2581,6 +2693,28 @@ curl -X DELETE http://localhost:8080/api/v1/overrides/api-service/10.0.1.10
 
 # Get DNSSEC status
 curl http://localhost:8080/api/v1/dnssec/status
+
+# Get version information
+curl http://localhost:8080/api/v1/version
+
+# Create a new domain
+curl -X POST http://localhost:8080/api/v1/domains \
+  -H "Content-Type: application/json" \
+  -d '{"name": "api.example.com", "ttl": 300, "routing_policy": "latency"}'
+
+# Add a backend to a domain
+curl -X POST http://localhost:8080/api/v1/domains/api.example.com/backends \
+  -H "Content-Type: application/json" \
+  -d '{"address": "10.0.2.10", "port": 443, "weight": 100, "region": "us-west-2"}'
+
+# List backends for a domain
+curl http://localhost:8080/api/v1/domains/api.example.com/backends
+
+# Remove a backend from a domain
+curl -X DELETE http://localhost:8080/api/v1/domains/api.example.com/backends/api.example.com:10.0.2.10:443
+
+# Delete a domain
+curl -X DELETE http://localhost:8080/api/v1/domains/api.example.com
 
 # Get DS records for a specific zone
 curl "http://localhost:8080/api/v1/dnssec/ds?zone=example.com"
