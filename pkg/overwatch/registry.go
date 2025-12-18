@@ -946,6 +946,18 @@ func (r *Registry) checkStaleBackends() {
 	var toRemove []string
 
 	for key, backend := range r.backends {
+		// v1.1.1: Skip staleness check for static servers - they don't have agent heartbeats
+		// Static servers are defined in config and validated externally, not via agent gossip
+		if backend.Source == SourceStatic {
+			// Still recompute effective status for static servers (validation results, overrides)
+			oldStatus := backend.EffectiveStatus
+			r.computeEffectiveStatus(backend)
+			if oldStatus != backend.EffectiveStatus && r.onStatusChange != nil {
+				r.onStatusChange(backend, oldStatus, backend.EffectiveStatus)
+			}
+			continue
+		}
+
 		timeSinceLastSeen := now.Sub(backend.AgentLastSeen)
 
 		// Check if backend should be removed (no heartbeat for too long)
