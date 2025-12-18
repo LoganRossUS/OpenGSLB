@@ -698,6 +698,11 @@ func (a *Application) initializeAPIServer() error {
 			a.logger.Debug("domain provider wired to DNS registry",
 				"dns_registry_ptr", fmt.Sprintf("%p", a.dnsRegistry),
 			)
+
+			// Load stored domains and backends into DNS registry on startup
+			if err := domainProvider.LoadStoredDomainsIntoDNS(); err != nil {
+				a.logger.Warn("failed to load stored domains into DNS registry", "error", err)
+			}
 		}
 		server.SetDomainHandlers(api.NewDomainHandlers(domainProvider, a.logger))
 		a.logger.Debug("domain API handlers registered")

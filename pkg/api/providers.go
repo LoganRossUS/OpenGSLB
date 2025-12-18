@@ -95,6 +95,105 @@ func (p *RegistryDomainProvider) SetRouterFactory(factory func(string) (interfac
 	p.routerFactory = factory
 }
 
+// LoadStoredDomainsIntoDNS loads API-created domains and their backends from the store
+// and registers them with the DNS registry. This should be called on startup after
+// the DNS registry and router factory are set.
+func (p *RegistryDomainProvider) LoadStoredDomainsIntoDNS() error {
+	if p.store == nil {
+		p.logger.Debug("no store configured, skipping stored domain loading")
+		return nil
+	}
+	if p.dnsRegistry == nil {
+		p.logger.Debug("no DNS registry configured, skipping stored domain loading")
+		return nil
+	}
+	if p.routerFactory == nil {
+		p.logger.Debug("no router factory configured, skipping stored domain loading")
+		return nil
+	}
+
+	// Load all stored domains
+	pairs, err := p.store.List(context.Background(), store.PrefixDomains)
+	if err != nil {
+		return fmt.Errorf("failed to list stored domains: %w", err)
+	}
+
+	loadedDomains := 0
+	loadedBackends := 0
+
+	for _, pair := range pairs {
+		var domain Domain
+		if err := json.Unmarshal(pair.Value, &domain); err != nil {
+			p.logger.Warn("failed to unmarshal stored domain", "key", pair.Key, "error", err)
+			continue
+		}
+
+		// Register domain with DNS registry
+		ttl := uint32(domain.TTL)
+		if ttl == 0 {
+			ttl = uint32(config.DefaultTTL)
+		}
+		algorithm := domain.RoutingPolicy
+		if algorithm == "" {
+			algorithm = config.DefaultRoutingAlgorithm
+		}
+
+		if err := p.dnsRegistry.RegisterDomainDynamic(domain.Name, ttl, algorithm, p.routerFactory); err != nil {
+			p.logger.Warn("failed to register stored domain with DNS",
+				"domain", domain.Name,
+				"error", err,
+			)
+			continue
+		}
+		loadedDomains++
+
+		// Load backends for this domain
+		backendPrefix := store.PrefixDomainBackends + domain.Name + "/"
+		backendPairs, err := p.store.List(context.Background(), backendPrefix)
+		if err != nil {
+			p.logger.Warn("failed to list backends for stored domain",
+				"domain", domain.Name,
+				"error", err,
+			)
+			continue
+		}
+
+		for _, bp := range backendPairs {
+			var backend DomainBackend
+			if err := json.Unmarshal(bp.Value, &backend); err != nil {
+				p.logger.Warn("failed to unmarshal stored backend",
+					"key", bp.Key,
+					"error", err,
+				)
+				continue
+			}
+
+			if err := p.dnsRegistry.RegisterServer(
+				domain.Name,
+				backend.Address,
+				backend.Port,
+				backend.Weight,
+				backend.Region,
+			); err != nil {
+				p.logger.Warn("failed to register stored backend with DNS",
+					"domain", domain.Name,
+					"backend", backend.ID,
+					"error", err,
+				)
+				continue
+			}
+			loadedBackends++
+		}
+	}
+
+	p.logger.Info("loaded stored domains into DNS registry",
+		"domains", loadedDomains,
+		"backends", loadedBackends,
+	)
+
+	return nil
+}
+
 // ListDomains returns all configured domains.
 func (p *RegistryDomainProvider) ListDomains() []Domain {
 	// Start with domains from config file
