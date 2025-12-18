@@ -102,4 +102,20 @@ const (
 	// PrefixPinnedCerts is the prefix for TOFU-pinned agent certificates.
 	// Key format: "pinned_certs/{agent_id}"
 	PrefixPinnedCerts = "pinned_certs/"
+
+	// PrefixDomains is the prefix for domain configurations created via API.
+	// Key format: "domains/{domain_name}"
+	PrefixDomains = "domains/"
+
+	// PrefixServers is the prefix for server configurations created via API.
+	// Key format: "servers/{server_id}"
+	PrefixServers = "servers/"
+
+	// PrefixRegions is the prefix for region configurations created via API.
+	// Key format: "regions/{region_id}"
+	PrefixRegions = "regions/"
+
+	// PrefixDomainBackends is the prefix for domain-backend associations created via API.
+	// Key format: "domain_backends/{domain_name}/{server_id}"
+	PrefixDomainBackends = "domain_backends/"
 )
