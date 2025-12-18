@@ -693,6 +693,418 @@ metrics:
 
 ---
 
+## ADR-016: Unified Server Registration and Service-to-Domain Mapping
+**Status**: Accepted
+**Date**: 2025-12-18
+**Version**: Introduces breaking changes → OpenGSLB 1.1.0
+
+### Context
+
+Prior to v1.1.0, OpenGSLB had **two parallel and disconnected tracking systems** for backend servers:
+
+1. **Static Servers (Config-based)**: Defined in `regions[].servers[]`, used by DNS registry, validated by Health Manager
+2. **Agent-Registered Servers (Dynamic)**: Registered via gossip with `backend.service` field, tracked in Backend Registry, never used for DNS responses
+
+This created fundamental architectural problems:
+
+**Problem 1: No Service-to-Domain Mapping for Static Servers**
+```yaml
+regions:
+  - name: us-east
+    servers:
+      - address: 10.0.1.10:8080  # webapp server
+      - address: 10.0.1.11:9000  # api server
+      - address: 10.0.1.12:5432  # database server
+
+domains:
+  - name: webapp.example.com
+    regions:
+      - us-east  # ← Includes ALL 3 servers (webapp, api, database)!
+```
+
+**Result**: DNS queries for `webapp.example.com` could return the database IP because all servers in a region were included in all domains using that region.
+
+**Problem 2: Agent-Registered Servers Not Used for DNS**
+
+Agents correctly specified `backend.service = domain.name` but this data was:
+- Stored in Backend Registry
+- Used for API queries (`/api/v1/domains/{name}/backends`)
+- **Never consulted by DNS handler**
+
+DNS responses were built exclusively from static config, ignoring agent registrations entirely.
+
+**Problem 3: Two Separate Health Tracking Systems**
+
+```go
+// DNS Handler used Health Manager (static servers only)
+handler := dns.NewHandler(dns.HandlerConfig{
+    HealthProvider: a.healthManager,  // ← Static servers only!
+})
+
+// Backend Registry tracked agent health (never used for DNS)
+backendRegistry.IsHealthy(address, port)  // ← Method exists, never called!
+```
+
+**Problem 4: No API for Server Management**
+
+- No way to add/remove servers dynamically via API
+- Required config file reload for changes
+- Couldn't build dynamic server pools
+
+### Decision
+
+**Unify server registration** with three registration methods feeding a single source of truth:
+
+1. **Static Configuration** (YAML file)
+2. **Agent Self-Registration** (gossip heartbeat)
+3. **API Registration** (HTTP POST)
+
+All three methods register servers into a **unified Backend Registry** that feeds the **DNS Registry** for query responses.
+
+### Architecture Overview
+
+#### Before v1.1.0 (Two Parallel Worlds)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    STATIC WORLD                                      │
+│                                                                      │
+│   Config File (regions.servers)                                     │
+│         ↓                                                            │
+│   DNS Registry ← built at startup, never updated                    │
+│         ↓                                                            │
+│   DNS Handler ← answers queries                                     │
+│         ↓                                                            │
+│   Health Manager ← checks health of static servers                  │
+│                                                                      │
+│   ❌ No service field on servers                                     │
+│   ❌ All servers in region go to all domains                         │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                    DYNAMIC WORLD                                     │
+│                                                                      │
+│   Agent Heartbeat (backend.service = domain name)                   │
+│         ↓                                                            │
+│   Backend Registry ← stores by "service:address:port"               │
+│         ↓                                                            │
+│   Validator ← checks health externally                              │
+│         ↓                                                            │
+│   API Handlers ← for /api/v1/domains/{name}/backends                │
+│                                                                      │
+│   ❌ NOT used for DNS responses!                                     │
+│   ❌ Parallel health tracking                                        │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### After v1.1.0 (Unified Architecture)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    UNIFIED REGISTRATION                              │
+│                                                                      │
+│   ┌─────────────────┐  ┌──────────────────┐  ┌──────────────────┐  │
+│   │ Static Config   │  │ Agent Heartbeat  │  │ API POST         │  │
+│   │ (YAML)          │  │ (Gossip)         │  │ (HTTP)           │  │
+│   └────────┬────────┘  └────────┬─────────┘  └────────┬─────────┘  │
+│            │                    │                      │            │
+│            └────────────────────┼──────────────────────┘            │
+│                                 ↓                                   │
+│                      BACKEND REGISTRY                               │
+│                   (Single Source of Truth)                          │
+│              - Tracks ALL servers                                   │
+│              - Each server has service field                        │
+│              - Indexed by "service:address:port"                    │
+│                                 ↓                                   │
+│                   ┌─────────────┴─────────────┐                     │
+│                   ↓                           ↓                     │
+│            DNS REGISTRY                   VALIDATOR                 │
+│         (Dynamic Updates)            (External Validation)          │
+│                   ↓                                                 │
+│            DNS HANDLER                                              │
+│         (Answers Queries)                                           │
+│                                                                     │
+│   ✅ All servers mapped to specific domains                         │
+│   ✅ DNS responses include agent-registered servers                 │
+│   ✅ Unified health tracking                                        │
+│   ✅ Full CRUD via API                                              │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation Details
+
+#### 1. Required `service` Field on Static Servers
+
+**Before:**
+```yaml
+regions:
+  - name: us-east
+    servers:
+      - address: 10.0.1.10
+        port: 8080
+        weight: 100
+```
+
+**After (v1.1.0):**
+```yaml
+regions:
+  - name: us-east
+    servers:
+      - address: 10.0.1.10
+        port: 8080
+        weight: 100
+        service: webapp.example.com  # ← REQUIRED
+```
+
+**Rationale**:
+- Explicit is better than implicit
+- Prevents accidental misconfiguration
+- Matches agent backend model
+- Since no production deployments exist, breaking change is acceptable
+
+#### 2. Dynamic DNS Registry Updates
+
+**DNS Registry** gains new methods:
+- `RegisterServer(service, address, port, weight, region)` - Add/update server
+- `DeregisterServer(service, address, port)` - Remove server
+- `UpdateServerWeight(service, address, port, weight)` - Adjust weight
+
+**Trigger points**:
+- **Agent heartbeat received** → Register server in DNS registry
+- **Agent goes stale** → Deregister server from DNS registry
+- **API POST /servers** → Register server in DNS registry
+- **API DELETE /servers/{id}** → Deregister server from DNS registry
+- **Config reload** → Re-register static servers
+
+#### 3. Unified Backend Registry
+
+Backend Registry becomes the **single source of truth** for all servers:
+
+```go
+type Backend struct {
+    Service         string          // Domain name (e.g., "webapp.example.com")
+    Address         string          // IP address
+    Port            int             // Port number
+    Weight          int             // Load balancing weight
+    Region          string          // Geographic region
+
+    // Health tracking
+    AgentHealthy    bool            // Agent's local health claim
+    AgentLastSeen   time.Time       // Last heartbeat from agent
+    ValidationHealthy bool          // Overwatch external validation result
+    EffectiveStatus BackendStatus   // Computed status (validation wins)
+
+    // Registration source
+    Source          RegistrationSource  // static, agent, api
+    AgentID         string              // Empty if static/API
+
+    // Metadata
+    CreatedAt       time.Time
+    UpdatedAt       time.Time
+}
+
+type RegistrationSource string
+const (
+    SourceStatic RegistrationSource = "static"  // Config file
+    SourceAgent  RegistrationSource = "agent"   // Agent gossip
+    SourceAPI    RegistrationSource = "api"     // API call
+)
+```
+
+**Key behaviors**:
+- Static servers: `Source=SourceStatic`, `AgentID=""`, validation-only health
+- Agent servers: `Source=SourceAgent`, `AgentID="agent-123"`, predictive health
+- API servers: `Source=SourceAPI`, `AgentID=""`, validation-only health
+
+#### 4. Unified External Validation
+
+Validator validates **ALL** backends in registry, regardless of source:
+
+```go
+// Validator checks all backends
+for _, backend := range registry.GetAllBackends() {
+    result := validator.Check(backend.Address, backend.Port, healthCheckConfig)
+    registry.UpdateValidationResult(backend, result)
+}
+```
+
+**Authority hierarchy** (unchanged from ADR-015):
+1. Human override (API) - highest
+2. External tool override (API)
+3. **Overwatch external validation** - always wins over agent claims
+4. Agent health claim - lowest
+
+#### 5. Server CRUD API
+
+**New endpoints**:
+
+```bash
+# List all servers for a service
+GET /api/v1/services/{service}/servers
+
+# Add server (API registration)
+POST /api/v1/services/{service}/servers
+{
+  "address": "10.0.1.50",
+  "port": 8080,
+  "weight": 100,
+  "region": "us-east"
+}
+
+# Update server weight
+PATCH /api/v1/services/{service}/servers/{address}:{port}
+{
+  "weight": 150
+}
+
+# Remove server
+DELETE /api/v1/services/{service}/servers/{address}:{port}
+
+# Get server details
+GET /api/v1/services/{service}/servers/{address}:{port}
+```
+
+**Response includes registration source**:
+```json
+{
+  "service": "webapp.example.com",
+  "address": "10.0.1.10",
+  "port": 8080,
+  "weight": 100,
+  "region": "us-east",
+  "source": "agent",
+  "agent_id": "agent-us-east-1",
+  "healthy": true,
+  "effective_status": "healthy",
+  "agent_last_seen": "2025-12-18T10:30:00Z",
+  "validation_result": "healthy",
+  "last_validated": "2025-12-18T10:29:45Z"
+}
+```
+
+### Configuration Changes
+
+#### Static Server Configuration (BREAKING CHANGE)
+
+**Old (v1.0.x) - NO LONGER VALID**:
+```yaml
+regions:
+  - name: us-east
+    servers:
+      - address: 10.0.1.10
+        port: 8080
+```
+
+**New (v1.1.0) - REQUIRED**:
+```yaml
+regions:
+  - name: us-east
+    servers:
+      - address: 10.0.1.10
+        port: 8080
+        weight: 100
+        service: webapp.example.com  # ← REQUIRED
+```
+
+#### Agent Configuration (UNCHANGED)
+
+Agent backends already have the `service` field:
+```yaml
+agent:
+  backends:
+    - service: webapp.example.com  # ✓ Already correct
+      address: 127.0.0.1
+      port: 8080
+```
+
+#### Domain Configuration (UNCHANGED)
+
+Domains still reference regions:
+```yaml
+domains:
+  - name: webapp.example.com
+    regions:
+      - us-east
+    routing_algorithm: weighted
+```
+
+**But now**: Only servers where `service == "webapp.example.com"` are included in the domain's server pool.
+
+### Migration Guide (v1.0.x → v1.1.0)
+
+**Step 1**: Add `service` field to all static servers in config:
+```yaml
+# Before
+servers:
+  - address: 10.0.1.10
+    port: 8080
+    weight: 100
+
+# After
+servers:
+  - address: 10.0.1.10
+    port: 8080
+    weight: 100
+    service: webapp.example.com  # Add this
+```
+
+**Step 2**: Validate configuration:
+```bash
+opengslb validate --config /etc/opengslb/overwatch.yaml
+```
+
+**Step 3**: Upgrade binary
+
+**Step 4**: Restart service
+
+**Validation**: Configuration without `service` field will **fail validation** with clear error message.
+
+### Consequences
+
+#### Positive
+
+✅ **Unified architecture**: Single source of truth for all servers
+✅ **Service-to-domain mapping**: Explicit, prevents misconfiguration
+✅ **Dynamic DNS**: Agent-registered servers immediately available in DNS
+✅ **API-driven ops**: Full CRUD for server management
+✅ **Unified health tracking**: One validation system for all servers
+✅ **Better observability**: Registration source visible in metrics/API
+✅ **Predictable behavior**: Clear data flow from registration → validation → DNS
+
+#### Negative (Mitigated)
+
+⚠️ **Breaking change**: Requires `service` field on all static servers
+→ **Mitigation**: Clear error messages, validation tool, migration guide
+
+⚠️ **More coupling**: DNS registry now updated by multiple sources
+→ **Mitigation**: Thread-safe registry with clear ownership, audit logging
+
+⚠️ **Config verbosity**: `service` field adds lines to config
+→ **Mitigation**: Necessary explicitness, prevents errors
+
+### Implementation Checklist
+
+- [x] Update `Server` struct with required `service` field
+- [ ] Add dynamic registration methods to DNS Registry
+- [ ] Wire agent heartbeat to DNS Registry updates
+- [ ] Extend Backend Registry with `Source` field
+- [ ] Add Server CRUD API endpoints
+- [ ] Update all demo configurations
+- [ ] Update documentation (config reference, deployment guides)
+- [ ] Update version to 1.1.0
+- [ ] Add config validation with clear error messages
+- [ ] Test all three registration methods
+
+### Related ADRs
+
+- **ADR-015**: Agent-Overwatch Architecture - Established agent registration via gossip
+- **ADR-004**: Configuration via YAML Files - Extended with service field requirement
+
+---
+
 ## Document History
 
 | Date | ADR | Change |
@@ -701,3 +1113,4 @@ metrics:
 | 2024-12 | 009-011 | Sprint 2/3 decisions |
 | 2025-04 | 012-014 | Distributed architecture (Raft-based) |
 | 2025-12 | 015 | **Agent-Overwatch architecture** (supersedes 003, 007, 012, 013, 014) |
+| 2025-12 | 016 | **Unified Server Registration** (v1.1.0 breaking changes) |

@@ -49,12 +49,15 @@ regions:
       - address: 10.30.0.21
         port: 80
         weight: 100
+        service: app.demo.local  # v1.1.0: Required - domain this server belongs to
       - address: 10.30.0.22
         port: 80
         weight: 100
+        service: app.demo.local
       - address: 10.30.0.23
         port: 80
         weight: 100
+        service: app.demo.local
     health_check:
       type: http
       path: /health

@@ -270,6 +270,10 @@ func (c *Config) validateRegions() error {
 			if server.Port <= 0 || server.Port > 65535 {
 				return fmt.Errorf("%s.port must be between 1 and 65535", serverPrefix)
 			}
+			// v1.1.0: Service field is required (breaking change)
+			if server.Service == "" {
+				return fmt.Errorf("%s.service is required (v1.1.0). Each server must specify which domain/service it belongs to.\n       Example: service: webapp.example.com", serverPrefix)
+			}
 		}
 
 		// Health check validation
@@ -291,6 +295,7 @@ func (c *Config) validateDomains() error {
 		regionNames[region.Name] = true
 	}
 
+	// Build domain name set
 	domainNames := make(map[string]bool)
 
 	for i, domain := range c.Domains {
@@ -325,6 +330,24 @@ func (c *Config) validateDomains() error {
 		}
 	}
 
+	// v1.1.0: Validate that server.service fields reference defined domains
+	if err := c.validateServerServiceReferences(domainNames); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateServerServiceReferences ensures all server.service fields reference defined domains.
+func (c *Config) validateServerServiceReferences(domainNames map[string]bool) error {
+	for i, region := range c.Regions {
+		for j, server := range region.Servers {
+			if server.Service != "" && !domainNames[server.Service] {
+				return fmt.Errorf("regions[%d].servers[%d].service %q: domain not found. Ensure this domain is defined in the domains section",
+					i, j, server.Service)
+			}
+		}
+	}
 	return nil
 }
 
