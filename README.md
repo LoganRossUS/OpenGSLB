@@ -23,17 +23,23 @@ See [LICENSE](LICENSE) for full terms.
 - **UDP and TCP**: Handles both transport protocols
 - **Configurable TTL**: Per-domain TTL settings with global default fallback
 - **Authoritative Responses**: Returns proper NXDOMAIN, SERVFAIL, and NOERROR responses
+- **DNSSEC**: Automatic key management with zone signing and DS record generation
 
 ### Routing Algorithms
 - **Round-Robin**: Even distribution across healthy servers with per-domain rotation
 - **Weighted**: Proportional traffic distribution based on server capacity (weight 0-1000)
 - **Failover (Active/Standby)**: Predictable primary → secondary → tertiary failover with automatic return-to-primary
+- **Geolocation-Based**: Route clients to nearest region using MaxMind GeoIP2 with custom CIDR overrides
+- **Latency-Based**: Dynamically route to lowest-latency backends with EMA smoothing to prevent flapping
+- **EDNS Client Subnet (ECS)**: Extract client location from recursive resolvers for accurate geo-routing
 
 ### Health Checking
 - **HTTP/HTTPS**: Configurable endpoint path, expected status codes, and TLS support
 - **TCP**: Connection-based health checks for non-HTTP services (databases, custom protocols)
 - **Configurable Thresholds**: Separate failure and success thresholds to prevent flapping
 - **Per-Region Configuration**: Different health check settings for different server tiers
+- **Agent-Based Monitoring**: Distributed agents report health from edge locations with gossip-based sync
+- **External Validation**: Overwatch nodes independently verify agent health claims
 
 ### Operations
 - **Hot Reload**: Update configuration without restart via SIGHUP signal
