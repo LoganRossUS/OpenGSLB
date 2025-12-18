@@ -361,11 +361,30 @@ func (a *Application) initializeBackendRegistry() error {
 
 	a.backendRegistry = overwatch.NewRegistry(registryCfg, a.overwatchStore)
 
-	// Set up status change callback for metrics and DNS deregistration
+	// Set up status change callback for metrics and DNS registration/deregistration
 	a.backendRegistry.OnStatusChange(func(backend *overwatch.Backend, oldStatus, newStatus overwatch.BackendStatus) {
 		overwatch.RecordBackendStatusChange(backend.Service, oldStatus, newStatus)
 		// Update registry metrics
 		overwatch.UpdateRegistryMetrics(a.backendRegistry)
+
+		// v1.1.0: Register new backends in DNS (oldStatus is empty, newStatus is set)
+		if oldStatus == "" && newStatus != "" && a.dnsRegistry != nil {
+			if err := a.dnsRegistry.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
+				a.logger.Warn("failed to register backend in DNS",
+					"service", backend.Service,
+					"address", backend.Address,
+					"port", backend.Port,
+					"error", err,
+				)
+			} else {
+				a.logger.Info("registered backend in DNS",
+					"service", backend.Service,
+					"address", backend.Address,
+					"port", backend.Port,
+					"source", backend.Source,
+				)
+			}
+		}
 
 		// v1.1.0: Deregister from DNS when backend is removed (newStatus is empty string)
 		if newStatus == "" && a.dnsRegistry != nil {
@@ -392,6 +411,42 @@ func (a *Application) initializeBackendRegistry() error {
 		"remove_after", removeAfter,
 		"persistence", a.overwatchStore != nil,
 	)
+
+	// v1.1.0: Register static servers from config into backend registry
+	// This unifies validation - static servers use same validation as agent servers
+	if err := a.registerStaticServers(); err != nil {
+		return fmt.Errorf("failed to register static servers: %w", err)
+	}
+
+	return nil
+}
+
+// registerStaticServers registers all static servers from config into backend registry.
+// v1.1.0: Unified architecture - static servers use same validation system as agents.
+func (a *Application) registerStaticServers() error {
+	staticCount := 0
+
+	for _, region := range a.config.Regions {
+		for _, server := range region.Servers {
+			if err := a.backendRegistry.RegisterStatic(
+				server.Service,
+				server.Address,
+				server.Port,
+				server.Weight,
+				region.Name,
+			); err != nil {
+				return fmt.Errorf("failed to register static server %s:%d: %w",
+					server.Address, server.Port, err)
+			}
+			staticCount++
+		}
+	}
+
+	a.logger.Info("static servers registered in backend registry",
+		"count", staticCount,
+		"source", "config",
+	)
+
 	return nil
 }
 
@@ -472,11 +527,11 @@ func (a *Application) initializeGossipHandler() error {
 
 // initializeDNSServer creates and configures the DNS server.
 func (a *Application) initializeDNSServer() error {
-	// Create a routing factory with access to the health manager for latency-based routing
-	latencyProvider := &healthManagerLatencyProvider{manager: a.healthManager}
+	// v1.1.0: Use backend registry for latency (unified for static, agent, and API servers)
+	latencyProvider := &backendRegistryLatencyProvider{registry: a.backendRegistry}
 	routerFactory := routing.NewFactory(routing.FactoryConfig{
 		LatencyProvider:   latencyProvider,
-		MinLatencySamples: 1,             // Health manager tracks one sample at a time
+		MinLatencySamples: 1,             // Backend registry tracks latency from external validation
 		GeoResolver:       a.geoResolver, // Demo 4: GeoIP-based routing
 		Logger:            a.logger,
 	})
@@ -505,9 +560,10 @@ func (a *Application) initializeDNSServer() error {
 	}
 
 	// ADR-015: No leader checker needed - all Overwatch nodes serve DNS independently
+	// v1.1.0: Use backend registry for health (unified for static, agent, and API servers)
 	handler := dns.NewHandler(dns.HandlerConfig{
 		Registry:       registry,
-		HealthProvider: a.healthManager,
+		HealthProvider: a.backendRegistry,
 		LeaderChecker:  nil, // Standalone mode - always serve
 		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
 		ECSEnabled:     a.config.Overwatch.Geolocation.ECSEnabled, // Demo 4: EDNS Client Subnet for GeoIP
@@ -591,8 +647,9 @@ func (a *Application) initializeAPIServer() error {
 		server.SetDomainHandlers(api.NewDomainHandlers(domainProvider, a.logger))
 		a.logger.Debug("domain API handlers registered")
 
-		// Server handlers - provides backend server information from the registry
-		serverProvider := api.NewRegistryServerProvider(a.backendRegistry, a.config, a.logger)
+		// v1.1.0: Server handlers - CRUD operations for servers (static, agent, and API-registered)
+		// Use adapter to avoid circular dependency
+		serverProvider := newBackendRegistryServerProvider(a.backendRegistry)
 		server.SetServerHandlers(api.NewServerHandlers(serverProvider, a.logger))
 		a.logger.Debug("server API handlers registered")
 
@@ -1051,11 +1108,11 @@ func (a *Application) reloadOverwatchMode(newCfg *config.Config) error {
 
 // reloadDNSRegistry updates the DNS registry with new domain configuration.
 func (a *Application) reloadDNSRegistry(newCfg *config.Config) error {
-	// Create a routing factory with access to the health manager for latency-based routing
-	latencyProvider := &healthManagerLatencyProvider{manager: a.healthManager}
+	// v1.1.0: Use backend registry for latency (unified for static, agent, and API servers)
+	latencyProvider := &backendRegistryLatencyProvider{registry: a.backendRegistry}
 	routerFactory := routing.NewFactory(routing.FactoryConfig{
 		LatencyProvider:   latencyProvider,
-		MinLatencySamples: 1,             // Health manager tracks one sample at a time
+		MinLatencySamples: 1,             // Backend registry tracks latency from external validation
 		GeoResolver:       a.geoResolver, // Demo 4: GeoIP-based routing
 		Logger:            a.logger,
 	})
@@ -1170,24 +1227,20 @@ func (r *regionMapper) GetServerRegion(address string, port int) string {
 	return ""
 }
 
-// healthManagerLatencyProvider implements routing.LatencyProvider using the health.Manager.
-type healthManagerLatencyProvider struct {
-	manager *health.Manager
+// backendRegistryLatencyProvider implements routing.LatencyProvider using the backend registry.
+// v1.1.0: Unified latency tracking for static, agent, and API-registered servers.
+type backendRegistryLatencyProvider struct {
+	registry *overwatch.Registry
 }
 
-// GetLatency returns latency information for a server from the health manager.
-func (p *healthManagerLatencyProvider) GetLatency(address string, port int) routing.LatencyInfo {
-	snapshot, found := p.manager.GetStatus(address, port)
-	if !found {
-		return routing.LatencyInfo{HasData: false}
-	}
-	if snapshot.LastLatency <= 0 {
-		return routing.LatencyInfo{HasData: false}
-	}
+// GetLatency returns latency information for a server from the backend registry.
+func (p *backendRegistryLatencyProvider) GetLatency(address string, port int) routing.LatencyInfo {
+	info := p.registry.GetLatency(address, port)
+	// Convert overwatch.LatencyInfo to routing.LatencyInfo
 	return routing.LatencyInfo{
-		SmoothedLatency: snapshot.LastLatency,
-		LastLatency:     snapshot.LastLatency,
-		Samples:         1, // Health manager tracks one sample at a time
-		HasData:         true,
+		SmoothedLatency: info.SmoothedLatency,
+		LastLatency:     info.LastLatency,
+		Samples:         info.Samples,
+		HasData:         info.HasData,
 	}
 }

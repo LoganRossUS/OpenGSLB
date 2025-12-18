@@ -275,6 +275,122 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 	return nil
 }
 
+// RegisterStatic registers a static backend from config file.
+// v1.1.0: Unified architecture - static servers use same validation as agent servers.
+func (r *Registry) RegisterStatic(service, address string, port, weight int, region string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	key := backendKey(service, address, port)
+	now := time.Now()
+
+	backend, exists := r.backends[key]
+	if !exists {
+		backend = &Backend{
+			Service:         service,
+			Address:         address,
+			Port:            port,
+			Weight:          weight,
+			Region:          region,
+			Source:          SourceStatic, // v1.1.0: Mark as static
+			CreatedAt:       now,
+			UpdatedAt:       now,
+			AgentID:         "", // No agent for static servers
+			AgentHealthy:    false,
+			EffectiveStatus: StatusHealthy, // Assume healthy until validated
+		}
+		r.backends[key] = backend
+		r.config.Logger.Info("static backend registered",
+			"service", service,
+			"address", address,
+			"port", port,
+			"region", region,
+			"source", "static",
+		)
+	} else {
+		// Update existing backend (e.g., on config reload)
+		backend.Weight = weight
+		backend.Region = region
+		backend.UpdatedAt = now
+		r.config.Logger.Debug("static backend updated",
+			"service", service,
+			"address", address,
+			"port", port,
+		)
+	}
+
+	oldStatus := backend.EffectiveStatus
+	r.computeEffectiveStatus(backend)
+
+	if oldStatus != backend.EffectiveStatus && r.onStatusChange != nil {
+		r.onStatusChange(backend, oldStatus, backend.EffectiveStatus)
+	}
+
+	// Persist to store
+	if r.store != nil {
+		if err := r.persistBackend(backend); err != nil {
+			r.config.Logger.Warn("failed to persist backend", "key", key, "error", err)
+		}
+	}
+
+	return nil
+}
+
+// RegisterAPI registers a backend via API call.
+// v1.1.0: API-registered servers use same validation as agent and static servers.
+func (r *Registry) RegisterAPI(service, address string, port, weight int, region string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	key := backendKey(service, address, port)
+
+	// Check if already exists
+	if _, exists := r.backends[key]; exists {
+		return fmt.Errorf("server already exists: %s", key)
+	}
+
+	now := time.Now()
+	backend := &Backend{
+		Service:         service,
+		Address:         address,
+		Port:            port,
+		Weight:          weight,
+		Region:          region,
+		Source:          SourceAPI, // v1.1.0: Mark as API-registered
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		AgentID:         "", // No agent for API-registered servers
+		AgentHealthy:    false,
+		AgentLastSeen:   now, // Initialize to prevent immediate staleness
+		EffectiveStatus: StatusHealthy, // Assume healthy until validated
+	}
+
+	r.backends[key] = backend
+	r.computeEffectiveStatus(backend)
+
+	// Notify status change (new backend)
+	if r.onStatusChange != nil {
+		r.onStatusChange(backend, "", backend.EffectiveStatus)
+	}
+
+	// Persist to store
+	if r.store != nil {
+		if err := r.persistBackend(backend); err != nil {
+			r.config.Logger.Warn("failed to persist backend", "key", key, "error", err)
+		}
+	}
+
+	r.config.Logger.Info("API backend registered",
+		"service", service,
+		"address", address,
+		"port", port,
+		"region", region,
+		"source", "api",
+	)
+
+	return nil
+}
+
 // Deregister removes a backend.
 func (r *Registry) Deregister(service, address string, port int) error {
 	r.mu.Lock()
