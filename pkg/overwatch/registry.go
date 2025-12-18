@@ -377,7 +377,7 @@ func (r *Registry) RegisterAPI(service, address string, port, weight int, region
 		UpdatedAt:       now,
 		AgentID:         "", // No agent for API-registered servers
 		AgentHealthy:    false,
-		AgentLastSeen:   now, // Initialize to prevent immediate staleness
+		AgentLastSeen:   now,           // Initialize to prevent immediate staleness
 		EffectiveStatus: StatusHealthy, // Assume healthy until validated
 	}
 

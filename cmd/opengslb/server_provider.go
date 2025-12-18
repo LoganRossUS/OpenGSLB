@@ -141,7 +141,7 @@ func (p *backendRegistryServerProvider) UpdateServerHealthCheck(id string, confi
 
 // backendToAPIServer converts a Backend to an api.BackendServer.
 func (p *backendRegistryServerProvider) backendToAPIServer(id string, backend *overwatch.Backend) api.BackendServer {
-	agentHealthy := "unknown"
+	var agentHealthy string
 	if backend.AgentHealthy {
 		agentHealthy = "healthy"
 	} else {
@@ -159,13 +159,13 @@ func (p *backendRegistryServerProvider) backendToAPIServer(id string, backend *o
 		Enabled:  backend.EffectiveStatus != overwatch.StatusDraining,
 		Healthy:  backend.EffectiveStatus == overwatch.StatusHealthy,
 		Metadata: map[string]string{
-			"service":           backend.Service,
-			"source":            string(backend.Source),
-			"effective_status":  string(backend.EffectiveStatus),
-			"agent_healthy":     agentHealthy,
-			"agent_last_seen":   backend.AgentLastSeen.Format(time.RFC3339),
-			"validation_check":  backend.ValidationLastCheck.Format(time.RFC3339),
-			"smoothed_latency":  backend.SmoothedLatency.String(),
+			"service":          backend.Service,
+			"source":           string(backend.Source),
+			"effective_status": string(backend.EffectiveStatus),
+			"agent_healthy":    agentHealthy,
+			"agent_last_seen":  backend.AgentLastSeen.Format(time.RFC3339),
+			"validation_check": backend.ValidationLastCheck.Format(time.RFC3339),
+			"smoothed_latency": backend.SmoothedLatency.String(),
 		},
 		CreatedAt: backend.CreatedAt,
 		UpdatedAt: backend.UpdatedAt,

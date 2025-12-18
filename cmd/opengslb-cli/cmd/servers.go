@@ -172,10 +172,6 @@ var serversCreateCmd = &cobra.Command{
 	},
 }
 
-var (
-	deleteServerID string
-)
-
 var serversDeleteCmd = &cobra.Command{
 	Use:   "delete SERVER_ID",
 	Short: "Delete a backend server",
@@ -202,7 +198,6 @@ var serversDeleteCmd = &cobra.Command{
 }
 
 var (
-	updateServerID     string
 	updateServerWeight int
 	updateServerRegion string
 )
@@ -272,10 +267,10 @@ func init() {
 	serversCreateCmd.Flags().StringVar(&createServerRegion, "region", "", "Server region (required)")
 	serversCreateCmd.Flags().StringVar(&createServerService, "service", "", "Service/domain name (required)")
 	serversCreateCmd.Flags().StringVar(&createServerProtocol, "protocol", "tcp", "Protocol (default: tcp)")
-	serversCreateCmd.MarkFlagRequired("address")
-	serversCreateCmd.MarkFlagRequired("port")
-	serversCreateCmd.MarkFlagRequired("service")
-	serversCreateCmd.MarkFlagRequired("region")
+	_ = serversCreateCmd.MarkFlagRequired("address")
+	_ = serversCreateCmd.MarkFlagRequired("port")
+	_ = serversCreateCmd.MarkFlagRequired("service")
+	_ = serversCreateCmd.MarkFlagRequired("region")
 
 	// Update command flags
 	serversUpdateCmd.Flags().IntVar(&updateServerWeight, "weight", 0, "New server weight")
