@@ -9,6 +9,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/loganrossus/OpenGSLB/pkg/api"
@@ -88,23 +90,43 @@ func (p *backendRegistryServerProvider) CreateServer(server api.BackendServer) e
 
 // UpdateServer updates an existing server.
 func (p *backendRegistryServerProvider) UpdateServer(id string, server api.BackendServer) error {
-	// For now, just support updating weight
-	// TODO: Add UpdateWeight method to registry or implement full update logic
-	return errors.New("update not yet implemented")
+	// Parse ID (format: service:address:port)
+	service, address, port, err := parseServerID(id)
+	if err != nil {
+		return err
+	}
+
+	// Update weight and/or region using the Update method
+	return p.registry.Update(service, address, port, server.Weight, server.Region)
 }
 
 // DeleteServer removes a server from the registry.
 func (p *backendRegistryServerProvider) DeleteServer(id string) error {
 	// Parse ID (format: service:address:port)
-	var service, address string
-	var port int
-
-	_, err := fmt.Sscanf(id, "%s:%s:%d", &service, &address, &port)
+	service, address, port, err := parseServerID(id)
 	if err != nil {
-		return fmt.Errorf("invalid server ID format (expected service:address:port): %w", err)
+		return err
 	}
 
 	return p.registry.Deregister(service, address, port)
+}
+
+// parseServerID parses a server ID in format service:address:port
+func parseServerID(id string) (service, address string, port int, err error) {
+	// Split by colons - expecting exactly 3 parts
+	parts := strings.Split(id, ":")
+	if len(parts) != 3 {
+		return "", "", 0, fmt.Errorf("invalid server ID format (expected service:address:port, got %d parts)", len(parts))
+	}
+
+	service = parts[0]
+	address = parts[1]
+	port, err = strconv.Atoi(parts[2])
+	if err != nil {
+		return "", "", 0, fmt.Errorf("invalid port in server ID: %w", err)
+	}
+
+	return service, address, port, nil
 }
 
 // GetServerHealthCheck returns health check configuration for a server.

@@ -414,6 +414,57 @@ func (r *Registry) RegisterAPI(service, address string, port, weight int, region
 	return nil
 }
 
+// Update updates an existing backend's weight and/or region.
+// v1.1.0: Supports updating backends registered via API or static config.
+func (r *Registry) Update(service, address string, port, weight int, region string) error {
+	r.mu.Lock()
+
+	key := backendKey(service, address, port)
+	backend, exists := r.backends[key]
+	if !exists {
+		r.mu.Unlock()
+		return fmt.Errorf("backend %s not found", key)
+	}
+
+	// Update fields
+	backend.Weight = weight
+	backend.Region = region
+	backend.UpdatedAt = time.Now()
+
+	oldStatus := backend.EffectiveStatus
+	r.computeEffectiveStatus(backend)
+	newStatus := backend.EffectiveStatus
+	statusChanged := oldStatus != newStatus
+
+	// Make a copy for the callback
+	backendCopy := *backend
+
+	// Persist to store
+	if r.store != nil {
+		if err := r.persistBackend(backend); err != nil {
+			r.config.Logger.Warn("failed to persist backend", "key", key, "error", err)
+		}
+	}
+
+	r.config.Logger.Info("backend updated",
+		"service", service,
+		"address", address,
+		"port", port,
+		"weight", weight,
+		"region", region,
+	)
+
+	// Release lock before calling callback
+	r.mu.Unlock()
+
+	// Call callback outside the lock
+	if statusChanged && r.onStatusChange != nil {
+		r.onStatusChange(&backendCopy, oldStatus, newStatus)
+	}
+
+	return nil
+}
+
 // Deregister removes a backend.
 func (r *Registry) Deregister(service, address string, port int) error {
 	r.mu.Lock()
@@ -832,18 +883,23 @@ func (r *Registry) computeEffectiveStatus(backend *Backend) {
 		return
 	}
 
-	// No validation result - check staleness
-	// Only mark stale if we have no external validation to rely on
-	if isStale {
+	// No validation result - check staleness (only for agent-registered backends)
+	// Static and API backends don't send heartbeats, so staleness doesn't apply
+	if backend.Source == SourceAgent && isStale {
 		backend.EffectiveStatus = StatusStale
 		return
 	}
 
-	// Fall back to agent claim
-	if backend.AgentHealthy {
-		backend.EffectiveStatus = StatusHealthy
+	// Fall back to agent claim for agent backends, assume healthy for static/API
+	if backend.Source == SourceAgent {
+		if backend.AgentHealthy {
+			backend.EffectiveStatus = StatusHealthy
+		} else {
+			backend.EffectiveStatus = StatusUnhealthy
+		}
 	} else {
-		backend.EffectiveStatus = StatusUnhealthy
+		// Static and API backends are healthy by default (unless validation says otherwise)
+		backend.EffectiveStatus = StatusHealthy
 	}
 }
 
