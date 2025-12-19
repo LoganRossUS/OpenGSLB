@@ -158,7 +158,7 @@ resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   type                 = "CustomScriptExtension"
   type_handler_version = "1.10"
 
-  protected_settings = jsonencode({
+  settings = jsonencode({
     commandToExecute = "powershell -ExecutionPolicy Bypass -EncodedCommand ${textencodebase64(templatefile("${path.module}/scripts/setup-windows.ps1.tpl", {
       admin_username = var.admin_username
       git_branch     = var.opengslb_git_branch
