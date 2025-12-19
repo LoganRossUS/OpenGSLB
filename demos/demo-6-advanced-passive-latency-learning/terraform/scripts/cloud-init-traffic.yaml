@@ -11,6 +11,7 @@ packages:
   - wrk
   - jq
   - tmux
+  - bc
 
 write_files:
   - path: /usr/local/bin/generate-traffic.sh
@@ -100,16 +101,31 @@ write_files:
       echo "Fetching latency table from Overwatch..."
       curl -s "http://$OVERWATCH:8080/api/v1/overwatch/latency" | jq .
 
+  - path: /usr/local/bin/cloud-init-log
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Helper script to log cloud-init progress with timestamps
+      LOG_FILE="/var/log/traffic-setup.log"
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+
 runcmd:
+  # Start logging
+  - /usr/local/bin/cloud-init-log "========== CLOUD-INIT STARTED =========="
+  - /usr/local/bin/cloud-init-log "Node type: Traffic Generator (${region})"
+
   # Install hey (HTTP load generator)
-  - curl -fsSL https://hey-release.s3.us-east-2.amazonaws.com/hey_linux_amd64 -o /usr/local/bin/hey
-  - chmod +x /usr/local/bin/hey
+  - /usr/local/bin/cloud-init-log "Downloading hey load testing tool..."
+  - curl -fsSL https://hey-release.s3.us-east-2.amazonaws.com/hey_linux_amd64 -o /usr/local/bin/hey && /usr/local/bin/cloud-init-log "hey downloaded" || /usr/local/bin/cloud-init-log "FAILED to download hey"
+  - chmod +x /usr/local/bin/hey && /usr/local/bin/cloud-init-log "hey installed" || /usr/local/bin/cloud-init-log "FAILED to install hey"
 
   # Log completion
-  - echo "Traffic generator setup complete for ${region}" | tee /var/log/traffic-setup.log
-  - echo ""
-  - echo "Available commands:"
-  - echo "  generate-traffic.sh [rps] [duration] - Generate sustained traffic"
-  - echo "  load-test.sh [requests] [concurrency] - Run load test with hey"
-  - echo "  query-dns.sh [count] - Query DNS for routing decisions"
-  - echo "  show-latency.sh - Show learned latency data"
+  - /usr/local/bin/cloud-init-log "========== CLOUD-INIT COMPLETED =========="
+  - /usr/local/bin/cloud-init-log ""
+  - /usr/local/bin/cloud-init-log "Available commands:"
+  - /usr/local/bin/cloud-init-log "  generate-traffic.sh [rps] [duration] - Generate sustained traffic"
+  - /usr/local/bin/cloud-init-log "  load-test.sh [requests] [concurrency] - Run load test with hey"
+  - /usr/local/bin/cloud-init-log "  query-dns.sh [count] - Query DNS for routing decisions"
+  - /usr/local/bin/cloud-init-log "  show-latency.sh - Show learned latency data"
+  - /usr/local/bin/cloud-init-log ""
+  - /usr/local/bin/cloud-init-log "View logs with: cat /var/log/traffic-setup.log"
