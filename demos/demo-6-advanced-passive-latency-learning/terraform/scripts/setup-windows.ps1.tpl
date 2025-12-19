@@ -1,123 +1,80 @@
 # OpenGSLB Windows Setup Script
 # This script is executed by Azure CustomScriptExtension
 
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"
 $LogFile = "C:\opengslb-setup.log"
+
+# Initialize log file first
+"[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Script starting..." | Out-File -FilePath $LogFile -Encoding utf8
 
 function Log {
     param([string]$Message)
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logMessage = "[$timestamp] $Message"
-    Write-Host $logMessage
-    Add-Content -Path $LogFile -Value $logMessage
+    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
+    Write-Host $line
+    $line | Out-File -FilePath $LogFile -Append -Encoding utf8
 }
 
-Log "=========================================="
-Log "OpenGSLB Windows Setup Starting"
-Log "=========================================="
-
-# Create directories
-Log "Creating directories..."
-New-Item -ItemType Directory -Force -Path "C:\opengslb" | Out-Null
-New-Item -ItemType Directory -Force -Path "C:\opengslb\logs" | Out-Null
-
-# Install IIS
-Log "Installing IIS Web Server..."
 try {
-    Install-WindowsFeature -Name Web-Server -IncludeManagementTools -ErrorAction Stop
+    Log "=========================================="
+    Log "OpenGSLB Windows Setup Starting"
+    Log "=========================================="
+
+    # Create directories
+    Log "Creating directories..."
+    New-Item -ItemType Directory -Force -Path "C:\opengslb" | Out-Null
+    New-Item -ItemType Directory -Force -Path "C:\opengslb\logs" | Out-Null
+
+    # Install IIS
+    Log "Installing IIS Web Server..."
+    Install-WindowsFeature -Name Web-Server -IncludeManagementTools
     Log "IIS installed successfully"
-} catch {
-    Log "WARNING: Failed to install IIS: $_"
-}
 
-# Install Chocolatey
-Log "Installing Chocolatey..."
-try {
+    # Install Chocolatey
+    Log "Installing Chocolatey..."
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
     $env:ChocolateyInstall = "C:\ProgramData\chocolatey"
-    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
     Log "Chocolatey installed successfully"
-} catch {
-    Log "ERROR: Failed to install Chocolatey: $_"
-    exit 1
-}
 
-# Refresh environment variables
-$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-Log "PATH updated: $env:Path"
+    # Refresh environment variables
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    Log "PATH updated"
 
-# Install Git and Go using Chocolatey
-Log "Installing Git and Go via Chocolatey..."
-$chocoExe = "C:\ProgramData\chocolatey\bin\choco.exe"
-if (Test-Path $chocoExe) {
-    try {
-        & $chocoExe install git -y --no-progress 2>&1 | ForEach-Object { Log $_ }
-        Log "Git installed"
-        & $chocoExe install golang -y --no-progress 2>&1 | ForEach-Object { Log $_ }
-        Log "Go installed"
-    } catch {
-        Log "ERROR: Failed to install packages: $_"
-        exit 1
-    }
-} else {
-    Log "ERROR: Chocolatey not found at $chocoExe"
-    exit 1
-}
+    # Install Git and Go using Chocolatey
+    Log "Installing Git via Chocolatey..."
+    & "C:\ProgramData\chocolatey\bin\choco.exe" install git -y --no-progress
+    Log "Git installed"
 
-# Refresh PATH again after installing git and go
-$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-Log "PATH refreshed after package installs"
+    Log "Installing Go via Chocolatey..."
+    & "C:\ProgramData\chocolatey\bin\choco.exe" install golang -y --no-progress
+    Log "Go installed"
 
-# Set Go environment
-$env:GOPATH = "C:\Users\${admin_username}\go"
-$env:GOMODCACHE = "C:\Users\${admin_username}\go\pkg\mod"
-New-Item -ItemType Directory -Force -Path $env:GOPATH | Out-Null
-New-Item -ItemType Directory -Force -Path $env:GOMODCACHE | Out-Null
-Log "GOPATH set to: $env:GOPATH"
-Log "GOMODCACHE set to: $env:GOMODCACHE"
+    # Refresh PATH again
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    Log "PATH refreshed"
 
-# Clone OpenGSLB repository
-Log "Cloning OpenGSLB repository..."
-$gitExe = "C:\Program Files\Git\bin\git.exe"
-if (Test-Path $gitExe) {
-    try {
-        & $gitExe clone --depth 1 --branch "${git_branch}" "${git_repo}" "C:\opengslb\src" 2>&1 | ForEach-Object { Log $_ }
-        Log "Repository cloned successfully"
-    } catch {
-        Log "ERROR: Failed to clone repository: $_"
-        exit 1
-    }
-} else {
-    Log "ERROR: Git not found at $gitExe"
-    exit 1
-}
+    # Set Go environment
+    $env:GOPATH = "C:\Users\${admin_username}\go"
+    $env:GOMODCACHE = "C:\Users\${admin_username}\go\pkg\mod"
+    New-Item -ItemType Directory -Force -Path $env:GOPATH | Out-Null
+    New-Item -ItemType Directory -Force -Path $env:GOMODCACHE | Out-Null
+    Log "Go environment configured"
 
-# Build OpenGSLB
-Log "Building OpenGSLB..."
-$goExe = "C:\Program Files\Go\bin\go.exe"
-if (Test-Path $goExe) {
-    try {
-        Push-Location "C:\opengslb\src"
-        & $goExe build -o "C:\opengslb\opengslb.exe" ./cmd/opengslb 2>&1 | ForEach-Object { Log $_ }
-        Pop-Location
-        if (Test-Path "C:\opengslb\opengslb.exe") {
-            Log "OpenGSLB built successfully"
-        } else {
-            Log "ERROR: Build completed but opengslb.exe not found"
-            exit 1
-        }
-    } catch {
-        Log "ERROR: Failed to build OpenGSLB: $_"
-        exit 1
-    }
-} else {
-    Log "ERROR: Go not found at $goExe"
-    exit 1
-}
+    # Clone OpenGSLB repository
+    Log "Cloning OpenGSLB repository..."
+    & "C:\Program Files\Git\bin\git.exe" clone --depth 1 --branch "${git_branch}" "${git_repo}" "C:\opengslb\src"
+    Log "Repository cloned"
 
-# Write agent configuration
-Log "Writing agent configuration..."
-$configContent = @"
+    # Build OpenGSLB
+    Log "Building OpenGSLB..."
+    Push-Location "C:\opengslb\src"
+    & "C:\Program Files\Go\bin\go.exe" build -o "C:\opengslb\opengslb.exe" ./cmd/opengslb
+    Pop-Location
+    Log "OpenGSLB built"
+
+    # Write agent configuration
+    Log "Writing agent configuration..."
+    @"
 mode: agent
 identity:
   service_token: ${service_token}
@@ -155,30 +112,28 @@ metrics:
 logging:
   level: debug
   format: json
-"@
+"@ | Out-File -Encoding utf8 -FilePath "C:\opengslb\agent.yaml"
+    Log "Configuration written"
 
-$configContent | Out-File -Encoding utf8 -FilePath "C:\opengslb\agent.yaml"
-Log "Configuration written to C:\opengslb\agent.yaml"
-
-# Create scheduled task for OpenGSLB
-Log "Creating scheduled task for OpenGSLB..."
-try {
+    # Create scheduled task for OpenGSLB
+    Log "Creating scheduled task..."
     $action = New-ScheduledTaskAction -Execute "C:\opengslb\opengslb.exe" -Argument "--mode agent --config C:\opengslb\agent.yaml"
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
     Register-ScheduledTask -TaskName "OpenGSLB Agent" -Action $action -Trigger $trigger -Principal $principal -Force
     Log "Scheduled task created"
 
-    # Start the task immediately
     Start-ScheduledTask -TaskName "OpenGSLB Agent"
     Log "OpenGSLB Agent started"
-} catch {
-    Log "ERROR: Failed to create scheduled task: $_"
+
+    Log "=========================================="
+    Log "OpenGSLB Windows Setup Complete!"
+    Log "=========================================="
+    exit 0
+}
+catch {
+    $errorMsg = $_.Exception.Message
+    $errorLine = $_.InvocationInfo.ScriptLineNumber
+    "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR at line $errorLine : $errorMsg" | Out-File -FilePath $LogFile -Append -Encoding utf8
     exit 1
 }
-
-Log "=========================================="
-Log "OpenGSLB Windows Setup Complete!"
-Log "=========================================="
-
-exit 0
