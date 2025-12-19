@@ -1,0 +1,127 @@
+#cloud-config
+# Cloud-init for OpenGSLB Agent node (Linux backend)
+# This script installs nginx, Go, builds OpenGSLB from source, and starts the Agent service
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - git
+  - curl
+  - jq
+  - nginx
+  - build-essential
+  - libcap2-bin
+
+write_files:
+  - path: /etc/opengslb/agent.yaml
+    permissions: '0600'
+    content: |
+      mode: agent
+
+      identity:
+        service_token: "${service_token}"
+        region: ${region}
+
+      backends:
+        - service: web
+          address: 0.0.0.0
+          port: 80
+          weight: 100
+          health_check:
+            type: http
+            path: /
+            interval: 5s
+            timeout: 2s
+
+      latency_learning:
+        enabled: true
+        poll_interval: 10s
+        ipv4_prefix: 24
+        ipv6_prefix: 48
+        min_connection_age: 5s
+        max_subnets: 10000
+        subnet_ttl: 24h
+        min_samples: 3
+        report_interval: 30s
+        ewma_alpha: 0.3
+
+      gossip:
+        encryption_key: "${gossip_encryption_key}"
+        overwatch_nodes:
+          - 10.1.1.10:7946
+
+      heartbeat:
+        interval: 10s
+
+      metrics:
+        enabled: true
+        address: ":9090"
+
+      logging:
+        level: debug
+        format: json
+
+  - path: /etc/systemd/system/opengslb-agent.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=OpenGSLB Agent
+      After=network.target nginx.service
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/opengslb agent --config /etc/opengslb/agent.yaml
+      Restart=always
+      RestartSec=5
+      StandardOutput=journal
+      StandardError=journal
+      # CAP_NET_ADMIN required for reading TCP RTT via netlink
+      AmbientCapabilities=CAP_NET_ADMIN
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /var/www/html/index.html
+    permissions: '0644'
+    content: |
+      <!DOCTYPE html>
+      <html>
+      <head><title>OpenGSLB Demo - ${region}</title></head>
+      <body>
+        <h1>OpenGSLB Demo Backend</h1>
+        <p>Region: ${region}</p>
+        <p>Server: ${hostname}</p>
+        <p>This backend is part of the ADR-017 Passive Latency Learning demo.</p>
+      </body>
+      </html>
+
+runcmd:
+  # Create directories
+  - mkdir -p /etc/opengslb /var/log/opengslb /opt/opengslb
+
+  # Configure nginx
+  - systemctl enable nginx
+  - systemctl start nginx
+
+  # Install Go
+  - curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz -o /tmp/go.tar.gz
+  - rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz
+  - echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/golang.sh
+  - export PATH=$PATH:/usr/local/go/bin
+
+  # Clone and build OpenGSLB
+  - cd /opt/opengslb
+  - git clone --depth 1 --branch ${git_branch} ${git_repo} .
+  - /usr/local/go/bin/go build -o /usr/local/bin/opengslb ./cmd/opengslb
+
+  # Set capabilities on the binary for CAP_NET_ADMIN
+  - setcap cap_net_admin+ep /usr/local/bin/opengslb
+
+  # Enable and start the agent service
+  - systemctl daemon-reload
+  - systemctl enable opengslb-agent
+  - systemctl start opengslb-agent
+
+  # Log completion
+  - echo "OpenGSLB Agent installation complete for region ${region}" | tee /var/log/opengslb/install.log

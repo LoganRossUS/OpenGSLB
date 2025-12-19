@@ -347,6 +347,29 @@ func (s *MemberlistSender) SendAgentAuth(agentID, region string, certPEM []byte,
 	return s.broadcast(gossipMsg)
 }
 
+// SendLatencyReport sends a latency learning report to all Overwatch nodes (ADR-017).
+func (s *MemberlistSender) SendLatencyReport(agentID, region, backend string, subnets []overwatch.SubnetLatencyData) error {
+	s.mu.RLock()
+	if !s.running || s.list == nil {
+		s.mu.RUnlock()
+		return fmt.Errorf("gossip sender not running")
+	}
+	s.mu.RUnlock()
+
+	gossipMsg := overwatch.GossipMessage{
+		Type:      overwatch.MessageLatencyReport,
+		AgentID:   agentID,
+		Region:    region,
+		Timestamp: time.Now(),
+		Payload: overwatch.LatencyReportPayload{
+			Backend: backend,
+			Subnets: subnets,
+		},
+	}
+
+	return s.broadcast(gossipMsg)
+}
+
 // broadcast sends a message to all cluster members.
 func (s *MemberlistSender) broadcast(msg overwatch.GossipMessage) error {
 	data, err := json.Marshal(msg)
