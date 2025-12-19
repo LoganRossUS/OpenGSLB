@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -270,7 +271,16 @@ func handleReload(app *Application, logger *slog.Logger) error {
 }
 
 // checkConfigPermissions verifies the config file has secure permissions.
+// On Windows, this check is skipped as Windows uses ACLs instead of Unix permissions.
 func checkConfigPermissions(path string, logger *slog.Logger) error {
+	// Skip permission check on Windows - Unix permission model doesn't apply
+	if runtime.GOOS == "windows" {
+		if logger != nil {
+			logger.Debug("skipping permission check on Windows", "path", path)
+		}
+		return nil
+	}
+
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("failed to stat config file: %w", err)
