@@ -110,12 +110,10 @@ runcmd:
 
   # Clone and build OpenGSLB
   - git clone --depth 1 --branch ${git_branch} ${git_repo} /opt/opengslb
-  - cd /opt/opengslb && /usr/local/go/bin/go build -o /tmp/opengslb ./cmd/opengslb
-  - cp /tmp/opengslb /usr/local/bin/opengslb
-  - chmod 755 /usr/local/bin/opengslb
+  - cd /opt/opengslb && /usr/local/go/bin/go build -o /tmp/opengslb ./cmd/opengslb && sudo cp /tmp/opengslb /usr/local/bin/opengslb && sudo chmod 755 /usr/local/bin/opengslb
 
   # Set capabilities on the binary for CAP_NET_ADMIN (required for reading TCP RTT)
-  - setcap 'cap_net_admin=+ep' /usr/local/bin/opengslb
+  - sudo setcap 'cap_net_admin=+ep' /usr/local/bin/opengslb
 
   # Ensure config file has correct permissions
   - chmod 600 /etc/opengslb/agent.yaml
