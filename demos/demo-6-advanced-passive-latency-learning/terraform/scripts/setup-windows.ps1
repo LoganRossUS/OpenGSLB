@@ -4,8 +4,8 @@
 param(
     [string]$GitBranch = "main",
     [string]$GitRepo = "https://github.com/LoganRossUS/OpenGSLB.git",
-    [string]$ServiceToken = "",
-    [string]$GossipKey = "",
+    [string]$ServiceToken = "test-token-for-latency-testing",
+    [string]$GossipKey = "kUgbkXysBGdpykayRXgRwHeLMQs4gCena6jvqfxQBpE=",
     [string]$AdminUser = "azureuser"
 )
 
