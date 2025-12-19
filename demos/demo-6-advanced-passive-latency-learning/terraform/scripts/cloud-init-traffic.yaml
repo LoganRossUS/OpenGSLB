@@ -98,7 +98,7 @@ write_files:
       OVERWATCH="10.1.1.10"
 
       echo "Fetching latency table from Overwatch..."
-      curl -s "http://$OVERWATCH:9090/api/v1/latency/table" | jq .
+      curl -s "http://$OVERWATCH:8080/api/v1/latency/table" | jq .
 
 runcmd:
   # Install hey (HTTP load generator)

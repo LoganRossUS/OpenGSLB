@@ -218,7 +218,7 @@ heartbeat:
 
 metrics:
   enabled: true
-  address: ':9100'
+  address: ':9090'
 
 logging:
   level: debug

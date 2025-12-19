@@ -15,7 +15,7 @@ packages:
 
 write_files:
   - path: /etc/opengslb/agent.yaml
-    permissions: '0644'
+    permissions: '0600'
     content: |
       mode: agent
 
@@ -56,7 +56,7 @@ write_files:
 
       metrics:
         enabled: true
-        address: ":9100"
+        address: ":9090"
 
       logging:
         level: debug

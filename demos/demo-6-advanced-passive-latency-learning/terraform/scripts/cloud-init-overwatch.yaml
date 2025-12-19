@@ -14,7 +14,7 @@ packages:
 
 write_files:
   - path: /etc/opengslb/overwatch.yaml
-    permissions: '0644'
+    permissions: '0600'
     content: |
       mode: overwatch
 
@@ -49,13 +49,13 @@ write_files:
           stale_threshold: 1h
 
       api:
-        address: "0.0.0.0:9090"
+        address: "0.0.0.0:8080"
         allowed_networks:
           - 10.0.0.0/8
 
       metrics:
         enabled: true
-        address: "0.0.0.0:9091"
+        address: "0.0.0.0:9090"
 
       logging:
         level: debug

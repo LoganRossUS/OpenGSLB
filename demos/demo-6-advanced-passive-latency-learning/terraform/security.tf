@@ -55,7 +55,7 @@ resource "azurerm_network_security_group" "overwatch" {
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_range     = "9090"
+    destination_port_range     = "8080"
     source_address_prefix      = "10.0.0.0/8"
     destination_address_prefix = "*"
   }
@@ -67,7 +67,7 @@ resource "azurerm_network_security_group" "overwatch" {
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_range     = "9091"
+    destination_port_range     = "9090"
     source_address_prefix      = "10.0.0.0/8"
     destination_address_prefix = "*"
   }
@@ -170,7 +170,7 @@ resource "azurerm_network_security_group" "backend" {
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_range     = "9100"
+    destination_port_range     = "9090"
     source_address_prefix      = "10.0.0.0/8"
     destination_address_prefix = "*"
   }

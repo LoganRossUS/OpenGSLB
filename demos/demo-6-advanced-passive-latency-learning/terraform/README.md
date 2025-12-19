@@ -139,7 +139,7 @@ query-dns.sh 5
 
 ```bash
 # From any VM with access to Overwatch
-curl http://10.1.1.10:9091/metrics | grep opengslb_latency
+curl http://10.1.1.10:9090/metrics | grep opengslb_latency
 ```
 
 ## Troubleshooting
@@ -157,7 +157,7 @@ sudo journalctl -u opengslb-agent --no-pager
 
 ### No latency data
 1. Verify agents are running
-2. Check gossip connectivity: `curl http://10.1.1.10:9090/api/v1/health`
+2. Check gossip connectivity: `curl http://10.1.1.10:8080/api/v1/health`
 3. Verify traffic is flowing
 
 ### Windows agent issues
