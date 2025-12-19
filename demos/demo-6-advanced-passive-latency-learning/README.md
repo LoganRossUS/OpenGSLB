@@ -1,5 +1,33 @@
 # ADR-017 Azure Test Environment
 
+## Quick Start
+
+Deploy the complete test environment with a single command:
+
+```bash
+cd terraform/
+
+# Copy and configure variables
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your SSH key path and Windows password
+
+# Deploy
+terraform init
+terraform apply -var="windows_admin_password=YourComplexPassword123!"
+
+# Wait ~10 minutes for cloud-init to complete, then test
+ssh azureuser@<overwatch_public_ip>
+sudo journalctl -u opengslb-overwatch -f
+```
+
+All VMs automatically:
+1. Install Go and build dependencies
+2. Clone and build OpenGSLB from source
+3. Configure and start the appropriate service (Overwatch or Agent)
+4. Begin collecting and gossiping latency data
+
+See [Terraform README](terraform/README.md) for detailed deployment instructions.
+
 ## Overview
 
 This document specifies an Azure infrastructure for testing the Passive Latency Learning feature (ADR-017). The goal is to validate that agents can collect real TCP RTT data and that Overwatches can use this data for intelligent routing decisions.

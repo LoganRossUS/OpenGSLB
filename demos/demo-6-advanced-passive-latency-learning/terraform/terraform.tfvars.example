@@ -1,0 +1,39 @@
+# Example Terraform variables file
+# Copy this file to terraform.tfvars and customize the values
+
+# Resource group name (optional, defaults to rg-opengslb-latency-test)
+# resource_group_name = "rg-opengslb-latency-test"
+
+# Admin username for VMs (optional, defaults to azureuser)
+# admin_username = "azureuser"
+
+# Path to your SSH public key (required for Linux VMs)
+ssh_public_key_path = "~/.ssh/id_rsa.pub"
+
+# Windows VM admin password (required - must be complex)
+# Must contain: uppercase, lowercase, number, special character
+# Minimum 12 characters
+windows_admin_password = "YourComplexPassword123!"
+
+# VM size (optional, defaults to Standard_B2s)
+# vm_size = "Standard_B2s"
+
+# Git repository for OpenGSLB (optional, defaults to main repo)
+# opengslb_git_repo = "https://github.com/LoganRossUS/OpenGSLB.git"
+
+# Git branch to build from (optional, defaults to main)
+# opengslb_git_branch = "main"
+
+# Gossip encryption key (optional, using test key by default)
+# Generate a real key with: openssl rand -base64 32
+# gossip_encryption_key = "dGVzdC1lbmNyeXB0aW9uLWtleS0zMi1ieXRlcw=="
+
+# Service token for agent auth (optional)
+# service_token = "test-token-for-latency-testing"
+
+# Tags (optional)
+# tags = {
+#   project = "OpenGSLB"
+#   purpose = "ADR-017-Testing"
+#   demo    = "passive-latency-learning"
+# }

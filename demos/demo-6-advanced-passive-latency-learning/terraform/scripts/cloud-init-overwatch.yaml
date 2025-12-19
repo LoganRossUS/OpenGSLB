@@ -1,0 +1,104 @@
+#cloud-config
+# Cloud-init for OpenGSLB Overwatch node
+# This script installs Go, builds OpenGSLB from source, and starts the Overwatch service
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - git
+  - curl
+  - jq
+  - dnsutils
+  - build-essential
+
+write_files:
+  - path: /etc/opengslb/overwatch.yaml
+    permissions: '0644'
+    content: |
+      mode: overwatch
+
+      identity:
+        node_id: overwatch-eastus
+        region: us-east
+
+      dns:
+        listen_address: "0.0.0.0:53"
+        zones:
+          - test.opengslb.local
+        default_ttl: 30
+
+      agent_tokens:
+        test-backend: "${service_token}"
+
+      gossip:
+        bind_address: "0.0.0.0:7946"
+        encryption_key: "${gossip_encryption_key}"
+
+      validation:
+        enabled: true
+        check_interval: 30s
+        check_timeout: 5s
+
+      routing:
+        default_algorithm: latency
+
+        latency:
+          method: learned
+          cold_start_fallback: geo
+          stale_threshold: 1h
+
+      api:
+        address: "0.0.0.0:9090"
+        allowed_networks:
+          - 10.0.0.0/8
+
+      metrics:
+        enabled: true
+        address: "0.0.0.0:9091"
+
+      logging:
+        level: debug
+        format: json
+
+  - path: /etc/systemd/system/opengslb-overwatch.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=OpenGSLB Overwatch
+      After=network.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/opengslb overwatch --config /etc/opengslb/overwatch.yaml
+      Restart=always
+      RestartSec=5
+      StandardOutput=journal
+      StandardError=journal
+      AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # Create directories
+  - mkdir -p /etc/opengslb /var/log/opengslb /opt/opengslb
+
+  # Install Go
+  - curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz -o /tmp/go.tar.gz
+  - rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz
+  - echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/golang.sh
+  - export PATH=$PATH:/usr/local/go/bin
+
+  # Clone and build OpenGSLB
+  - cd /opt/opengslb
+  - git clone --depth 1 --branch ${git_branch} ${git_repo} .
+  - /usr/local/go/bin/go build -o /usr/local/bin/opengslb ./cmd/opengslb
+
+  # Enable and start the service
+  - systemctl daemon-reload
+  - systemctl enable opengslb-overwatch
+  - systemctl start opengslb-overwatch
+
+  # Log completion
+  - echo "OpenGSLB Overwatch installation complete" | tee /var/log/opengslb/install.log
