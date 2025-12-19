@@ -150,7 +150,7 @@ resource "azurerm_windows_virtual_machine" "backend_westeurope_win" {
 }
 
 # Custom Script Extension for Windows VM to install IIS and OpenGSLB
-# Uses base64-encoded PowerShell script for reliable execution
+# Downloads setup script from GitHub and runs with parameters
 resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   name                 = "setup-opengslb"
   virtual_machine_id   = azurerm_windows_virtual_machine.backend_westeurope_win.id
@@ -159,13 +159,10 @@ resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   type_handler_version = "1.10"
 
   settings = jsonencode({
-    commandToExecute = "powershell -ExecutionPolicy Bypass -EncodedCommand ${textencodebase64(templatefile("${path.module}/scripts/setup-windows.ps1.tpl", {
-      admin_username = var.admin_username
-      git_branch     = var.opengslb_git_branch
-      git_repo       = var.opengslb_git_repo
-      service_token  = var.service_token
-      gossip_key     = var.gossip_encryption_key
-    }), "UTF-16LE")}"
+    fileUris = [
+      "https://raw.githubusercontent.com/LoganRossUS/OpenGSLB/${var.opengslb_git_branch}/demos/demo-6-advanced-passive-latency-learning/terraform/scripts/setup-windows.ps1"
+    ]
+    commandToExecute = "powershell -ExecutionPolicy Bypass -File setup-windows.ps1 -GitBranch '${var.opengslb_git_branch}' -GitRepo '${var.opengslb_git_repo}' -ServiceToken '${var.service_token}' -GossipKey '${var.gossip_encryption_key}' -AdminUser '${var.admin_username}'"
   })
 
   timeouts {
