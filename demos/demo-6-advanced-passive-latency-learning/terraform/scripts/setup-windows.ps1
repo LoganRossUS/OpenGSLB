@@ -1,71 +1,94 @@
 # OpenGSLB Windows Agent Setup Script
-# This script installs IIS, Git, Go, and builds OpenGSLB
+# Usage: .\setup-windows.ps1 -GitBranch <branch> -GitRepo <repo> -ServiceToken <token> -GossipKey <key> -AdminUser <user>
 
-$ErrorActionPreference = "Continue"
-Start-Transcript -Path "C:\opengslb-setup.log" -Append
+param(
+    [string]$GitBranch = "main",
+    [string]$GitRepo = "https://github.com/LoganRossUS/OpenGSLB.git",
+    [string]$ServiceToken = "",
+    [string]$GossipKey = "",
+    [string]$AdminUser = "azureuser"
+)
 
-Write-Host "========== OpenGSLB Windows Setup Started at $(Get-Date) =========="
+$ErrorActionPreference = "Stop"
+$LogFile = "C:\opengslb-setup.log"
 
-# Create directories
-Write-Host "Creating directories..."
-New-Item -Path "C:\opengslb" -ItemType Directory -Force | Out-Null
-New-Item -Path "C:\opengslb\logs" -ItemType Directory -Force | Out-Null
-New-Item -Path "C:\temp" -ItemType Directory -Force | Out-Null
+"[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Script starting..." | Out-File -FilePath $LogFile -Encoding utf8
 
-# Install IIS
-Write-Host "Installing IIS..."
-Install-WindowsFeature -Name Web-Server -IncludeManagementTools
-Write-Host "IIS installed"
-
-# Install Chocolatey (package manager)
-Write-Host "Installing Chocolatey..."
-Set-ExecutionPolicy Bypass -Scope Process -Force
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-Write-Host "Chocolatey installed"
-
-# Install Git using Chocolatey
-Write-Host "Installing Git..."
-choco install git -y --no-progress
-$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-Write-Host "Git installed"
-
-# Install Go using Chocolatey
-Write-Host "Installing Go..."
-choco install golang -y --no-progress
-$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-Write-Host "Go installed"
-
-# Refresh environment
-$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-
-# Clone OpenGSLB
-Write-Host "Cloning OpenGSLB from ${git_repo} branch ${git_branch}..."
-Set-Location C:\opengslb
-& "C:\Program Files\Git\bin\git.exe" clone --depth 1 --branch "${git_branch}" "${git_repo}" src
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "FAILED to clone repository"
-} else {
-    Write-Host "Clone successful"
+function Log {
+    param([string]$Message)
+    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
+    Write-Host $line
+    $line | Out-File -FilePath $LogFile -Append -Encoding utf8
 }
 
-# Build OpenGSLB
-Write-Host "Building OpenGSLB..."
-Set-Location C:\opengslb\src
-& go build -o C:\opengslb\opengslb.exe ./cmd/opengslb
-if (Test-Path "C:\opengslb\opengslb.exe") {
-    Write-Host "Build successful"
-} else {
-    Write-Host "Build failed - binary not found"
-}
+try {
+    Log "=========================================="
+    Log "OpenGSLB Windows Setup Starting"
+    Log "Params: GitBranch=$GitBranch, AdminUser=$AdminUser"
+    Log "=========================================="
 
-# Create config file
-Write-Host "Creating config file..."
-$config = @"
+    # Create directories
+    Log "Creating directories..."
+    New-Item -Path "C:\opengslb" -ItemType Directory -Force | Out-Null
+    New-Item -Path "C:\opengslb\logs" -ItemType Directory -Force | Out-Null
+
+    # Install IIS
+    Log "Installing IIS..."
+    Install-WindowsFeature -Name Web-Server -IncludeManagementTools
+    Log "IIS installed"
+
+    # Install Chocolatey
+    Log "Installing Chocolatey..."
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+    $env:ChocolateyInstall = "C:\ProgramData\chocolatey"
+    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    Log "Chocolatey installed"
+
+    # Refresh PATH
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
+    # Install Git
+    Log "Installing Git..."
+    & "C:\ProgramData\chocolatey\bin\choco.exe" install git -y --no-progress
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    Log "Git installed"
+
+    # Install Go
+    Log "Installing Go..."
+    & "C:\ProgramData\chocolatey\bin\choco.exe" install golang -y --no-progress
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    Log "Go installed"
+
+    # Set Go environment
+    $env:GOPATH = "C:\Users\$AdminUser\go"
+    $env:GOMODCACHE = "C:\Users\$AdminUser\go\pkg\mod"
+    New-Item -Path $env:GOPATH -ItemType Directory -Force | Out-Null
+    New-Item -Path $env:GOMODCACHE -ItemType Directory -Force | Out-Null
+    Log "Go env: GOPATH=$env:GOPATH"
+
+    # Clone OpenGSLB
+    Log "Cloning $GitRepo branch $GitBranch..."
+    Set-Location C:\opengslb
+    & "C:\Program Files\Git\bin\git.exe" clone --depth 1 --branch $GitBranch $GitRepo src
+    Log "Clone complete"
+
+    # Build OpenGSLB
+    Log "Building OpenGSLB..."
+    Set-Location C:\opengslb\src
+    & "C:\Program Files\Go\bin\go.exe" build -o C:\opengslb\opengslb.exe ./cmd/opengslb
+
+    if (Test-Path "C:\opengslb\opengslb.exe") {
+        Log "Build successful"
+    } else {
+        throw "Build failed - binary not found"
+    }
+
+    # Create config file
+    Log "Creating config..."
+    $config = @"
 mode: agent
 identity:
-  service_token: ${service_token}
+  service_token: $ServiceToken
   region: eu-west
 backends:
   - service: web
@@ -89,7 +112,7 @@ latency_learning:
   report_interval: 30s
   ewma_alpha: 0.3
 gossip:
-  encryption_key: ${gossip_encryption_key}
+  encryption_key: $GossipKey
   overwatch_nodes:
     - 10.1.1.10:7946
 heartbeat:
@@ -101,25 +124,29 @@ logging:
   level: debug
   format: json
 "@
-$config | Out-File -FilePath "C:\opengslb\agent.yaml" -Encoding utf8
-Write-Host "Config file created"
+    $config | Out-File -FilePath "C:\opengslb\agent.yaml" -Encoding utf8
+    Log "Config created"
 
-# Create and register scheduled task
-Write-Host "Creating scheduled task..."
-$action = New-ScheduledTaskAction -Execute "C:\opengslb\opengslb.exe" -Argument "--mode agent --config C:\opengslb\agent.yaml"
-$trigger = New-ScheduledTaskTrigger -AtStartup
-$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-$settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName "OpenGSLB Agent" -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
-Write-Host "Scheduled task created"
+    # Create scheduled task
+    Log "Creating scheduled task..."
+    $action = New-ScheduledTaskAction -Execute "C:\opengslb\opengslb.exe" -Argument "--mode agent --config C:\opengslb\agent.yaml"
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    Register-ScheduledTask -TaskName "OpenGSLB Agent" -Action $action -Trigger $trigger -Principal $principal -Force
+    Log "Task created"
 
-# Start the agent
-Write-Host "Starting OpenGSLB Agent..."
-Start-ScheduledTask -TaskName "OpenGSLB Agent"
+    # Start the agent
+    Start-ScheduledTask -TaskName "OpenGSLB Agent"
+    Log "Agent started"
 
-Write-Host "========== OpenGSLB Windows Setup Completed at $(Get-Date) =========="
-Write-Host "View logs: type C:\opengslb-setup.log"
-Write-Host "Check binary: Test-Path C:\opengslb\opengslb.exe"
-Write-Host "Check task: Get-ScheduledTask -TaskName 'OpenGSLB Agent'"
-
-Stop-Transcript
+    Log "=========================================="
+    Log "OpenGSLB Windows Setup Complete!"
+    Log "=========================================="
+    exit 0
+}
+catch {
+    $msg = $_.Exception.Message
+    $line = $_.InvocationInfo.ScriptLineNumber
+    Log "ERROR at line $line : $msg"
+    exit 1
+}
