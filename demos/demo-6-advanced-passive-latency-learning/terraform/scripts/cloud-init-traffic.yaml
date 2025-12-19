@@ -36,7 +36,7 @@ write_files:
 
       while [ $(date +%s) -lt $END_TIME ]; do
         for backend in "$${BACKENDS[@]}"; do
-          curl -s -o /dev/null -w "Backend: $backend, Time: %{time_total}s\n" "http://$${backend}/" &
+          curl -s -o /dev/null -w "Backend: $backend, Time: %%{time_total}s\n" "http://$${backend}/" &
         done
         sleep $(echo "scale=3; 1/$RPS" | bc)
       done
