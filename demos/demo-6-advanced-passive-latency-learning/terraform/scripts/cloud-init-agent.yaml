@@ -113,6 +113,9 @@ write_files:
       rm -rf /usr/local/go
       tar -C /usr/local -xzf go.tar.gz
       export PATH=$PATH:/usr/local/go/bin
+      export GOPATH=/root/go
+      export GOMODCACHE=/root/go/pkg/mod
+      mkdir -p $GOPATH $GOMODCACHE
       echo "Go installed: $(/usr/local/go/bin/go version)"
 
       # Clone OpenGSLB
@@ -130,7 +133,7 @@ write_files:
       # Build OpenGSLB
       echo "Building OpenGSLB..."
       cd /opt/opengslb
-      /usr/local/go/bin/go build -o /usr/local/bin/opengslb ./cmd/opengslb
+      GOPATH=/root/go GOMODCACHE=/root/go/pkg/mod /usr/local/go/bin/go build -o /usr/local/bin/opengslb ./cmd/opengslb
       if [ $? -ne 0 ]; then
         echo "FAILED to build"
         exit 1
