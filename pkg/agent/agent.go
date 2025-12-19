@@ -653,22 +653,33 @@ func (a *Agent) Stats() AgentStats {
 	}
 }
 
+// MockLatencyReport stores a latency report for testing.
+type MockLatencyReport struct {
+	AgentID string
+	Region  string
+	Backend string
+	Subnets []overwatch.SubnetLatencyData
+}
+
 // MockGossipSender is a test implementation of GossipSender.
 type MockGossipSender struct {
-	mu            sync.Mutex
-	healthUpdates []HealthUpdateMessage
-	heartbeats    []HeartbeatMessage
-	startErr      error
-	sendHealthErr error
-	sendHBErr     error
-	started       bool
+	mu             sync.Mutex
+	healthUpdates  []HealthUpdateMessage
+	heartbeats     []HeartbeatMessage
+	latencyReports []MockLatencyReport
+	startErr       error
+	sendHealthErr  error
+	sendHBErr      error
+	sendLatencyErr error
+	started        bool
 }
 
 // NewMockGossipSender creates a mock gossip sender for testing.
 func NewMockGossipSender() *MockGossipSender {
 	return &MockGossipSender{
-		healthUpdates: make([]HealthUpdateMessage, 0),
-		heartbeats:    make([]HeartbeatMessage, 0),
+		healthUpdates:  make([]HealthUpdateMessage, 0),
+		heartbeats:     make([]HeartbeatMessage, 0),
+		latencyReports: make([]MockLatencyReport, 0),
 	}
 }
 
@@ -709,6 +720,21 @@ func (m *MockGossipSender) SendHeartbeat(msg HeartbeatMessage) error {
 	return nil
 }
 
+func (m *MockGossipSender) SendLatencyReport(agentID, region, backend string, subnets []overwatch.SubnetLatencyData) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sendLatencyErr != nil {
+		return m.sendLatencyErr
+	}
+	m.latencyReports = append(m.latencyReports, MockLatencyReport{
+		AgentID: agentID,
+		Region:  region,
+		Backend: backend,
+		Subnets: subnets,
+	})
+	return nil
+}
+
 // HealthUpdates returns recorded health updates.
 func (m *MockGossipSender) HealthUpdates() []HealthUpdateMessage {
 	m.mu.Lock()
@@ -727,6 +753,15 @@ func (m *MockGossipSender) Heartbeats() []HeartbeatMessage {
 	return result
 }
 
+// LatencyReports returns recorded latency reports.
+func (m *MockGossipSender) LatencyReports() []MockLatencyReport {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]MockLatencyReport, len(m.latencyReports))
+	copy(result, m.latencyReports)
+	return result
+}
+
 // SetError configures errors for testing.
 func (m *MockGossipSender) SetError(startErr, sendHealthErr, sendHBErr error) {
 	m.mu.Lock()
@@ -742,4 +777,5 @@ func (m *MockGossipSender) Clear() {
 	defer m.mu.Unlock()
 	m.healthUpdates = m.healthUpdates[:0]
 	m.heartbeats = m.heartbeats[:0]
+	m.latencyReports = m.latencyReports[:0]
 }
