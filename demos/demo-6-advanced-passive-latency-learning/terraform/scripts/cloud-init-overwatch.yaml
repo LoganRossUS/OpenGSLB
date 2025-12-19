@@ -95,6 +95,25 @@ write_files:
       # Install Go via snap (more reliable than downloading tarball)
       echo "Installing Go via snap..."
       snap install go --classic
+
+      # Wait for snap to be fully ready (can take a few seconds)
+      echo "Waiting for snap to initialize..."
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        if [ -x /snap/bin/go ]; then
+          echo "Go snap is ready"
+          break
+        fi
+        echo "Waiting for go snap... attempt $i"
+        sleep 3
+      done
+
+      # Verify go is available
+      if [ ! -x /snap/bin/go ]; then
+        echo "ERROR: /snap/bin/go not found after snap install"
+        ls -la /snap/bin/ || echo "Cannot list /snap/bin"
+        exit 1
+      fi
+
       export PATH=$PATH:/snap/bin
       export GOPATH=/root/go
       export GOMODCACHE=/root/go/pkg/mod
