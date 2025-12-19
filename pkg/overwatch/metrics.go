@@ -10,7 +10,58 @@ import (
 	"time"
 
 	"github.com/loganrossus/OpenGSLB/pkg/metrics"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+// Learned latency table metrics (ADR-017)
+var (
+	latencyTableEntries = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "opengslb_overwatch_latency_table_entries_total",
+			Help: "Total entries in the learned latency table",
+		},
+	)
+
+	latencyEntriesPruned = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "opengslb_overwatch_latency_entries_pruned_total",
+			Help: "Total latency entries pruned due to TTL expiration",
+		},
+	)
+
+	latencyEntriesEvicted = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "opengslb_overwatch_latency_entries_evicted_total",
+			Help: "Total latency entries evicted due to capacity limits",
+		},
+	)
+
+	latencyRoutingHits = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "opengslb_overwatch_latency_routing_hits_total",
+			Help: "Latency routing decisions by method",
+		},
+		[]string{"method"}, // "learned", "geo_fallback", "cold_start"
+	)
+
+	latencyReportsReceived = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "opengslb_overwatch_latency_reports_received_total",
+			Help: "Total latency reports received from agents",
+		},
+	)
+)
+
+// RecordLatencyRoutingHit records a latency routing decision.
+func RecordLatencyRoutingHit(method string) {
+	latencyRoutingHits.WithLabelValues(method).Inc()
+}
+
+// RecordLatencyReport records receiving a latency report from an agent.
+func RecordLatencyReport() {
+	latencyReportsReceived.Inc()
+}
 
 // Helper functions for recording metrics using the existing metrics package
 

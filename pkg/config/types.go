@@ -76,6 +76,9 @@ type AgentConfig struct {
 
 	// Heartbeat contains keepalive settings
 	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
+
+	// LatencyLearning contains passive latency learning settings (ADR-017)
+	LatencyLearning LatencyLearningConfig `yaml:"latency_learning"`
 }
 
 // AgentIdentityConfig defines agent identity settings.
@@ -402,6 +405,53 @@ type PredictiveErrorRateConfig struct {
 	Threshold     float64       `yaml:"threshold"`
 	Window        time.Duration `yaml:"window"`
 	BleedDuration time.Duration `yaml:"bleed_duration"`
+}
+
+// LatencyLearningConfig defines passive latency learning settings (ADR-017).
+// Agents learn client-to-backend latency by reading TCP RTT data from the OS.
+type LatencyLearningConfig struct {
+	// Enabled controls whether latency learning is active.
+	// Default: false
+	Enabled bool `yaml:"enabled"`
+
+	// PollInterval is how often to poll the OS for TCP connection data.
+	// Default: 10s
+	PollInterval time.Duration `yaml:"poll_interval"`
+
+	// MinConnectionAge is the minimum connection age before collecting RTT.
+	// Newly established connections have unstable RTT measurements.
+	// Default: 5s
+	MinConnectionAge time.Duration `yaml:"min_connection_age"`
+
+	// IPv4Prefix is the prefix length for IPv4 subnet aggregation.
+	// Default: 24 (e.g., /24 subnets)
+	IPv4Prefix int `yaml:"ipv4_prefix"`
+
+	// IPv6Prefix is the prefix length for IPv6 subnet aggregation.
+	// Default: 48 (e.g., /48 subnets)
+	IPv6Prefix int `yaml:"ipv6_prefix"`
+
+	// EWMAAlpha is the smoothing factor for EWMA calculation (0-1).
+	// Higher values give more weight to recent samples.
+	// Default: 0.3
+	EWMAAlpha float64 `yaml:"ewma_alpha"`
+
+	// MaxSubnets is the maximum number of subnets to track.
+	// Prevents unbounded memory growth.
+	// Default: 100000
+	MaxSubnets int `yaml:"max_subnets"`
+
+	// SubnetTTL is how long to keep subnet entries without updates.
+	// Default: 168h (7 days)
+	SubnetTTL time.Duration `yaml:"subnet_ttl"`
+
+	// MinSamples is the minimum samples before reporting a subnet.
+	// Default: 5
+	MinSamples int `yaml:"min_samples"`
+
+	// ReportInterval is how often to send latency reports to overwatches.
+	// Default: 30s
+	ReportInterval time.Duration `yaml:"report_interval"`
 }
 
 // ============================================================================

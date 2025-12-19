@@ -16,9 +16,10 @@ import (
 
 // APIHandlers provides HTTP handlers for Overwatch-specific endpoints.
 type APIHandlers struct {
-	registry  *Registry
-	validator *Validator
-	agentAuth *AgentAuth
+	registry     *Registry
+	validator    *Validator
+	agentAuth    *AgentAuth
+	latencyTable *LearnedLatencyTable
 }
 
 // NewAPIHandlers creates new Overwatch API handlers.
@@ -32,6 +33,11 @@ func NewAPIHandlers(registry *Registry, validator *Validator) *APIHandlers {
 // SetAgentAuth sets the agent authenticator for certificate management endpoints.
 func (h *APIHandlers) SetAgentAuth(auth *AgentAuth) {
 	h.agentAuth = auth
+}
+
+// SetLatencyTable sets the learned latency table for latency API endpoints.
+func (h *APIHandlers) SetLatencyTable(table *LearnedLatencyTable) {
+	h.latencyTable = table
 }
 
 // BackendResponse represents a backend in API responses.
@@ -590,6 +596,33 @@ func (h *APIHandlers) HandleAgentsExpiring(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// HandleLatencyTable handles GET /api/v1/overwatch/latency
+// Returns the learned latency data from agents (ADR-017).
+func (h *APIHandlers) HandleLatencyTable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if h.latencyTable == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"entries":      []LatencyEntry{},
+			"count":        0,
+			"subnet_count": 0,
+			"generated_at": time.Now().UTC(),
+		})
+		return
+	}
+
+	entries := h.latencyTable.GetAllEntries()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"entries":      entries,
+		"count":        len(entries),
+		"subnet_count": h.latencyTable.SubnetCount(),
+		"generated_at": time.Now().UTC(),
+	})
+}
+
 // RegisterRoutes registers Overwatch API routes with an HTTP mux.
 func (h *APIHandlers) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/overwatch/backends", h.HandleBackends)
@@ -601,6 +634,9 @@ func (h *APIHandlers) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/overwatch/agents", h.HandleAgents)
 	mux.HandleFunc("/api/v1/overwatch/agents/expiring", h.HandleAgentsExpiring)
 	mux.HandleFunc("/api/v1/overwatch/agents/", h.handleAgentRoute)
+
+	// Latency learning endpoints (ADR-017)
+	mux.HandleFunc("/api/v1/overwatch/latency", h.HandleLatencyTable)
 }
 
 // handleAgentRoute routes agent requests based on path.

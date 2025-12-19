@@ -38,6 +38,8 @@ const (
 	MessageDeregister GossipMessageType = "deregister"
 	// MessageAgentAuth is an agent authentication/registration message (TOFU).
 	MessageAgentAuth GossipMessageType = "agent_auth"
+	// MessageLatencyReport is a latency learning report (ADR-017).
+	MessageLatencyReport GossipMessageType = "latency_report"
 )
 
 // HeartbeatPayload is the payload for heartbeat messages.
@@ -110,6 +112,26 @@ type AgentAuthResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
+// LatencyReportPayload is the payload for latency learning reports (ADR-017).
+type LatencyReportPayload struct {
+	// Backend is the service name this latency data relates to.
+	Backend string `json:"backend"`
+	// Subnets contains latency data for client subnets.
+	Subnets []SubnetLatencyData `json:"subnets"`
+}
+
+// SubnetLatencyData contains latency information for a client subnet.
+type SubnetLatencyData struct {
+	// Subnet is the client subnet in CIDR notation (e.g., "203.0.113.0/24").
+	Subnet string `json:"subnet"`
+	// EWMA is the smoothed RTT in nanoseconds.
+	EWMA int64 `json:"ewma_ns"`
+	// SampleCount is the number of samples contributing to this stat.
+	SampleCount uint64 `json:"sample_count"`
+	// LastSeen is when this subnet was last observed.
+	LastSeen time.Time `json:"last_seen"`
+}
+
 // GossipReceiver receives gossip messages from agents.
 // Story 4 will provide the actual implementation using memberlist.
 type GossipReceiver interface {
@@ -144,14 +166,21 @@ type DNSRegistry interface {
 	DeregisterServer(service string, address string, port int) error
 }
 
+// LatencyTable stores learned latency data from agents (ADR-017).
+type LatencyTable interface {
+	// Update processes a latency report from an agent.
+	Update(agentID, region, backend string, subnets []SubnetLatencyData)
+}
+
 // GossipHandler processes gossip messages and updates the registry.
 type GossipHandler struct {
-	registry    *Registry
-	dnsRegistry DNSRegistry // v1.1.0: For dynamic DNS registration
-	auth        *AgentAuth
-	logger      *slog.Logger
-	ctx         context.Context
-	cancel      context.CancelFunc
+	registry     *Registry
+	dnsRegistry  DNSRegistry  // v1.1.0: For dynamic DNS registration
+	latencyTable LatencyTable // ADR-017: For learned latency data
+	auth         *AgentAuth
+	logger       *slog.Logger
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 // NewGossipHandler creates a new gossip message handler.
@@ -176,6 +205,12 @@ func (h *GossipHandler) SetAuth(auth *AgentAuth) {
 // v1.1.0: Called after DNS registry is initialized.
 func (h *GossipHandler) SetDNSRegistry(dnsRegistry DNSRegistry) {
 	h.dnsRegistry = dnsRegistry
+}
+
+// SetLatencyTable sets the latency table for learned latency data.
+// ADR-017: Called after latency table is initialized.
+func (h *GossipHandler) SetLatencyTable(latencyTable LatencyTable) {
+	h.latencyTable = latencyTable
 }
 
 // Start begins processing gossip messages from the receiver.
@@ -223,6 +258,8 @@ func (h *GossipHandler) handleMessage(msg GossipMessage) {
 		h.handleRegister(msg)
 	case MessageDeregister:
 		h.handleDeregister(msg)
+	case MessageLatencyReport:
+		h.handleLatencyReport(msg)
 	default:
 		h.logger.Warn("unknown message type", "type", msg.Type, "agent_id", msg.AgentID)
 	}
@@ -418,6 +455,66 @@ func (h *GossipHandler) handleDeregister(msg GossipMessage) {
 			"error", err,
 		)
 	}
+}
+
+// handleLatencyReport processes a latency report message (ADR-017).
+func (h *GossipHandler) handleLatencyReport(msg GossipMessage) {
+	if h.latencyTable == nil {
+		h.logger.Debug("latency table not configured, ignoring latency report", "agent_id", msg.AgentID)
+		return
+	}
+
+	payload, ok := msg.Payload.(LatencyReportPayload)
+	if !ok {
+		if m, ok := msg.Payload.(map[string]interface{}); ok {
+			payload = h.parseLatencyReportPayload(m)
+		} else {
+			h.logger.Warn("invalid latency report payload", "agent_id", msg.AgentID)
+			return
+		}
+	}
+
+	h.latencyTable.Update(msg.AgentID, msg.Region, payload.Backend, payload.Subnets)
+
+	h.logger.Debug("processed latency report",
+		"agent_id", msg.AgentID,
+		"backend", payload.Backend,
+		"subnets", len(payload.Subnets),
+	)
+}
+
+// parseLatencyReportPayload parses a latency report payload from a map.
+func (h *GossipHandler) parseLatencyReportPayload(m map[string]interface{}) LatencyReportPayload {
+	payload := LatencyReportPayload{}
+
+	if backend, ok := m["backend"].(string); ok {
+		payload.Backend = backend
+	}
+
+	if subnets, ok := m["subnets"].([]interface{}); ok {
+		for _, s := range subnets {
+			if sm, ok := s.(map[string]interface{}); ok {
+				data := SubnetLatencyData{}
+				if subnet, ok := sm["subnet"].(string); ok {
+					data.Subnet = subnet
+				}
+				if ewma, ok := sm["ewma_ns"].(float64); ok {
+					data.EWMA = int64(ewma)
+				}
+				if count, ok := sm["sample_count"].(float64); ok {
+					data.SampleCount = uint64(count)
+				}
+				if lastSeen, ok := sm["last_seen"].(string); ok {
+					if t, err := time.Parse(time.RFC3339, lastSeen); err == nil {
+						data.LastSeen = t
+					}
+				}
+				payload.Subnets = append(payload.Subnets, data)
+			}
+		}
+	}
+
+	return payload
 }
 
 // parseHeartbeatPayload parses a heartbeat payload from a map.

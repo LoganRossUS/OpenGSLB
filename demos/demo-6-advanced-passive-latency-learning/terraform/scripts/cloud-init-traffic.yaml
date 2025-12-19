@@ -1,0 +1,115 @@
+#cloud-config
+# Cloud-init for Traffic Generator VM
+# This script installs tools for generating HTTP traffic to test latency learning
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - dnsutils
+  - wrk
+  - jq
+  - tmux
+
+write_files:
+  - path: /usr/local/bin/generate-traffic.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Generates sustained HTTP traffic to all backends
+      # Usage: generate-traffic.sh [requests_per_second] [duration_seconds]
+
+      RPS=$${1:-1}
+      DURATION=$${2:-300}
+
+      BACKENDS=(
+        "10.2.1.10"   # West Europe Linux
+        "10.2.1.11"   # West Europe Windows
+        "10.3.1.10"   # Southeast Asia
+      )
+
+      echo "Starting traffic generation: $RPS req/s for $DURATION seconds"
+      echo "Backends: $${BACKENDS[*]}"
+
+      END_TIME=$(($(date +%s) + DURATION))
+
+      while [ $(date +%s) -lt $END_TIME ]; do
+        for backend in "$${BACKENDS[@]}"; do
+          curl -s -o /dev/null -w "Backend: $backend, Time: %{time_total}s\n" "http://$${backend}/" &
+        done
+        sleep $(echo "scale=3; 1/$RPS" | bc)
+      done
+
+      wait
+      echo "Traffic generation complete"
+
+  - path: /usr/local/bin/load-test.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Runs load test using hey against all backends
+      # Usage: load-test.sh [total_requests] [concurrency]
+
+      REQUESTS=$${1:-1000}
+      CONCURRENCY=$${2:-10}
+
+      BACKENDS=(
+        "10.2.1.10"   # West Europe Linux
+        "10.2.1.11"   # West Europe Windows
+        "10.3.1.10"   # Southeast Asia
+      )
+
+      echo "Starting load test: $REQUESTS requests, $CONCURRENCY concurrent"
+
+      for backend in "$${BACKENDS[@]}"; do
+        echo "Testing $backend..."
+        hey -n $REQUESTS -c $CONCURRENCY "http://$${backend}/" &
+      done
+
+      wait
+      echo "Load test complete"
+
+  - path: /usr/local/bin/query-dns.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Queries DNS to test routing decisions
+      # Usage: query-dns.sh [count]
+
+      COUNT=$${1:-10}
+      OVERWATCH="10.1.1.10"
+      DOMAIN="web.test.opengslb.local"
+
+      echo "Querying DNS $COUNT times for $DOMAIN"
+
+      for i in $(seq 1 $COUNT); do
+        echo "Query $i:"
+        dig @$OVERWATCH $DOMAIN A +short
+        sleep 1
+      done
+
+  - path: /usr/local/bin/show-latency.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Shows learned latency data from Overwatch API
+
+      OVERWATCH="10.1.1.10"
+
+      echo "Fetching latency table from Overwatch..."
+      curl -s "http://$OVERWATCH:8080/api/v1/overwatch/latency" | jq .
+
+runcmd:
+  # Install hey (HTTP load generator)
+  - curl -fsSL https://hey-release.s3.us-east-2.amazonaws.com/hey_linux_amd64 -o /usr/local/bin/hey
+  - chmod +x /usr/local/bin/hey
+
+  # Log completion
+  - echo "Traffic generator setup complete for ${region}" | tee /var/log/traffic-setup.log
+  - echo ""
+  - echo "Available commands:"
+  - echo "  generate-traffic.sh [rps] [duration] - Generate sustained traffic"
+  - echo "  load-test.sh [requests] [concurrency] - Run load test with hey"
+  - echo "  query-dns.sh [count] - Query DNS for routing decisions"
+  - echo "  show-latency.sh - Show learned latency data"

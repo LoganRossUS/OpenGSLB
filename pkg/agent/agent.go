@@ -16,8 +16,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/loganrossus/OpenGSLB/pkg/agent/latency"
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/health"
+	"github.com/loganrossus/OpenGSLB/pkg/overwatch"
 )
 
 // Agent is the main orchestrator for agent mode.
@@ -32,6 +34,10 @@ type Agent struct {
 	heartbeat *HeartbeatSender
 	gossip    GossipSender
 	logger    *slog.Logger
+
+	// Latency learning (ADR-017)
+	latencyCollector  latency.Collector
+	latencyAggregator *latency.Aggregator
 
 	mu        sync.RWMutex
 	running   bool
@@ -48,6 +54,9 @@ type GossipSender interface {
 
 	// SendHeartbeat sends a heartbeat message to all Overwatch nodes.
 	SendHeartbeat(msg HeartbeatMessage) error
+
+	// SendLatencyReport sends latency data to all Overwatch nodes (ADR-017).
+	SendLatencyReport(agentID, region, backend string, subnets []overwatch.SubnetLatencyData) error
 
 	// Start connects to Overwatch nodes and begins gossip.
 	Start(ctx context.Context) error
@@ -203,6 +212,14 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start latency learning if enabled (ADR-017)
+	if a.config.Agent.LatencyLearning.Enabled {
+		if err := a.startLatencyCollection(ctx); err != nil {
+			// Log warning but continue - latency learning is optional
+			a.logger.Warn("latency learning disabled", "error", err)
+		}
+	}
+
 	// Start main agent loop
 	go a.runLoop(ctx)
 
@@ -231,6 +248,13 @@ func (a *Agent) Stop(ctx context.Context) error {
 	// Stop heartbeat
 	if a.heartbeat != nil {
 		a.heartbeat.Stop()
+	}
+
+	// Stop latency collection (ADR-017)
+	if a.latencyCollector != nil {
+		if err := a.latencyCollector.Close(); err != nil {
+			a.logger.Error("error stopping latency collector", "error", err)
+		}
 	}
 
 	// Stop gossip
@@ -392,6 +416,192 @@ func (a *Agent) sendDeregistration() {
 	}
 }
 
+// startLatencyCollection initializes and starts passive latency learning (ADR-017).
+func (a *Agent) startLatencyCollection(ctx context.Context) error {
+	cfg := a.config.Agent.LatencyLearning
+
+	// Get ports from configured backends
+	ports := a.getBackendPorts()
+	if len(ports) == 0 {
+		return fmt.Errorf("no backend ports configured for latency collection")
+	}
+
+	// Create collector with config
+	collectorCfg := latency.CollectorConfig{
+		Ports:            ports,
+		PollInterval:     cfg.PollInterval,
+		MinConnectionAge: cfg.MinConnectionAge,
+	}
+
+	// Apply defaults
+	if collectorCfg.PollInterval == 0 {
+		collectorCfg.PollInterval = 10 * time.Second
+	}
+	if collectorCfg.MinConnectionAge == 0 {
+		collectorCfg.MinConnectionAge = 5 * time.Second
+	}
+
+	collector, err := latency.New(collectorCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create latency collector: %w", err)
+	}
+
+	// Create aggregator with config
+	aggregatorCfg := latency.AggregatorConfig{
+		IPv4Prefix: cfg.IPv4Prefix,
+		IPv6Prefix: cfg.IPv6Prefix,
+		EWMAAlpha:  cfg.EWMAAlpha,
+		MaxSubnets: cfg.MaxSubnets,
+		SubnetTTL:  cfg.SubnetTTL,
+		MinSamples: cfg.MinSamples,
+	}
+
+	aggregator := latency.NewAggregator(aggregatorCfg)
+
+	// Start the collector
+	if err := collector.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start latency collector: %w", err)
+	}
+
+	a.latencyCollector = collector
+	a.latencyAggregator = aggregator
+
+	// Start observation consumer goroutine
+	go a.consumeLatencyObservations(ctx)
+
+	// Start periodic reporting goroutine
+	reportInterval := cfg.ReportInterval
+	if reportInterval == 0 {
+		reportInterval = 30 * time.Second
+	}
+	go a.reportLatencyData(ctx, reportInterval)
+
+	a.logger.Info("latency learning started",
+		"ports", ports,
+		"poll_interval", collectorCfg.PollInterval,
+		"report_interval", reportInterval,
+	)
+
+	return nil
+}
+
+// getBackendPorts returns the unique ports of all configured backends.
+func (a *Agent) getBackendPorts() []uint16 {
+	portSet := make(map[uint16]bool)
+	for _, backend := range a.config.Agent.Backends {
+		if backend.Port > 0 && backend.Port <= 65535 {
+			portSet[uint16(backend.Port)] = true
+		}
+	}
+
+	ports := make([]uint16, 0, len(portSet))
+	for port := range portSet {
+		ports = append(ports, port)
+	}
+	return ports
+}
+
+// consumeLatencyObservations reads observations from the collector and aggregates them.
+func (a *Agent) consumeLatencyObservations(ctx context.Context) {
+	if a.latencyCollector == nil || a.latencyAggregator == nil {
+		return
+	}
+
+	observations := a.latencyCollector.Observations()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case obs, ok := <-observations:
+			if !ok {
+				return
+			}
+			a.latencyAggregator.Record(obs)
+			// Record RTT for metrics
+			latency.RecordRTT(obs.RTT.Seconds())
+		}
+	}
+}
+
+// reportLatencyData periodically sends latency reports to Overwatch nodes.
+func (a *Agent) reportLatencyData(ctx context.Context, interval time.Duration) {
+	if a.latencyAggregator == nil || a.gossip == nil {
+		return
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Also set up a pruning ticker (every hour)
+	pruneTicker := time.NewTicker(1 * time.Hour)
+	defer pruneTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case <-ticker.C:
+			a.sendLatencyReports()
+		case <-pruneTicker.C:
+			a.latencyAggregator.Prune()
+		}
+	}
+}
+
+// sendLatencyReports sends latency data for each backend to Overwatch nodes.
+func (a *Agent) sendLatencyReports() {
+	if a.latencyAggregator == nil || a.gossip == nil {
+		return
+	}
+
+	// Get reportable subnets
+	stats := a.latencyAggregator.GetReportable()
+	if len(stats) == 0 {
+		return
+	}
+
+	// Convert to gossip format
+	subnets := make([]overwatch.SubnetLatencyData, 0, len(stats))
+	for _, s := range stats {
+		subnets = append(subnets, overwatch.SubnetLatencyData{
+			Subnet:      s.Subnet.String(),
+			EWMA:        int64(s.EWMA),
+			SampleCount: s.SampleCount,
+			LastSeen:    s.LastUpdated,
+		})
+	}
+
+	// Send a report for each backend service
+	services := make(map[string]bool)
+	for _, backend := range a.config.Agent.Backends {
+		services[backend.Service] = true
+	}
+
+	for service := range services {
+		if err := a.gossip.SendLatencyReport(
+			a.identity.AgentID,
+			a.identity.Region,
+			service,
+			subnets,
+		); err != nil {
+			a.logger.Error("failed to send latency report",
+				"service", service,
+				"error", err,
+			)
+		} else {
+			latency.RecordReportSent()
+			a.logger.Debug("sent latency report",
+				"service", service,
+				"subnets", len(subnets),
+			)
+		}
+	}
+}
+
 // GetIdentity returns the agent's identity.
 func (a *Agent) GetIdentity() *Identity {
 	return a.identity
@@ -443,22 +653,33 @@ func (a *Agent) Stats() AgentStats {
 	}
 }
 
+// MockLatencyReport stores a latency report for testing.
+type MockLatencyReport struct {
+	AgentID string
+	Region  string
+	Backend string
+	Subnets []overwatch.SubnetLatencyData
+}
+
 // MockGossipSender is a test implementation of GossipSender.
 type MockGossipSender struct {
-	mu            sync.Mutex
-	healthUpdates []HealthUpdateMessage
-	heartbeats    []HeartbeatMessage
-	startErr      error
-	sendHealthErr error
-	sendHBErr     error
-	started       bool
+	mu             sync.Mutex
+	healthUpdates  []HealthUpdateMessage
+	heartbeats     []HeartbeatMessage
+	latencyReports []MockLatencyReport
+	startErr       error
+	sendHealthErr  error
+	sendHBErr      error
+	sendLatencyErr error
+	started        bool
 }
 
 // NewMockGossipSender creates a mock gossip sender for testing.
 func NewMockGossipSender() *MockGossipSender {
 	return &MockGossipSender{
-		healthUpdates: make([]HealthUpdateMessage, 0),
-		heartbeats:    make([]HeartbeatMessage, 0),
+		healthUpdates:  make([]HealthUpdateMessage, 0),
+		heartbeats:     make([]HeartbeatMessage, 0),
+		latencyReports: make([]MockLatencyReport, 0),
 	}
 }
 
@@ -499,6 +720,21 @@ func (m *MockGossipSender) SendHeartbeat(msg HeartbeatMessage) error {
 	return nil
 }
 
+func (m *MockGossipSender) SendLatencyReport(agentID, region, backend string, subnets []overwatch.SubnetLatencyData) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sendLatencyErr != nil {
+		return m.sendLatencyErr
+	}
+	m.latencyReports = append(m.latencyReports, MockLatencyReport{
+		AgentID: agentID,
+		Region:  region,
+		Backend: backend,
+		Subnets: subnets,
+	})
+	return nil
+}
+
 // HealthUpdates returns recorded health updates.
 func (m *MockGossipSender) HealthUpdates() []HealthUpdateMessage {
 	m.mu.Lock()
@@ -517,6 +753,15 @@ func (m *MockGossipSender) Heartbeats() []HeartbeatMessage {
 	return result
 }
 
+// LatencyReports returns recorded latency reports.
+func (m *MockGossipSender) LatencyReports() []MockLatencyReport {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]MockLatencyReport, len(m.latencyReports))
+	copy(result, m.latencyReports)
+	return result
+}
+
 // SetError configures errors for testing.
 func (m *MockGossipSender) SetError(startErr, sendHealthErr, sendHBErr error) {
 	m.mu.Lock()
@@ -532,4 +777,5 @@ func (m *MockGossipSender) Clear() {
 	defer m.mu.Unlock()
 	m.healthUpdates = m.healthUpdates[:0]
 	m.heartbeats = m.heartbeats[:0]
+	m.latencyReports = m.latencyReports[:0]
 }
