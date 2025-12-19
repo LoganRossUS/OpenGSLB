@@ -150,7 +150,7 @@ resource "azurerm_windows_virtual_machine" "backend_westeurope_win" {
 }
 
 # Custom Script Extension for Windows VM to install IIS and OpenGSLB
-# Uses a multi-step approach: write script to file, then execute
+# Uses base64-encoded PowerShell script for reliable execution
 resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   name                 = "setup-opengslb"
   virtual_machine_id   = azurerm_windows_virtual_machine.backend_westeurope_win.id
@@ -158,19 +158,14 @@ resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   type                 = "CustomScriptExtension"
   type_handler_version = "1.10"
 
-  settings = jsonencode({
-    commandToExecute = join(" && ", [
-      "mkdir C:\\opengslb 2>nul",
-      "powershell -ExecutionPolicy Bypass -Command \"Start-Transcript -Path C:\\opengslb-setup.log; Write-Host 'Starting setup...'\"",
-      "powershell -ExecutionPolicy Bypass -Command \"Install-WindowsFeature -Name Web-Server -IncludeManagementTools\"",
-      "powershell -ExecutionPolicy Bypass -Command \"[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))\"",
-      "powershell -ExecutionPolicy Bypass -Command \"& 'C:\\ProgramData\\chocolatey\\bin\\choco.exe' install git golang -y --no-progress\"",
-      "powershell -ExecutionPolicy Bypass -Command \"& 'C:\\Program Files\\Git\\bin\\git.exe' clone --depth 1 --branch ${var.opengslb_git_branch} ${var.opengslb_git_repo} C:\\opengslb\\src\"",
-      "powershell -ExecutionPolicy Bypass -Command \"$env:GOPATH='C:\\Users\\${var.admin_username}\\go'; $env:GOMODCACHE='C:\\Users\\${var.admin_username}\\go\\pkg\\mod'; New-Item -Path $env:GOPATH -ItemType Directory -Force; New-Item -Path $env:GOMODCACHE -ItemType Directory -Force; cd C:\\opengslb\\src; & 'C:\\Program Files\\Go\\bin\\go.exe' build -o C:\\opengslb\\opengslb.exe ./cmd/opengslb\"",
-      "powershell -ExecutionPolicy Bypass -Command \"'mode: agent`nidentity:`n  service_token: ${var.service_token}`n  region: eu-west`nbackends:`n  - service: web`n    address: 0.0.0.0`n    port: 80`n    weight: 100`n    health_check:`n      type: http`n      path: /`n      interval: 5s`n      timeout: 2s`nlatency_learning:`n  enabled: true`n  poll_interval: 10s`n  ipv4_prefix: 24`n  ipv6_prefix: 48`n  min_connection_age: 5s`n  max_subnets: 10000`n  subnet_ttl: 24h`n  min_samples: 3`n  report_interval: 30s`n  ewma_alpha: 0.3`ngossip:`n  encryption_key: ${var.gossip_encryption_key}`n  overwatch_nodes:`n    - 10.1.1.10:7946`nheartbeat:`n  interval: 10s`nmetrics:`n  enabled: true`n  address: :9090`nlogging:`n  level: debug`n  format: json' | Out-File -Encoding utf8 C:\\opengslb\\agent.yaml\"",
-      "powershell -ExecutionPolicy Bypass -Command \"$a = New-ScheduledTaskAction -Execute 'C:\\opengslb\\opengslb.exe' -Argument '--mode agent --config C:\\opengslb\\agent.yaml'; $t = New-ScheduledTaskTrigger -AtStartup; $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; Register-ScheduledTask -TaskName 'OpenGSLB Agent' -Action $a -Trigger $t -Principal $p -Force; Start-ScheduledTask -TaskName 'OpenGSLB Agent'\"",
-      "powershell -ExecutionPolicy Bypass -Command \"Write-Host 'Setup complete'; Stop-Transcript\""
-    ])
+  protected_settings = jsonencode({
+    commandToExecute = "powershell -ExecutionPolicy Bypass -EncodedCommand ${textencodebase64(templatefile("${path.module}/scripts/setup-windows.ps1.tpl", {
+      admin_username = var.admin_username
+      git_branch     = var.opengslb_git_branch
+      git_repo       = var.opengslb_git_repo
+      service_token  = var.service_token
+      gossip_key     = var.gossip_encryption_key
+    }), "UTF-16LE")}"
   })
 
   timeouts {
