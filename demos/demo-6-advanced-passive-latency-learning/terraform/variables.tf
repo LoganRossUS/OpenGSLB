@@ -17,7 +17,7 @@ variable "admin_username" {
 }
 
 variable "ssh_public_key_path" {
-  description = "Path to SSH public key for Linux VM authentication"
+  description = "Path to SSH public key for Linux VM authentication (Azure only supports RSA keys, not ed25519)"
   type        = string
   default     = "~/.ssh/id_rsa.pub"
 }
