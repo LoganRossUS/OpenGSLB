@@ -31,6 +31,11 @@ output "backend_southeastasia_public_ip" {
   value       = azurerm_public_ip.backend_southeastasia.ip_address
 }
 
+output "backend_westeurope_win_public_ip" {
+  description = "Public IP of West Europe Windows backend (for RDP)"
+  value       = azurerm_public_ip.backend_westeurope_win.ip_address
+}
+
 output "backend_westeurope_private_ip" {
   description = "Private IP of West Europe Linux backend"
   value       = azurerm_network_interface.backend_westeurope.private_ip_address
@@ -57,11 +62,11 @@ output "dns_test_command" {
 }
 
 output "ssh_commands" {
-  description = "SSH commands for all VMs"
+  description = "SSH/RDP commands for all VMs"
   value       = <<-EOT
 
     ============================================
-    SSH Commands for All VMs
+    SSH Commands for Linux VMs
     ============================================
 
     # Overwatch (East US) - DNS Server
@@ -80,7 +85,18 @@ output "ssh_commands" {
     ssh ${var.admin_username}@${azurerm_public_ip.backend_southeastasia.ip_address}
 
     ============================================
-    Check Cloud-Init Logs
+    RDP Command for Windows VM
+    ============================================
+
+    # Backend (West Europe - Windows)
+    # Use Remote Desktop Connection or:
+    mstsc /v:${azurerm_public_ip.backend_westeurope_win.ip_address}
+
+    # Username: ${var.admin_username}
+    # Password: (from terraform.tfvars windows_admin_password)
+
+    ============================================
+    Check Cloud-Init Logs (Linux)
     ============================================
 
     # On Overwatch or Backend VMs:
@@ -93,6 +109,19 @@ output "ssh_commands" {
     sudo cat /var/log/cloud-init-output.log
 
     ============================================
+    Check Setup Logs (Windows)
+    ============================================
+
+    # On Windows VM (via RDP/PowerShell):
+    type C:\opengslb\setup.log
+
+    # Check scheduled task:
+    Get-ScheduledTask -TaskName "OpenGSLB Agent"
+
+    # Check if binary exists:
+    Test-Path C:\opengslb\opengslb.exe
+
+    ============================================
     Check Service Status
     ============================================
 
@@ -100,7 +129,7 @@ output "ssh_commands" {
     sudo systemctl status opengslb-overwatch
     sudo journalctl -u opengslb-overwatch -f
 
-    # On Backends:
+    # On Linux Backends:
     sudo systemctl status opengslb-agent
     sudo journalctl -u opengslb-agent -f
 
