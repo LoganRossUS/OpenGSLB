@@ -127,6 +127,12 @@ logging:
     $config | Out-File -FilePath "C:\opengslb\agent.yaml" -Encoding utf8
     Log "Config created"
 
+    # Set secure permissions on config file (contains sensitive tokens)
+    Log "Setting config file permissions..."
+    $configPath = "C:\opengslb\agent.yaml"
+    icacls $configPath /inheritance:r /grant:r "SYSTEM:F" /grant:r "Administrators:F"
+    Log "Config permissions set"
+
     # Create scheduled task
     Log "Creating scheduled task..."
     $action = New-ScheduledTaskAction -Execute "C:\opengslb\opengslb.exe" -Argument "--mode agent --config C:\opengslb\agent.yaml"
