@@ -4,8 +4,8 @@
 param(
     [string]$GitBranch = "main",
     [string]$GitRepo = "https://github.com/LoganRossUS/OpenGSLB.git",
-    [string]$ServiceToken = "",
-    [string]$GossipKey = "",
+    [string]$ServiceToken = "test-token-for-latency-testing",
+    [string]$GossipKey = "kUgbkXysBGdpykayRXgRwHeLMQs4gCena6jvqfxQBpE=",
     [string]$AdminUser = "azureuser"
 )
 
@@ -126,6 +126,12 @@ logging:
 "@
     $config | Out-File -FilePath "C:\opengslb\agent.yaml" -Encoding utf8
     Log "Config created"
+
+    # Set secure permissions on config file (contains sensitive tokens)
+    Log "Setting config file permissions..."
+    $configPath = "C:\opengslb\agent.yaml"
+    icacls $configPath /inheritance:r /grant:r "SYSTEM:F" /grant:r "Administrators:F"
+    Log "Config permissions set"
 
     # Create scheduled task
     Log "Creating scheduled task..."
