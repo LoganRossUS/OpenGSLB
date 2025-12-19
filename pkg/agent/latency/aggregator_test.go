@@ -120,7 +120,7 @@ func TestAggregator_EWMA(t *testing.T) {
 	})
 
 	stats, _ = agg.GetSubnet(subnet)
-	expected := time.Duration(alpha*50 + (1-alpha)*100) * time.Millisecond
+	expected := time.Duration(alpha*50+(1-alpha)*100) * time.Millisecond
 	if stats.EWMA != expected {
 		t.Errorf("second EWMA should be %v, got %v", expected, stats.EWMA)
 	}
