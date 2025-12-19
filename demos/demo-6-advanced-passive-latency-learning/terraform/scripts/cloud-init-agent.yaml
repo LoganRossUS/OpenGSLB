@@ -1,9 +1,7 @@
 #cloud-config
-# Cloud-init for OpenGSLB Agent node (Linux backend)
-# This script installs nginx, Go, builds OpenGSLB from source, and starts the Agent service
 
 package_update: true
-package_upgrade: true
+package_upgrade: false
 
 packages:
   - git
@@ -18,11 +16,9 @@ write_files:
     permissions: '0600'
     content: |
       mode: agent
-
       identity:
         service_token: "${service_token}"
         region: ${region}
-
       backends:
         - service: web
           address: 0.0.0.0
@@ -33,7 +29,6 @@ write_files:
             path: /
             interval: 5s
             timeout: 2s
-
       latency_learning:
         enabled: true
         poll_interval: 10s
@@ -45,19 +40,15 @@ write_files:
         min_samples: 3
         report_interval: 30s
         ewma_alpha: 0.3
-
       gossip:
         encryption_key: "${gossip_encryption_key}"
         overwatch_nodes:
           - 10.1.1.10:7946
-
       heartbeat:
         interval: 10s
-
       metrics:
         enabled: true
         address: ":9090"
-
       logging:
         level: debug
         format: json
@@ -68,7 +59,6 @@ write_files:
       [Unit]
       Description=OpenGSLB Agent
       After=network.target nginx.service
-
       [Service]
       Type=simple
       ExecStart=/usr/local/bin/opengslb --mode agent --config /etc/opengslb/agent.yaml
@@ -76,7 +66,6 @@ write_files:
       RestartSec=5
       StandardOutput=journal
       StandardError=journal
-
       [Install]
       WantedBy=multi-user.target
 
@@ -94,73 +83,78 @@ write_files:
       </body>
       </html>
 
-  - path: /usr/local/bin/cloud-init-log
+  - path: /opt/setup-opengslb.sh
     permissions: '0755'
     content: |
       #!/bin/bash
-      # Helper script to log cloud-init progress with timestamps
-      LOG_FILE="/var/log/opengslb/cloud-init.log"
-      echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+      set -x
+      exec > /var/log/opengslb-setup.log 2>&1
+
+      echo "=== OpenGSLB Agent Setup Started at $(date) ==="
+      echo "Region: ${region}"
+      echo "Hostname: ${hostname}"
+
+      # Create directories
+      mkdir -p /etc/opengslb /var/log/opengslb /opt/opengslb
+
+      # Start nginx
+      echo "Starting nginx..."
+      systemctl enable nginx
+      systemctl start nginx
+
+      # Install Go
+      echo "Installing Go..."
+      cd /tmp
+      curl -fsSL -o go.tar.gz https://go.dev/dl/go1.23.4.linux-amd64.tar.gz
+      if [ $? -ne 0 ]; then
+        echo "FAILED to download Go"
+        exit 1
+      fi
+      rm -rf /usr/local/go
+      tar -C /usr/local -xzf go.tar.gz
+      export PATH=$PATH:/usr/local/go/bin
+      echo "Go installed: $(/usr/local/go/bin/go version)"
+
+      # Clone OpenGSLB
+      echo "Cloning OpenGSLB..."
+      cd /opt
+      rm -rf /opt/opengslb
+      git clone --depth 1 --branch "${git_branch}" "${git_repo}" /opt/opengslb
+      if [ $? -ne 0 ]; then
+        echo "FAILED to clone repository"
+        exit 1
+      fi
+      echo "Clone successful"
+      ls -la /opt/opengslb
+
+      # Build OpenGSLB
+      echo "Building OpenGSLB..."
+      cd /opt/opengslb
+      /usr/local/go/bin/go build -o /usr/local/bin/opengslb ./cmd/opengslb
+      if [ $? -ne 0 ]; then
+        echo "FAILED to build"
+        exit 1
+      fi
+      chmod 755 /usr/local/bin/opengslb
+      echo "Build successful: $(ls -la /usr/local/bin/opengslb)"
+
+      # Set capabilities for reading TCP RTT
+      echo "Setting capabilities..."
+      setcap 'cap_net_admin=+ep' /usr/local/bin/opengslb
+
+      # Ensure config permissions
+      chmod 600 /etc/opengslb/agent.yaml
+
+      # Start service
+      echo "Starting service..."
+      systemctl daemon-reload
+      systemctl enable opengslb-agent
+      systemctl start opengslb-agent
+
+      sleep 3
+      systemctl status opengslb-agent --no-pager
+
+      echo "=== OpenGSLB Agent Setup Completed at $(date) ==="
 
 runcmd:
-  # Create directories
-  - mkdir -p /etc/opengslb /var/log/opengslb
-
-  # Start logging
-  - /usr/local/bin/cloud-init-log "========== CLOUD-INIT STARTED =========="
-  - /usr/local/bin/cloud-init-log "Node type: Agent (${region})"
-  - /usr/local/bin/cloud-init-log "Hostname: ${hostname}"
-
-  # Configure nginx
-  - /usr/local/bin/cloud-init-log "Starting nginx..."
-  - systemctl enable nginx
-  - systemctl start nginx && /usr/local/bin/cloud-init-log "nginx started" || /usr/local/bin/cloud-init-log "FAILED to start nginx"
-
-  # Install Go
-  - /usr/local/bin/cloud-init-log "Downloading Go..."
-  - curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz -o /tmp/go.tar.gz && /usr/local/bin/cloud-init-log "Go downloaded" || /usr/local/bin/cloud-init-log "FAILED to download Go"
-  - /usr/local/bin/cloud-init-log "Installing Go..."
-  - rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz && /usr/local/bin/cloud-init-log "Go installed" || /usr/local/bin/cloud-init-log "FAILED to install Go"
-  - echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/golang.sh
-  - export PATH=$PATH:/usr/local/go/bin
-  - /usr/local/bin/cloud-init-log "Go version: $(/usr/local/go/bin/go version)"
-
-  # Clone OpenGSLB
-  - /usr/local/bin/cloud-init-log "Cloning OpenGSLB from ${git_repo} branch ${git_branch}..."
-  - git clone --depth 1 --branch ${git_branch} ${git_repo} /opt/opengslb && /usr/local/bin/cloud-init-log "Clone successful" || /usr/local/bin/cloud-init-log "FAILED to clone repository"
-  - /usr/local/bin/cloud-init-log "Repository contents:" && ls -la /opt/opengslb | tee -a /var/log/opengslb/cloud-init.log
-
-  # Build OpenGSLB
-  - /usr/local/bin/cloud-init-log "Building OpenGSLB..."
-  - cd /opt/opengslb && /usr/local/go/bin/go build -o /tmp/opengslb ./cmd/opengslb 2>&1 | tee -a /var/log/opengslb/cloud-init.log && /usr/local/bin/cloud-init-log "Build successful" || /usr/local/bin/cloud-init-log "FAILED to build OpenGSLB"
-  - /usr/local/bin/cloud-init-log "Build output exists: $(ls -la /tmp/opengslb 2>&1)"
-
-  # Install binary
-  - /usr/local/bin/cloud-init-log "Installing binary to /usr/local/bin..."
-  - sudo cp /tmp/opengslb /usr/local/bin/opengslb && /usr/local/bin/cloud-init-log "Binary copied" || /usr/local/bin/cloud-init-log "FAILED to copy binary"
-  - sudo chmod 755 /usr/local/bin/opengslb && /usr/local/bin/cloud-init-log "Binary permissions set" || /usr/local/bin/cloud-init-log "FAILED to set permissions"
-  - /usr/local/bin/cloud-init-log "Binary installed: $(ls -la /usr/local/bin/opengslb 2>&1)"
-
-  # Set capabilities on the binary for CAP_NET_ADMIN (required for reading TCP RTT)
-  - /usr/local/bin/cloud-init-log "Setting CAP_NET_ADMIN capability..."
-  - sudo setcap 'cap_net_admin=+ep' /usr/local/bin/opengslb && /usr/local/bin/cloud-init-log "Capability set" || /usr/local/bin/cloud-init-log "FAILED to set capability"
-
-  # Ensure config file has correct permissions
-  - chmod 600 /etc/opengslb/agent.yaml
-  - /usr/local/bin/cloud-init-log "Config file permissions set"
-
-  # Enable and start the agent service
-  - /usr/local/bin/cloud-init-log "Starting OpenGSLB Agent service..."
-  - systemctl daemon-reload
-  - systemctl enable opengslb-agent
-  - systemctl start opengslb-agent && /usr/local/bin/cloud-init-log "Service started" || /usr/local/bin/cloud-init-log "FAILED to start service"
-
-  # Check service status
-  - sleep 2
-  - /usr/local/bin/cloud-init-log "Service status:"
-  - systemctl status opengslb-agent --no-pager 2>&1 | tee -a /var/log/opengslb/cloud-init.log
-
-  # Log completion
-  - /usr/local/bin/cloud-init-log "========== CLOUD-INIT COMPLETED =========="
-  - /usr/local/bin/cloud-init-log "View logs with: cat /var/log/opengslb/cloud-init.log"
-  - /usr/local/bin/cloud-init-log "View service logs with: sudo journalctl -u opengslb-agent -f"
+  - [bash, /opt/setup-opengslb.sh]

@@ -96,11 +96,11 @@ output "ssh_commands" {
     # Password: (from terraform.tfvars windows_admin_password)
 
     ============================================
-    Check Cloud-Init Logs (Linux)
+    Check Setup Logs (Linux)
     ============================================
 
     # On Overwatch or Backend VMs:
-    cat /var/log/opengslb/cloud-init.log
+    cat /var/log/opengslb-setup.log
 
     # On Traffic Generator VMs:
     cat /var/log/traffic-setup.log
