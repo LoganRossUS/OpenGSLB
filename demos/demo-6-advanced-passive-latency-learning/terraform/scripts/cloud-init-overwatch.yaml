@@ -80,40 +80,79 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 
+  - path: /usr/local/bin/cloud-init-log
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Helper script to log cloud-init progress with timestamps
+      LOG_FILE="/var/log/opengslb/cloud-init.log"
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+
 runcmd:
   # Create directories
   - mkdir -p /etc/opengslb /var/log/opengslb
 
+  # Start logging
+  - /usr/local/bin/cloud-init-log "========== CLOUD-INIT STARTED =========="
+  - /usr/local/bin/cloud-init-log "Node type: Overwatch"
+
   # Stop and disable systemd-resolved to free up port 53
-  - systemctl stop systemd-resolved
+  - /usr/local/bin/cloud-init-log "Stopping systemd-resolved..."
+  - systemctl stop systemd-resolved && /usr/local/bin/cloud-init-log "systemd-resolved stopped" || /usr/local/bin/cloud-init-log "FAILED to stop systemd-resolved"
   - systemctl disable systemd-resolved
+
   # Configure DNS to use external resolver
+  - /usr/local/bin/cloud-init-log "Configuring external DNS resolvers..."
   - rm -f /etc/resolv.conf
   - echo "nameserver 8.8.8.8" > /etc/resolv.conf
   - echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+  - /usr/local/bin/cloud-init-log "DNS configured"
 
   # Install Go
-  - curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz -o /tmp/go.tar.gz
-  - rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz
+  - /usr/local/bin/cloud-init-log "Downloading Go..."
+  - curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz -o /tmp/go.tar.gz && /usr/local/bin/cloud-init-log "Go downloaded" || /usr/local/bin/cloud-init-log "FAILED to download Go"
+  - /usr/local/bin/cloud-init-log "Installing Go..."
+  - rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz && /usr/local/bin/cloud-init-log "Go installed" || /usr/local/bin/cloud-init-log "FAILED to install Go"
   - echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/golang.sh
   - export PATH=$PATH:/usr/local/go/bin
+  - /usr/local/bin/cloud-init-log "Go version: $(/usr/local/go/bin/go version)"
 
-  # Clone and build OpenGSLB
-  - git clone --depth 1 --branch ${git_branch} ${git_repo} /opt/opengslb
-  - cd /opt/opengslb && /usr/local/go/bin/go build -o /tmp/opengslb ./cmd/opengslb
-  - cp /tmp/opengslb /usr/local/bin/opengslb
-  - chmod 755 /usr/local/bin/opengslb
+  # Clone OpenGSLB
+  - /usr/local/bin/cloud-init-log "Cloning OpenGSLB from ${git_repo} branch ${git_branch}..."
+  - git clone --depth 1 --branch ${git_branch} ${git_repo} /opt/opengslb && /usr/local/bin/cloud-init-log "Clone successful" || /usr/local/bin/cloud-init-log "FAILED to clone repository"
+  - /usr/local/bin/cloud-init-log "Repository contents:" && ls -la /opt/opengslb | tee -a /var/log/opengslb/cloud-init.log
+
+  # Build OpenGSLB
+  - /usr/local/bin/cloud-init-log "Building OpenGSLB..."
+  - cd /opt/opengslb && /usr/local/go/bin/go build -o /tmp/opengslb ./cmd/opengslb 2>&1 | tee -a /var/log/opengslb/cloud-init.log && /usr/local/bin/cloud-init-log "Build successful" || /usr/local/bin/cloud-init-log "FAILED to build OpenGSLB"
+  - /usr/local/bin/cloud-init-log "Build output exists: $(ls -la /tmp/opengslb 2>&1)"
+
+  # Install binary
+  - /usr/local/bin/cloud-init-log "Installing binary to /usr/local/bin..."
+  - sudo cp /tmp/opengslb /usr/local/bin/opengslb && /usr/local/bin/cloud-init-log "Binary copied" || /usr/local/bin/cloud-init-log "FAILED to copy binary"
+  - sudo chmod 755 /usr/local/bin/opengslb && /usr/local/bin/cloud-init-log "Binary permissions set" || /usr/local/bin/cloud-init-log "FAILED to set permissions"
+  - /usr/local/bin/cloud-init-log "Binary installed: $(ls -la /usr/local/bin/opengslb 2>&1)"
 
   # Set capabilities for binding to port 53 without root
-  - setcap 'cap_net_bind_service=+ep' /usr/local/bin/opengslb
+  - /usr/local/bin/cloud-init-log "Setting CAP_NET_BIND_SERVICE capability..."
+  - sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/opengslb && /usr/local/bin/cloud-init-log "Capability set" || /usr/local/bin/cloud-init-log "FAILED to set capability"
 
   # Ensure config file has correct permissions
   - chmod 600 /etc/opengslb/overwatch.yaml
+  - /usr/local/bin/cloud-init-log "Config file permissions set"
 
   # Enable and start the service
+  - /usr/local/bin/cloud-init-log "Starting OpenGSLB Overwatch service..."
   - systemctl daemon-reload
   - systemctl enable opengslb-overwatch
-  - systemctl start opengslb-overwatch
+  - systemctl start opengslb-overwatch && /usr/local/bin/cloud-init-log "Service started" || /usr/local/bin/cloud-init-log "FAILED to start service"
+
+  # Check service status
+  - sleep 2
+  - /usr/local/bin/cloud-init-log "Service status:"
+  - systemctl status opengslb-overwatch --no-pager 2>&1 | tee -a /var/log/opengslb/cloud-init.log
 
   # Log completion
-  - echo "OpenGSLB Overwatch installation complete" | tee /var/log/opengslb/install.log
+  - /usr/local/bin/cloud-init-log "========== CLOUD-INIT COMPLETED =========="
+  - /usr/local/bin/cloud-init-log "View logs with: cat /var/log/opengslb/cloud-init.log"
+  - /usr/local/bin/cloud-init-log "View service logs with: sudo journalctl -u opengslb-overwatch -f"
