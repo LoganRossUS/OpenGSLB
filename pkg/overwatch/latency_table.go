@@ -336,3 +336,37 @@ func (t *LearnedLatencyTable) Clear() {
 	t.data = make(map[netip.Prefix]map[string]*BackendLatency)
 	latencyTableEntries.Set(0)
 }
+
+// LatencyEntry is a single entry in the latency table for API responses.
+type LatencyEntry struct {
+	Subnet      string `json:"subnet"`
+	Backend     string `json:"backend"`
+	Region      string `json:"region"`
+	EWMA        int64  `json:"ewma_ms"`
+	SampleCount uint64 `json:"sample_count"`
+	LastUpdated string `json:"last_updated"`
+	Source      string `json:"source"`
+}
+
+// GetAllEntries returns all entries in the latency table.
+// Used for API/debugging purposes.
+func (t *LearnedLatencyTable) GetAllEntries() []LatencyEntry {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	var entries []LatencyEntry
+	for prefix, backendMap := range t.data {
+		for _, entry := range backendMap {
+			entries = append(entries, LatencyEntry{
+				Subnet:      prefix.String(),
+				Backend:     entry.Backend,
+				Region:      entry.Region,
+				EWMA:        entry.EWMA.Milliseconds(),
+				SampleCount: entry.SampleCount,
+				LastUpdated: entry.LastUpdated.Format(time.RFC3339),
+				Source:      entry.Source,
+			})
+		}
+	}
+	return entries
+}
