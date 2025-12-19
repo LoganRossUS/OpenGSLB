@@ -5,7 +5,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
 # Network Security Groups
+# Note: NSGs must be in the same region as the resources they're associated with
 
+# Overwatch NSG (East US)
 resource "azurerm_network_security_group" "overwatch" {
   name                = "nsg-overwatch"
   location            = "East US"
@@ -97,9 +99,10 @@ resource "azurerm_network_security_group" "overwatch" {
   }
 }
 
-resource "azurerm_network_security_group" "backend" {
-  name                = "nsg-backend"
-  location            = "East US"
+# Backend NSG - West Europe
+resource "azurerm_network_security_group" "backend_westeurope" {
+  name                = "nsg-backend-westeurope"
+  location            = "West Europe"
   resource_group_name = azurerm_resource_group.main.name
   tags                = var.tags
 
@@ -176,9 +179,98 @@ resource "azurerm_network_security_group" "backend" {
   }
 }
 
-resource "azurerm_network_security_group" "traffic" {
-  name                = "nsg-traffic"
+# Backend NSG - Southeast Asia
+resource "azurerm_network_security_group" "backend_southeastasia" {
+  name                = "nsg-backend-southeastasia"
+  location            = "Southeast Asia"
+  resource_group_name = azurerm_resource_group.main.name
+  tags                = var.tags
+
+  security_rule {
+    name                       = "SSH"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "22"
+    source_address_prefix      = "10.0.0.0/8"
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "HTTP"
+    priority                   = 110
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "80"
+    source_address_prefix      = "10.0.0.0/8"
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "Gossip-TCP"
+    priority                   = 120
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "7946"
+    source_address_prefix      = "10.0.0.0/8"
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "Gossip-UDP"
+    priority                   = 121
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Udp"
+    source_port_range          = "*"
+    destination_port_range     = "7946"
+    source_address_prefix      = "10.0.0.0/8"
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "AgentMetrics"
+    priority                   = 130
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "9090"
+    source_address_prefix      = "10.0.0.0/8"
+    destination_address_prefix = "*"
+  }
+}
+
+# Traffic NSG - East US
+resource "azurerm_network_security_group" "traffic_eastus" {
+  name                = "nsg-traffic-eastus"
   location            = "East US"
+  resource_group_name = azurerm_resource_group.main.name
+  tags                = var.tags
+
+  security_rule {
+    name                       = "SSH"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "22"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+}
+
+# Traffic NSG - Southeast Asia
+resource "azurerm_network_security_group" "traffic_southeastasia" {
+  name                = "nsg-traffic-southeastasia"
+  location            = "Southeast Asia"
   resource_group_name = azurerm_resource_group.main.name
   tags                = var.tags
 
@@ -204,25 +296,25 @@ resource "azurerm_network_interface_security_group_association" "overwatch" {
 
 resource "azurerm_network_interface_security_group_association" "backend_westeurope" {
   network_interface_id      = azurerm_network_interface.backend_westeurope.id
-  network_security_group_id = azurerm_network_security_group.backend.id
+  network_security_group_id = azurerm_network_security_group.backend_westeurope.id
 }
 
 resource "azurerm_network_interface_security_group_association" "backend_westeurope_win" {
   network_interface_id      = azurerm_network_interface.backend_westeurope_win.id
-  network_security_group_id = azurerm_network_security_group.backend.id
+  network_security_group_id = azurerm_network_security_group.backend_westeurope.id
 }
 
 resource "azurerm_network_interface_security_group_association" "backend_southeastasia" {
   network_interface_id      = azurerm_network_interface.backend_southeastasia.id
-  network_security_group_id = azurerm_network_security_group.backend.id
+  network_security_group_id = azurerm_network_security_group.backend_southeastasia.id
 }
 
 resource "azurerm_network_interface_security_group_association" "traffic_eastus" {
   network_interface_id      = azurerm_network_interface.traffic_eastus.id
-  network_security_group_id = azurerm_network_security_group.traffic.id
+  network_security_group_id = azurerm_network_security_group.traffic_eastus.id
 }
 
 resource "azurerm_network_interface_security_group_association" "traffic_southeastasia" {
   network_interface_id      = azurerm_network_interface.traffic_southeastasia.id
-  network_security_group_id = azurerm_network_security_group.traffic.id
+  network_security_group_id = azurerm_network_security_group.traffic_southeastasia.id
 }
