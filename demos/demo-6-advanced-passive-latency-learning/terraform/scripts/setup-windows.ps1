@@ -83,40 +83,50 @@ try {
         throw "Build failed - binary not found"
     }
 
+    # Discover the actual IP address of this VM
+    Log "Discovering IP address..."
+    $MyIP = (Get-NetIPAddress -InterfaceAlias "Ethernet" -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -ne "WellKnown" }).IPAddress
+    if (-not $MyIP) {
+        # Fallback: try any IPv4 address that's not loopback
+        $MyIP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike "127.*" -and $_.PrefixOrigin -ne "WellKnown" } | Select-Object -First 1).IPAddress
+    }
+    Log "Discovered IP address: $MyIP"
+
     # Create config file
     Log "Creating config..."
     $config = @"
 mode: agent
-identity:
-  service_token: $ServiceToken
-  region: eu-west
-backends:
-  - service: web
-    address: 0.0.0.0
-    port: 80
-    weight: 100
-    health_check:
-      type: http
-      path: /
-      interval: 5s
-      timeout: 2s
-latency_learning:
-  enabled: true
-  poll_interval: 10s
-  ipv4_prefix: 24
-  ipv6_prefix: 48
-  min_connection_age: 5s
-  max_subnets: 10000
-  subnet_ttl: 24h
-  min_samples: 3
-  report_interval: 30s
-  ewma_alpha: 0.3
-gossip:
-  encryption_key: $GossipKey
-  overwatch_nodes:
-    - 10.1.1.10:7946
-heartbeat:
-  interval: 10s
+agent:
+  identity:
+    service_token: $ServiceToken
+    region: eu-west
+  backends:
+    - service: test.opengslb.local
+      address: $MyIP
+      port: 80
+      weight: 100
+      health_check:
+        type: http
+        path: /
+        interval: 5s
+        timeout: 2s
+  latency_learning:
+    enabled: true
+    poll_interval: 10s
+    ipv4_prefix: 24
+    ipv6_prefix: 48
+    min_connection_age: 5s
+    max_subnets: 10000
+    subnet_ttl: 24h
+    min_samples: 3
+    report_interval: 30s
+    ewma_alpha: 0.3
+  gossip:
+    encryption_key: $GossipKey
+    overwatch_nodes:
+      - 10.1.1.10:7946
+  heartbeat:
+    interval: 10s
 metrics:
   enabled: true
   address: ':9090'
@@ -124,8 +134,9 @@ logging:
   level: debug
   format: json
 "@
-    $config | Out-File -FilePath "C:\opengslb\agent.yaml" -Encoding utf8
-    Log "Config created"
+    # Write config without BOM (UTF8 BOM breaks YAML parsing)
+    [System.IO.File]::WriteAllText("C:\opengslb\agent.yaml", $config, [System.Text.UTF8Encoding]::new($false))
+    Log "Config created (UTF8 without BOM)"
 
     # Set secure permissions on config file (contains sensitive tokens)
     Log "Setting config file permissions..."
