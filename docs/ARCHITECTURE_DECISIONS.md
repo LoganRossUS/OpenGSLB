@@ -996,6 +996,42 @@ The same anycast VIP can serve both DNS queries and agent discovery on different
 - Eventual consistency window during sync → acceptable for DNS (per ADR-015)
 - More complex failure modes → comprehensive monitoring and documentation
 
+### Testing Considerations
+
+> ⚠️ **BLOCKER**: This ADR remains in Proposed status until a valid testing strategy is established.
+
+**The Challenge**: Anycast requires BGP peering with network infrastructure. There is no router to peer with in unit tests or standard integration tests.
+
+| Component | Testability | Notes |
+|-----------|-------------|-------|
+| Overwatch Peering | ✅ Testable | Memberlist gossip between overwatches, no network dependency |
+| Agent Discovery Logic | ✅ Testable | Code path for anycast vs static, mockable |
+| Backend Registry Sync | ✅ Testable | CRDT merge logic, pure functions |
+| BGP Advertisement | ❌ Not testable | Requires real network infrastructure |
+| Anycast Routing | ❌ Not testable | Requires BGP-capable routers |
+| Health-Based Withdrawal | ❌ Not testable | Requires BGP daemon integration |
+
+**Potential Testing Approaches** (to be evaluated):
+
+1. **Containerized BGP Lab**: Use GoBGP or FRR in containers to simulate a minimal anycast environment
+   - Pro: Realistic BGP behavior
+   - Con: Complex setup, slow tests, flaky in CI
+
+2. **Split Testing Strategy**:
+   - Unit/integration tests for peering and discovery logic (testable parts)
+   - Manual acceptance tests for anycast behavior (documented runbook)
+   - Con: No automated coverage of anycast path
+
+3. **Mock Network Layer**: Abstract BGP health signaling behind an interface
+   - Pro: Enables unit testing of advertisement logic
+   - Con: Doesn't validate actual BGP behavior
+
+4. **Dedicated Test Environment**: Physical or cloud-based lab with real routers
+   - Pro: Full end-to-end validation
+   - Con: Cost, maintenance, not suitable for CI
+
+**Decision Required**: Before implementation, establish which testing approach(es) will be used and document in a testing plan.
+
 ### Migration Path
 
 **Phase 1**: Enable overwatch peering (no agent changes)
