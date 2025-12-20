@@ -34,7 +34,11 @@ write_files:
         zones:
           - test.opengslb.local
         default_ttl: 30
+      domains:
+        - name: test.opengslb.local
+          routing_algorithm: latency
       api:
+        enabled: true
         address: "0.0.0.0:8080"
         allowed_networks:
           - 10.0.0.0/8

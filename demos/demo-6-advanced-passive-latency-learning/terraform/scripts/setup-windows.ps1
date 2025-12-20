@@ -83,6 +83,15 @@ try {
         throw "Build failed - binary not found"
     }
 
+    # Discover the actual IP address of this VM
+    Log "Discovering IP address..."
+    $MyIP = (Get-NetIPAddress -InterfaceAlias "Ethernet" -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -ne "WellKnown" }).IPAddress
+    if (-not $MyIP) {
+        # Fallback: try any IPv4 address that's not loopback
+        $MyIP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike "127.*" -and $_.PrefixOrigin -ne "WellKnown" } | Select-Object -First 1).IPAddress
+    }
+    Log "Discovered IP address: $MyIP"
+
     # Create config file
     Log "Creating config..."
     $config = @"
@@ -92,8 +101,8 @@ agent:
     service_token: $ServiceToken
     region: eu-west
   backends:
-    - service: web
-      address: 0.0.0.0
+    - service: test.opengslb.local
+      address: $MyIP
       port: 80
       weight: 100
       health_check:
