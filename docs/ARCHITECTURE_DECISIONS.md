@@ -805,6 +805,13 @@ Introduce **optional** anycast-based discovery with overwatch peering. Operators
 4. **Overwatch Peering**: Overwatches gossip backend registry state between themselves
 5. **New Overwatch**: Joins peer mesh, receives state from existing peers, advertises anycast
 
+**Important Limitation**: Overwatches cannot use anycast for peer discovery. Since each Overwatch advertises the anycast VIP, connecting to it would route to themselves. Overwatches must be configured with at least one `bootstrap_peer` (static address). However, once joined, gossip propagates new peers to all existing Overwatches automatically.
+
+| Component | Discovery Method | Manual Config on Add |
+|-----------|------------------|----------------------|
+| Agents | Anycast VIP | None (zero-touch) |
+| Overwatches | Bootstrap peers | New node only (one peer address) |
+
 ### Component Specifications
 
 **Agent Discovery Configuration** (optional):
