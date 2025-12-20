@@ -16,30 +16,29 @@ write_files:
     permissions: '0600'
     content: |
       mode: overwatch
-      identity:
-        node_id: overwatch-eastus
-        region: us-east
+      overwatch:
+        identity:
+          node_id: overwatch-eastus
+          region: us-east
+        agent_tokens:
+          test-backend: "${service_token}"
+        gossip:
+          bind_address: "0.0.0.0:7946"
+          encryption_key: "${gossip_encryption_key}"
+        validation:
+          enabled: true
+          check_interval: 30s
+          check_timeout: 5s
       dns:
         listen_address: "0.0.0.0:53"
         zones:
           - test.opengslb.local
         default_ttl: 30
-      agent_tokens:
-        test-backend: "${service_token}"
-      gossip:
-        bind_address: "0.0.0.0:7946"
-        encryption_key: "${gossip_encryption_key}"
-      validation:
-        enabled: true
-        check_interval: 30s
-        check_timeout: 5s
-      routing:
-        default_algorithm: latency
-        latency:
-          method: learned
-          cold_start_fallback: geo
-          stale_threshold: 1h
+      domains:
+        - name: test.opengslb.local
+          routing_algorithm: latency
       api:
+        enabled: true
         address: "0.0.0.0:8080"
         allowed_networks:
           - 10.0.0.0/8

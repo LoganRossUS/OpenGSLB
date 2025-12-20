@@ -12,47 +12,6 @@ packages:
   - libcap2-bin
 
 write_files:
-  - path: /etc/opengslb/agent.yaml
-    permissions: '0600'
-    content: |
-      mode: agent
-      identity:
-        service_token: "${service_token}"
-        region: ${region}
-      backends:
-        - service: web
-          address: 0.0.0.0
-          port: 80
-          weight: 100
-          health_check:
-            type: http
-            path: /
-            interval: 5s
-            timeout: 2s
-      latency_learning:
-        enabled: true
-        poll_interval: 10s
-        ipv4_prefix: 24
-        ipv6_prefix: 48
-        min_connection_age: 5s
-        max_subnets: 10000
-        subnet_ttl: 24h
-        min_samples: 3
-        report_interval: 30s
-        ewma_alpha: 0.3
-      gossip:
-        encryption_key: "${gossip_encryption_key}"
-        overwatch_nodes:
-          - 10.1.1.10:7946
-      heartbeat:
-        interval: 10s
-      metrics:
-        enabled: true
-        address: ":9090"
-      logging:
-        level: debug
-        format: json
-
   - path: /etc/systemd/system/opengslb-agent.service
     permissions: '0644'
     content: |
@@ -96,6 +55,54 @@ write_files:
 
       # Create directories
       mkdir -p /etc/opengslb /var/log/opengslb /opt/opengslb
+
+      # Discover the actual IP address of this VM
+      MY_IP=$(ip -4 addr show eth0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+      echo "Discovered IP address: $MY_IP"
+
+      # Generate config file with actual IP address
+      cat > /etc/opengslb/agent.yaml <<CONFIGEOF
+mode: agent
+agent:
+  identity:
+    service_token: "${service_token}"
+    region: ${region}
+  backends:
+    - service: test.opengslb.local
+      address: $MY_IP
+      port: 80
+      weight: 100
+      health_check:
+        type: http
+        path: /
+        interval: 5s
+        timeout: 2s
+  latency_learning:
+    enabled: true
+    poll_interval: 10s
+    ipv4_prefix: 24
+    ipv6_prefix: 48
+    min_connection_age: 5s
+    max_subnets: 10000
+    subnet_ttl: 24h
+    min_samples: 3
+    report_interval: 30s
+    ewma_alpha: 0.3
+  gossip:
+    encryption_key: "${gossip_encryption_key}"
+    overwatch_nodes:
+      - 10.1.1.10:7946
+  heartbeat:
+    interval: 10s
+metrics:
+  enabled: true
+  address: ":9090"
+logging:
+  level: debug
+  format: json
+CONFIGEOF
+      chmod 600 /etc/opengslb/agent.yaml
+      echo "Config file generated with IP: $MY_IP"
 
       # Start nginx
       echo "Starting nginx..."
