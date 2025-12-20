@@ -87,36 +87,37 @@ try {
     Log "Creating config..."
     $config = @"
 mode: agent
-identity:
-  service_token: $ServiceToken
-  region: eu-west
-backends:
-  - service: web
-    address: 0.0.0.0
-    port: 80
-    weight: 100
-    health_check:
-      type: http
-      path: /
-      interval: 5s
-      timeout: 2s
-latency_learning:
-  enabled: true
-  poll_interval: 10s
-  ipv4_prefix: 24
-  ipv6_prefix: 48
-  min_connection_age: 5s
-  max_subnets: 10000
-  subnet_ttl: 24h
-  min_samples: 3
-  report_interval: 30s
-  ewma_alpha: 0.3
-gossip:
-  encryption_key: $GossipKey
-  overwatch_nodes:
-    - 10.1.1.10:7946
-heartbeat:
-  interval: 10s
+agent:
+  identity:
+    service_token: $ServiceToken
+    region: eu-west
+  backends:
+    - service: web
+      address: 0.0.0.0
+      port: 80
+      weight: 100
+      health_check:
+        type: http
+        path: /
+        interval: 5s
+        timeout: 2s
+  latency_learning:
+    enabled: true
+    poll_interval: 10s
+    ipv4_prefix: 24
+    ipv6_prefix: 48
+    min_connection_age: 5s
+    max_subnets: 10000
+    subnet_ttl: 24h
+    min_samples: 3
+    report_interval: 30s
+    ewma_alpha: 0.3
+  gossip:
+    encryption_key: $GossipKey
+    overwatch_nodes:
+      - 10.1.1.10:7946
+  heartbeat:
+    interval: 10s
 metrics:
   enabled: true
   address: ':9090'
