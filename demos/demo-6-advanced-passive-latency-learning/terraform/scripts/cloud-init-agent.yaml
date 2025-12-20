@@ -144,14 +144,25 @@ write_files:
 
       # Build OpenGSLB
       echo "Building OpenGSLB..."
+      echo "Build started at $(date)"
       cd /opt/opengslb
-      GOPATH=/root/go GOMODCACHE=/root/go/pkg/mod /snap/bin/go build -o /usr/local/bin/opengslb ./cmd/opengslb
-      if [ $? -ne 0 ]; then
-        echo "FAILED to build"
+      GOPATH=/root/go GOMODCACHE=/root/go/pkg/mod /snap/bin/go build -o /usr/local/bin/opengslb ./cmd/opengslb 2>&1
+      BUILD_EXIT_CODE=$?
+      echo "Build finished at $(date) with exit code: $BUILD_EXIT_CODE"
+
+      if [ $BUILD_EXIT_CODE -ne 0 ]; then
+        echo "FAILED to build OpenGSLB - exit code $BUILD_EXIT_CODE"
         exit 1
       fi
+
+      if [ ! -f /usr/local/bin/opengslb ]; then
+        echo "FAILED - binary not found at /usr/local/bin/opengslb"
+        exit 1
+      fi
+
       chmod 755 /usr/local/bin/opengslb
-      echo "Build successful: $(ls -la /usr/local/bin/opengslb)"
+      echo "BUILD SUCCESS: $(ls -la /usr/local/bin/opengslb)"
+      /usr/local/bin/opengslb -version || echo "Version check completed"
 
       # Set capabilities for reading TCP RTT
       echo "Setting capabilities..."
