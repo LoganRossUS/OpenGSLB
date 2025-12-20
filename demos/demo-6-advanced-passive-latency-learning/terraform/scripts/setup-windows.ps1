@@ -124,8 +124,9 @@ logging:
   level: debug
   format: json
 "@
-    $config | Out-File -FilePath "C:\opengslb\agent.yaml" -Encoding utf8
-    Log "Config created"
+    # Write config without BOM (UTF8 BOM breaks YAML parsing)
+    [System.IO.File]::WriteAllText("C:\opengslb\agent.yaml", $config, [System.Text.UTF8Encoding]::new($false))
+    Log "Config created (UTF8 without BOM)"
 
     # Set secure permissions on config file (contains sensitive tokens)
     Log "Setting config file permissions..."
