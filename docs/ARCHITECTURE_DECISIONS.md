@@ -944,6 +944,36 @@ Example BGP setup (operator responsibility):
 # Withdraws on failure (health check integration)
 ```
 
+### Combined Anycast: DNS + Discovery
+
+The same anycast VIP can serve both DNS queries and agent discovery on different ports:
+
+| Service | Port | Protocol | Purpose |
+|---------|------|----------|---------|
+| DNS | 53 | UDP/TCP | Client DNS queries |
+| Gossip | 7946 | TCP/UDP | Agent discovery and health updates |
+| Peer Sync | 7947 | TCP/UDP | Overwatch-to-Overwatch state sync |
+
+```
+                         Anycast VIP: 10.255.0.1
+                    ┌────────────────────────────────┐
+                    │  :53    - DNS queries          │
+                    │  :7946  - Agent gossip         │
+                    └───────────────┬────────────────┘
+                                    │
+        ┌───────────────────────────┼───────────────────────────┐
+        │                           │                           │
+        ▼                           ▼                           ▼
+   ┌─────────┐                 ┌─────────┐                 ┌─────────┐
+   │ OW-1    │◀───────────────▶│ OW-2    │◀───────────────▶│ OW-3    │
+   │ :7947   │  Peer Gossip    │ :7947   │   Peer Gossip   │ :7947   │
+   └─────────┘                 └─────────┘                 └─────────┘
+```
+
+**Why combining works**: All routing algorithms (geo, latency, weighted, etc.) make decisions based on the **client's source IP**, which is preserved in DNS queries regardless of anycast routing. The anycast path only determines which Overwatch processes the request, not the routing decision outcome.
+
+**Operator benefit**: Single VIP to manage, single BGP advertisement, unified health-based withdrawal. Clients configure one nameserver address instead of multiple.
+
 ### Rationale
 
 - **Optional complexity**: Small deployments keep static config simplicity
