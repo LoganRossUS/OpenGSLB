@@ -732,6 +732,267 @@ latency_learning:
 
 ---
 
+## ADR-018: Anycast Node Discovery (Optional)
+
+**Status**: Proposed
+**Date**: 2025-12-20
+**Related**: ADR-015 (Agent-Overwatch Architecture)
+
+### Context
+
+ADR-015 established that agents gossip to Overwatch nodes, but it assumes agents are statically configured with all Overwatch addresses:
+
+```yaml
+agent:
+  gossip:
+    overwatch_nodes:
+      - "overwatch-1.internal:7946"
+      - "overwatch-2.internal:7946"
+```
+
+**The scalability problem**: When deploying a new Overwatch node, operators must update the configuration of every agent. For deployments with hundreds of agents across multiple regions, this creates significant operational burden.
+
+**The split-brain risk**: Currently, each Overwatch node operates independently with its own view of registered backends. If agents only connect to a subset of Overwatches:
+- Overwatch-1 may know about agents A, B, C
+- Overwatch-2 may know about agents D, E, F
+- DNS responses differ based on which Overwatch receives the query
+
+ADR-015 mitigates this by requiring agents to gossip to ALL Overwatch nodes. But this requires agents to know about all Overwatches upfront, which doesn't scale.
+
+### Decision
+
+Introduce **optional** anycast-based discovery with overwatch peering. Operators can choose between:
+
+1. **Static Configuration** (existing, default): Agents explicitly list all Overwatch nodes
+2. **Anycast Discovery** (new, optional): Agents discover Overwatches via anycast VIP, Overwatches sync state via peering
+
+### Architecture: Anycast Discovery Mode
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │        Overwatch Peering Mesh           │
+                    │   (memberlist gossip between peers)     │
+                    │                                         │
+                    │  ┌──────────┐      ┌──────────┐        │
+                    │  │Overwatch1│◀────▶│Overwatch2│        │
+                    │  └────▲─────┘      └─────▲────┘        │
+                    │       │                  │              │
+                    │       └────────┬─────────┘              │
+                    │                │                        │
+                    │          ┌─────▼─────┐                  │
+                    │          │Overwatch3 │ (newly deployed) │
+                    │          └───────────┘                  │
+                    └────────────────┬────────────────────────┘
+                                     │
+                         Anycast VIP │ 10.255.0.1:7946
+                    ┌────────────────┴────────────────────────┐
+                    │        BGP Anycast Advertisement        │
+                    └────────────────┬────────────────────────┘
+                                     │
+           ┌─────────────────────────┼─────────────────────────┐
+           │                         │                         │
+      ┌────▼────┐              ┌─────▼────┐              ┌─────▼────┐
+      │ Agent A │              │ Agent B  │              │ Agent C  │
+      │ (US-E)  │              │ (US-W)   │              │ (EU)     │
+      └─────────┘              └──────────┘              └──────────┘
+```
+
+**How it works**:
+
+1. **Agent Discovery**: Agent connects to anycast VIP, routes to nearest Overwatch
+2. **Join & Learn**: Upon joining, agent receives list of all Overwatch peers
+3. **Multi-Connect**: Agent establishes gossip with ALL Overwatches (not just anycast target)
+4. **Overwatch Peering**: Overwatches gossip backend registry state between themselves
+5. **New Overwatch**: Joins peer mesh, receives state from existing peers, advertises anycast
+
+### Component Specifications
+
+**Agent Discovery Configuration** (optional):
+
+```yaml
+agent:
+  gossip:
+    # Option 1: Static (existing behavior, remains default)
+    overwatch_nodes:
+      - "overwatch-1.internal:7946"
+      - "overwatch-2.internal:7946"
+
+    # Option 2: Anycast discovery (new, optional)
+    discovery:
+      enabled: true
+      anycast_address: "10.255.0.1:7946"
+      # Optional fallback if anycast unreachable
+      fallback_nodes:
+        - "overwatch-1.internal:7946"
+```
+
+**Overwatch Peering Configuration** (optional):
+
+```yaml
+overwatch:
+  peering:
+    enabled: true
+    # Bootstrap peers (at least one required for new nodes)
+    # Existing nodes discover each other via gossip
+    bootstrap_peers:
+      - "overwatch-1.internal:7947"
+      - "overwatch-2.internal:7947"
+    # Separate port for peer-to-peer gossip (distinct from agent gossip)
+    bind_address: "0.0.0.0:7947"
+    # What state to sync between overwatches
+    sync:
+      backend_registry: true    # Backend health and registration
+      latency_data: true        # Passive latency learning data (ADR-017)
+      dnssec_keys: true         # DNSSEC key material
+```
+
+### Overwatch Peering Protocol
+
+Overwatches form a separate memberlist cluster (port 7947) distinct from the agent gossip cluster (port 7946):
+
+| Cluster | Port | Members | Purpose |
+|---------|------|---------|---------|
+| Agent Gossip | 7946 | Agents + Overwatches | Health updates, registration |
+| Peer Gossip | 7947 | Overwatches only | State synchronization |
+
+**Synchronized State**:
+
+| Data | Sync Method | Consistency |
+|------|-------------|-------------|
+| Backend Registry | Full-state CRDT merge | Eventually consistent |
+| Health Status | Last-writer-wins by timestamp | Eventually consistent |
+| Latency Data | EWMA merge (weighted average) | Eventually consistent |
+| DNSSEC Keys | Existing peer sync (ADR-015) | Strongly consistent |
+
+**Conflict Resolution**: Backend registry uses last-seen-wins with agent authority. If Overwatch-1 and Overwatch-2 have different health status for the same backend:
+1. Compare `AgentLastSeen` timestamps
+2. More recent timestamp wins
+3. Overwatch external validation can override agent claims (per ADR-015 trust hierarchy)
+
+### Discovery Flow
+
+```
+┌─────────┐                    ┌────────────┐                    ┌────────────┐
+│  Agent  │                    │ Overwatch1 │                    │ Overwatch2 │
+└────┬────┘                    └─────┬──────┘                    └─────┬──────┘
+     │                               │                                 │
+     │ 1. Connect to anycast VIP     │                                 │
+     │   (routed to nearest)         │                                 │
+     │──────────────────────────────▶│                                 │
+     │                               │                                 │
+     │ 2. Join memberlist cluster    │                                 │
+     │◀─────────────────────────────▶│                                 │
+     │                               │                                 │
+     │ 3. Receive peer list          │                                 │
+     │   [Overwatch1, Overwatch2]    │                                 │
+     │◀──────────────────────────────│                                 │
+     │                               │                                 │
+     │ 4. Connect to all peers       │                                 │
+     │─────────────────────────────────────────────────────────────────▶
+     │                               │                                 │
+     │ 5. Gossip to all Overwatches  │                                 │
+     │──────────────────────────────▶│◀────────────────────────────────│
+     │                               │                                 │
+```
+
+### New Overwatch Deployment Flow
+
+```
+┌────────────┐                    ┌────────────┐                    ┌────────────┐
+│ Overwatch3 │                    │ Overwatch1 │                    │ Overwatch2 │
+│   (new)    │                    │ (existing) │                    │ (existing) │
+└─────┬──────┘                    └─────┬──────┘                    └─────┬──────┘
+      │                                 │                                 │
+      │ 1. Join peer mesh via bootstrap │                                 │
+      │────────────────────────────────▶│                                 │
+      │                                 │                                 │
+      │ 2. Receive full backend registry│                                 │
+      │◀────────────────────────────────│                                 │
+      │                                 │                                 │
+      │ 3. Receive latency data         │                                 │
+      │◀────────────────────────────────│                                 │
+      │                                 │                                 │
+      │ 4. Start advertising anycast    │                                 │
+      │ ═══════════════════════════════════════════════════════════════  │
+      │                                 │                                 │
+      │ 5. Agents discover via anycast  │                                 │
+      │◀════════════════════════════════│═════════════════════════════════│
+      │                                 │                                 │
+```
+
+### Operator Decision Matrix
+
+| Deployment Size | Overwatch Changes | Recommended Mode |
+|-----------------|-------------------|------------------|
+| Small (1-2 OW, <20 agents) | Rare | Static configuration |
+| Medium (2-5 OW, 20-100 agents) | Occasional | Static or Anycast |
+| Large (5+ OW, 100+ agents) | Frequent | Anycast discovery |
+| Multi-region with dynamic scaling | Common | Anycast discovery |
+
+### Network Requirements (Anycast Mode)
+
+Operators choosing anycast discovery must configure:
+
+1. **Anycast VIP**: A single IP address advertised by all Overwatches
+2. **BGP Configuration**: Each Overwatch advertises the anycast prefix
+3. **Health-Based Withdrawal**: Overwatch stops advertising if unhealthy
+
+Example BGP setup (operator responsibility):
+```
+# Each Overwatch runs a BGP daemon (BIRD, FRR, etc.)
+# Advertises anycast prefix when healthy
+# Withdraws on failure (health check integration)
+```
+
+### Rationale
+
+- **Optional complexity**: Small deployments keep static config simplicity
+- **Scalable operations**: Large deployments avoid config sprawl
+- **Consistent state**: Overwatch peering ensures all nodes have complete view
+- **Graceful migration**: Can run mixed mode during transition
+- **Leverages existing infra**: Uses memberlist (already proven in agent gossip)
+
+### Consequences
+
+**Positive**:
+- Zero agent config changes when adding Overwatches (anycast mode)
+- Consistent backend registry across all Overwatches
+- New Overwatches immediately operational after peer sync
+- Backward compatible (static mode unchanged)
+
+**Negative** (Mitigated):
+- Anycast requires BGP configuration → operator choice, documented requirements
+- Additional network port (7947) for peer gossip → configurable, optional
+- Eventual consistency window during sync → acceptable for DNS (per ADR-015)
+- More complex failure modes → comprehensive monitoring and documentation
+
+### Migration Path
+
+**Phase 1**: Enable overwatch peering (no agent changes)
+```yaml
+# All overwatches
+overwatch:
+  peering:
+    enabled: true
+    bootstrap_peers: ["overwatch-1:7947", "overwatch-2:7947"]
+```
+
+**Phase 2**: Configure anycast infrastructure (network team)
+
+**Phase 3**: Update agents to use discovery (gradual rollout)
+```yaml
+agent:
+  gossip:
+    discovery:
+      enabled: true
+      anycast_address: "10.255.0.1:7946"
+      fallback_nodes: ["overwatch-1:7946"]  # Keep during transition
+```
+
+**Phase 4**: Remove static overwatch_nodes from agent configs
+
+---
+
 ## Document History
 
 | Date | ADR | Change |
@@ -742,3 +1003,4 @@ latency_learning:
 | 2025-12-10 | 015 | Agent-Overwatch architecture (supersedes 003, 007, 012-014) |
 | 2025-12-18 | 016 | Unified server registration |
 | 2025-12-19 | 017 | Passive latency learning |
+| 2025-12-20 | 018 | Anycast node discovery (optional) |
