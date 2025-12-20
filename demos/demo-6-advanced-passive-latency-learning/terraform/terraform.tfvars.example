@@ -8,7 +8,9 @@
 # admin_username = "azureuser"
 
 # Path to your SSH public key (required for Linux VMs)
-ssh_public_key_path = "~/.ssh/id_rsa.pub"
+# IMPORTANT: Azure only supports RSA keys, NOT ed25519!
+# Generate one with: ssh-keygen -t rsa -b 4096 -f ~/.ssh/azure_rsa
+ssh_public_key_path = "~/.ssh/azure_rsa.pub"
 
 # Windows VM admin password (required - must be complex)
 # Must contain: uppercase, lowercase, number, special character

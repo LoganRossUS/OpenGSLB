@@ -1,9 +1,7 @@
 #cloud-config
-# Cloud-init for OpenGSLB Overwatch node
-# This script installs Go, builds OpenGSLB from source, and starts the Overwatch service
 
 package_update: true
-package_upgrade: true
+package_upgrade: false
 
 packages:
   - git
@@ -11,52 +9,43 @@ packages:
   - jq
   - dnsutils
   - build-essential
+  - libcap2-bin
 
 write_files:
   - path: /etc/opengslb/overwatch.yaml
     permissions: '0600'
     content: |
       mode: overwatch
-
       identity:
         node_id: overwatch-eastus
         region: us-east
-
       dns:
         listen_address: "0.0.0.0:53"
         zones:
           - test.opengslb.local
         default_ttl: 30
-
       agent_tokens:
         test-backend: "${service_token}"
-
       gossip:
         bind_address: "0.0.0.0:7946"
         encryption_key: "${gossip_encryption_key}"
-
       validation:
         enabled: true
         check_interval: 30s
         check_timeout: 5s
-
       routing:
         default_algorithm: latency
-
         latency:
           method: learned
           cold_start_fallback: geo
           stale_threshold: 1h
-
       api:
         address: "0.0.0.0:8080"
         allowed_networks:
           - 10.0.0.0/8
-
       metrics:
         enabled: true
         address: "0.0.0.0:9090"
-
       logging:
         level: debug
         format: json
@@ -67,38 +56,118 @@ write_files:
       [Unit]
       Description=OpenGSLB Overwatch
       After=network.target
-
       [Service]
       Type=simple
-      ExecStart=/usr/local/bin/opengslb overwatch --config /etc/opengslb/overwatch.yaml
+      ExecStart=/usr/local/bin/opengslb --mode overwatch --config /etc/opengslb/overwatch.yaml
       Restart=always
       RestartSec=5
       StandardOutput=journal
       StandardError=journal
-      AmbientCapabilities=CAP_NET_BIND_SERVICE
-
       [Install]
       WantedBy=multi-user.target
 
+  - path: /opt/setup-opengslb.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -x
+      exec > /var/log/opengslb-setup.log 2>&1
+
+      echo "=== OpenGSLB Overwatch Setup Started at $(date) ==="
+
+      # Create directories
+      mkdir -p /etc/opengslb /var/log/opengslb /opt/opengslb
+
+      # Install Go via snap (more reliable than downloading tarball)
+      echo "Installing Go via snap..."
+      snap install go --classic
+
+      # Wait for snap to be fully ready (can take a few seconds)
+      echo "Waiting for snap to initialize..."
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        if [ -x /snap/bin/go ]; then
+          echo "Go snap is ready"
+          break
+        fi
+        echo "Waiting for go snap... attempt $i"
+        sleep 3
+      done
+
+      # Verify go is available
+      if [ ! -x /snap/bin/go ]; then
+        echo "ERROR: /snap/bin/go not found after snap install"
+        ls -la /snap/bin/ || echo "Cannot list /snap/bin"
+        exit 1
+      fi
+
+      export PATH=$PATH:/snap/bin
+      export GOPATH=/root/go
+      export GOMODCACHE=/root/go/pkg/mod
+      mkdir -p $GOPATH $GOMODCACHE
+      echo "Go installed: $(/snap/bin/go version)"
+
+      # Clone OpenGSLB
+      echo "Cloning OpenGSLB..."
+      cd /opt
+      rm -rf /opt/opengslb
+      git clone --depth 1 --branch "${git_branch}" "${git_repo}" /opt/opengslb
+      if [ $? -ne 0 ]; then
+        echo "FAILED to clone repository"
+        exit 1
+      fi
+      echo "Clone successful"
+      ls -la /opt/opengslb
+
+      # Build OpenGSLB (DNS still works here for go mod download)
+      echo "Building OpenGSLB..."
+      echo "Build started at $(date)"
+      cd /opt/opengslb
+      GOPATH=/root/go GOMODCACHE=/root/go/pkg/mod /snap/bin/go build -o /usr/local/bin/opengslb ./cmd/opengslb 2>&1
+      BUILD_EXIT_CODE=$?
+      echo "Build finished at $(date) with exit code: $BUILD_EXIT_CODE"
+
+      if [ $BUILD_EXIT_CODE -ne 0 ]; then
+        echo "FAILED to build OpenGSLB - exit code $BUILD_EXIT_CODE"
+        exit 1
+      fi
+
+      if [ ! -f /usr/local/bin/opengslb ]; then
+        echo "FAILED - binary not found at /usr/local/bin/opengslb"
+        exit 1
+      fi
+
+      chmod 755 /usr/local/bin/opengslb
+      echo "BUILD SUCCESS: $(ls -la /usr/local/bin/opengslb)"
+      /usr/local/bin/opengslb -version || echo "Version check completed"
+
+      # Set capabilities
+      echo "Setting capabilities..."
+      setcap 'cap_net_bind_service=+ep' /usr/local/bin/opengslb
+
+      # Ensure config permissions
+      chmod 600 /etc/opengslb/overwatch.yaml
+
+      # NOW stop systemd-resolved to free port 53 (after all network operations are done)
+      echo "Stopping systemd-resolved to free port 53..."
+      systemctl stop systemd-resolved || true
+      systemctl disable systemd-resolved || true
+
+      # Fix DNS resolution for the running system
+      rm -f /etc/resolv.conf
+      echo "nameserver 8.8.8.8" > /etc/resolv.conf
+      echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+      echo "DNS configured"
+
+      # Start service
+      echo "Starting service..."
+      systemctl daemon-reload
+      systemctl enable opengslb-overwatch
+      systemctl start opengslb-overwatch
+
+      sleep 3
+      systemctl status opengslb-overwatch --no-pager
+
+      echo "=== OpenGSLB Overwatch Setup Completed at $(date) ==="
+
 runcmd:
-  # Create directories
-  - mkdir -p /etc/opengslb /var/log/opengslb /opt/opengslb
-
-  # Install Go
-  - curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz -o /tmp/go.tar.gz
-  - rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz
-  - echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/golang.sh
-  - export PATH=$PATH:/usr/local/go/bin
-
-  # Clone and build OpenGSLB
-  - cd /opt/opengslb
-  - git clone --depth 1 --branch ${git_branch} ${git_repo} .
-  - /usr/local/go/bin/go build -o /usr/local/bin/opengslb ./cmd/opengslb
-
-  # Enable and start the service
-  - systemctl daemon-reload
-  - systemctl enable opengslb-overwatch
-  - systemctl start opengslb-overwatch
-
-  # Log completion
-  - echo "OpenGSLB Overwatch installation complete" | tee /var/log/opengslb/install.log
+  - [bash, /opt/setup-opengslb.sh]

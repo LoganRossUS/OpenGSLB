@@ -21,6 +21,21 @@ output "traffic_southeastasia_public_ip" {
   value       = azurerm_public_ip.traffic_southeastasia.ip_address
 }
 
+output "backend_westeurope_public_ip" {
+  description = "Public IP of West Europe Linux backend (for SSH)"
+  value       = azurerm_public_ip.backend_westeurope.ip_address
+}
+
+output "backend_southeastasia_public_ip" {
+  description = "Public IP of Southeast Asia backend (for SSH)"
+  value       = azurerm_public_ip.backend_southeastasia.ip_address
+}
+
+output "backend_westeurope_win_public_ip" {
+  description = "Public IP of West Europe Windows backend (for RDP)"
+  value       = azurerm_public_ip.backend_westeurope_win.ip_address
+}
+
 output "backend_westeurope_private_ip" {
   description = "Private IP of West Europe Linux backend"
   value       = azurerm_network_interface.backend_westeurope.private_ip_address
@@ -41,24 +56,84 @@ output "overwatch_private_ip" {
   value       = azurerm_network_interface.overwatch.private_ip_address
 }
 
-output "ssh_command_eastus" {
-  description = "SSH command to connect to East US traffic generator"
-  value       = "ssh ${var.admin_username}@${azurerm_public_ip.traffic_eastus.ip_address}"
-}
-
-output "ssh_command_southeastasia" {
-  description = "SSH command to connect to Southeast Asia traffic generator"
-  value       = "ssh ${var.admin_username}@${azurerm_public_ip.traffic_southeastasia.ip_address}"
-}
-
-output "ssh_command_overwatch" {
-  description = "SSH command to connect to Overwatch"
-  value       = "ssh ${var.admin_username}@${azurerm_public_ip.overwatch.ip_address}"
-}
-
 output "dns_test_command" {
   description = "Command to test DNS routing"
   value       = "dig @${azurerm_public_ip.overwatch.ip_address} web.test.opengslb.local A +short"
+}
+
+output "ssh_commands" {
+  description = "SSH/RDP commands for all VMs"
+  value       = <<-EOT
+
+    ============================================
+    SSH Commands for Linux VMs
+    ============================================
+
+    # Overwatch (East US) - DNS Server
+    ssh ${var.admin_username}@${azurerm_public_ip.overwatch.ip_address}
+
+    # Traffic Generator (East US)
+    ssh ${var.admin_username}@${azurerm_public_ip.traffic_eastus.ip_address}
+
+    # Traffic Generator (Southeast Asia)
+    ssh ${var.admin_username}@${azurerm_public_ip.traffic_southeastasia.ip_address}
+
+    # Backend (West Europe - Linux)
+    ssh ${var.admin_username}@${azurerm_public_ip.backend_westeurope.ip_address}
+
+    # Backend (Southeast Asia)
+    ssh ${var.admin_username}@${azurerm_public_ip.backend_southeastasia.ip_address}
+
+    ============================================
+    RDP Command for Windows VM
+    ============================================
+
+    # Backend (West Europe - Windows)
+    # Use Remote Desktop Connection or:
+    mstsc /v:${azurerm_public_ip.backend_westeurope_win.ip_address}
+
+    # Username: ${var.admin_username}
+    # Password: (from terraform.tfvars windows_admin_password)
+
+    ============================================
+    Check Setup Logs (Linux)
+    ============================================
+
+    # On Overwatch or Backend VMs:
+    cat /var/log/opengslb-setup.log
+
+    # On Traffic Generator VMs:
+    cat /var/log/traffic-setup.log
+
+    # Also check system cloud-init logs:
+    sudo cat /var/log/cloud-init-output.log
+
+    ============================================
+    Check Setup Logs (Windows)
+    ============================================
+
+    # On Windows VM (via RDP/PowerShell):
+    type C:\opengslb\setup.log
+
+    # Check scheduled task:
+    Get-ScheduledTask -TaskName "OpenGSLB Agent"
+
+    # Check if binary exists:
+    Test-Path C:\opengslb\opengslb.exe
+
+    ============================================
+    Check Service Status
+    ============================================
+
+    # On Overwatch:
+    sudo systemctl status opengslb-overwatch
+    sudo journalctl -u opengslb-overwatch -f
+
+    # On Linux Backends:
+    sudo systemctl status opengslb-agent
+    sudo journalctl -u opengslb-agent -f
+
+  EOT
 }
 
 output "quick_start" {
@@ -76,21 +151,22 @@ output "quick_start" {
 
     Wait ~5-10 minutes for cloud-init to complete, then:
 
-    1. SSH to traffic generator:
+    1. SSH to Overwatch and check logs:
+       ssh ${var.admin_username}@${azurerm_public_ip.overwatch.ip_address}
+       cat /var/log/opengslb/cloud-init.log
+       sudo journalctl -u opengslb-overwatch -f
+
+    2. SSH to traffic generator:
        ssh ${var.admin_username}@${azurerm_public_ip.traffic_eastus.ip_address}
 
-    2. Generate traffic to backends:
+    3. Generate traffic to backends:
        generate-traffic.sh 1 300   # 1 req/s for 5 minutes
 
-    3. Check learned latency data:
+    4. Check learned latency data:
        show-latency.sh
 
-    4. Test DNS routing:
+    5. Test DNS routing:
        query-dns.sh 5
-
-    5. Monitor Overwatch logs:
-       ssh ${var.admin_username}@${azurerm_public_ip.overwatch.ip_address}
-       sudo journalctl -u opengslb-overwatch -f
 
     Cleanup: terraform destroy
 

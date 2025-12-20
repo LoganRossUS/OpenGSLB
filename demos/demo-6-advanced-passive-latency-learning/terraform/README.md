@@ -21,9 +21,13 @@ This Terraform configuration deploys a complete multi-region Azure environment f
    sudo apt update && sudo apt install terraform
    ```
 
-3. **SSH Key Pair** for Linux VM access:
+3. **RSA SSH Key Pair** for Linux VM access (Azure does NOT support ed25519):
    ```bash
-   ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
+   # Generate an RSA key (Azure requires RSA, not ed25519)
+   ssh-keygen -t rsa -b 4096 -f ~/.ssh/azure_rsa
+
+   # Then set in terraform.tfvars:
+   # ssh_public_key_path = "~/.ssh/azure_rsa.pub"
    ```
 
 ## Quick Start

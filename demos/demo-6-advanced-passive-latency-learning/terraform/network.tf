@@ -160,6 +160,33 @@ resource "azurerm_public_ip" "traffic_southeastasia" {
   tags                = var.tags
 }
 
+resource "azurerm_public_ip" "backend_westeurope" {
+  name                = "pip-backend-westeurope"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = "West Europe"
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  tags                = var.tags
+}
+
+resource "azurerm_public_ip" "backend_southeastasia" {
+  name                = "pip-backend-southeastasia"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = "Southeast Asia"
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  tags                = var.tags
+}
+
+resource "azurerm_public_ip" "backend_westeurope_win" {
+  name                = "pip-backend-westeurope-win"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = "West Europe"
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  tags                = var.tags
+}
+
 # Network Interfaces
 
 resource "azurerm_network_interface" "overwatch" {
@@ -202,6 +229,7 @@ resource "azurerm_network_interface" "backend_westeurope" {
     subnet_id                     = azurerm_subnet.backends_westeurope.id
     private_ip_address_allocation = "Static"
     private_ip_address            = "10.2.1.10"
+    public_ip_address_id          = azurerm_public_ip.backend_westeurope.id
   }
 }
 
@@ -216,6 +244,7 @@ resource "azurerm_network_interface" "backend_westeurope_win" {
     subnet_id                     = azurerm_subnet.backends_westeurope.id
     private_ip_address_allocation = "Static"
     private_ip_address            = "10.2.1.11"
+    public_ip_address_id          = azurerm_public_ip.backend_westeurope_win.id
   }
 }
 
@@ -230,6 +259,7 @@ resource "azurerm_network_interface" "backend_southeastasia" {
     subnet_id                     = azurerm_subnet.backends_southeastasia.id
     private_ip_address_allocation = "Static"
     private_ip_address            = "10.3.1.10"
+    public_ip_address_id          = azurerm_public_ip.backend_southeastasia.id
   }
 }
 
