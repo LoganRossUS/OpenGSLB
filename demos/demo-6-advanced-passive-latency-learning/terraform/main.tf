@@ -7,17 +7,22 @@
 # ADR-017 Azure Test Environment for Passive Latency Learning
 #
 # This Terraform configuration deploys a multi-region Azure environment
-# for testing the Passive Latency Learning feature. All VMs are provisioned
-# with cloud-init scripts that automatically build and start OpenGSLB.
+# for testing the Passive Latency Learning feature.
+#
+# SIMPLIFIED DEPLOYMENT (v2):
+# - Downloads pre-built binaries from GitHub Releases
+# - Uses bootstrap scripts for configuration
+# - Generates random secrets automatically
+# - Validates cluster health after deployment
 #
 # Usage:
 #   terraform init
 #   terraform apply -var="windows_admin_password=YourComplexPassword123!"
 #
-# After deployment, VMs will automatically:
-#   1. Install Go and build dependencies
-#   2. Clone and build OpenGSLB from source
-#   3. Configure and start the appropriate service (Overwatch or Agent)
+# After deployment (~2 minutes instead of ~15 minutes):
+#   1. Overwatch and agents start automatically
+#   2. Run validate-cluster.sh to verify deployment
+#   3. Generate traffic to test latency learning
 
 terraform {
   required_version = ">= 1.0"
@@ -25,6 +30,10 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
+      version = "~> 3.0"
+    }
+    random = {
+      source  = "hashicorp/random"
       version = "~> 3.0"
     }
   }
@@ -40,9 +49,35 @@ provider "azurerm" {
   }
 }
 
+# Generate random gossip encryption key (32 bytes, base64 encoded)
+resource "random_bytes" "gossip_key" {
+  length = 32
+}
+
+# Generate random service token for agent authentication
+resource "random_password" "service_token" {
+  length  = 32
+  special = false
+}
+
 # Resource Group
 resource "azurerm_resource_group" "main" {
   name     = var.resource_group_name
   location = "East US"
   tags     = var.tags
+}
+
+# Local values for bootstrap parameters
+locals {
+  # Bootstrap script URL
+  bootstrap_url = "https://github.com/${var.opengslb_github_repo}/releases/download/${var.opengslb_version}/bootstrap-linux.sh"
+
+  # Overwatch IP (first IP in overwatch subnet)
+  overwatch_ip = "10.1.1.10"
+
+  # Common bootstrap parameters
+  gossip_key    = random_bytes.gossip_key.base64
+  service_token = random_password.service_token.result
+  version       = var.opengslb_version
+  github_repo   = var.opengslb_github_repo
 }

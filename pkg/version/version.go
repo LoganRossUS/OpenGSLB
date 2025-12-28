@@ -20,7 +20,10 @@
 package version
 
 // Version is the current version of OpenGSLB.
-const Version = "1.1.0"
+// This can be overridden at build time using:
+//
+//	go build -ldflags="-X 'github.com/loganrossus/OpenGSLB/pkg/version.Version=v1.2.3'"
+var Version = "1.1.0"
 
 // GetVersion returns the current version string.
 func GetVersion() string {
