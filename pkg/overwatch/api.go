@@ -14,12 +14,34 @@ import (
 	"time"
 )
 
+// ClusterStatusProvider provides information about the gossip cluster.
+type ClusterStatusProvider interface {
+	// NumMembers returns the number of cluster members.
+	NumMembers() int
+	// Members returns cluster member information.
+	GetClusterMembers() []ClusterMember
+	// GetLocalNodeID returns the local node's ID.
+	GetLocalNodeID() string
+	// GetUptimeSeconds returns how long the node has been running.
+	GetUptimeSeconds() int64
+}
+
+// ClusterMember represents a node in the gossip cluster.
+type ClusterMember struct {
+	NodeID   string    `json:"node_id"`
+	Role     string    `json:"role"`
+	Region   string    `json:"region,omitempty"`
+	Address  string    `json:"address"`
+	LastSeen time.Time `json:"last_seen"`
+}
+
 // APIHandlers provides HTTP handlers for Overwatch-specific endpoints.
 type APIHandlers struct {
-	registry     *Registry
-	validator    *Validator
-	agentAuth    *AgentAuth
-	latencyTable *LearnedLatencyTable
+	registry        *Registry
+	validator       *Validator
+	agentAuth       *AgentAuth
+	latencyTable    *LearnedLatencyTable
+	clusterProvider ClusterStatusProvider
 }
 
 // NewAPIHandlers creates new Overwatch API handlers.
@@ -38,6 +60,11 @@ func (h *APIHandlers) SetAgentAuth(auth *AgentAuth) {
 // SetLatencyTable sets the learned latency table for latency API endpoints.
 func (h *APIHandlers) SetLatencyTable(table *LearnedLatencyTable) {
 	h.latencyTable = table
+}
+
+// SetClusterProvider sets the cluster status provider for cluster status endpoint.
+func (h *APIHandlers) SetClusterProvider(provider ClusterStatusProvider) {
+	h.clusterProvider = provider
 }
 
 // BackendResponse represents a backend in API responses.
@@ -99,6 +126,43 @@ type StatsResponse struct {
 type ErrorResponse struct {
 	Error string `json:"error"`
 	Code  int    `json:"code"`
+}
+
+// ClusterStatusResponse is the response for GET /api/v1/cluster/status.
+// This endpoint is used by deployment scripts to verify cluster health.
+type ClusterStatusResponse struct {
+	ClusterHealthy  bool                    `json:"cluster_healthy"`
+	Overwatch       ClusterNodeStatus       `json:"overwatch"`
+	Agents          []ClusterAgentStatus    `json:"agents"`
+	ExpectedAgents  int                     `json:"expected_agents,omitempty"`
+	HealthyAgents   int                     `json:"healthy_agents"`
+	GossipMembers   int                     `json:"gossip_members"`
+	BackendSummary  ClusterBackendSummary   `json:"backend_summary"`
+	GeneratedAt     time.Time               `json:"generated_at"`
+}
+
+// ClusterNodeStatus represents the Overwatch node's status.
+type ClusterNodeStatus struct {
+	NodeID        string `json:"node_id"`
+	Status        string `json:"status"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
+}
+
+// ClusterAgentStatus represents an agent's status in the cluster.
+type ClusterAgentStatus struct {
+	AgentID     string    `json:"agent_id"`
+	Region      string    `json:"region"`
+	Status      string    `json:"status"`
+	LastSeen    time.Time `json:"last_seen"`
+	BackendCount int      `json:"backend_count"`
+}
+
+// ClusterBackendSummary provides a summary of backend health across the cluster.
+type ClusterBackendSummary struct {
+	Total     int `json:"total"`
+	Healthy   int `json:"healthy"`
+	Unhealthy int `json:"unhealthy"`
+	Stale     int `json:"stale"`
 }
 
 // AgentCertResponse represents an agent certificate in API responses.
@@ -623,6 +687,108 @@ func (h *APIHandlers) HandleLatencyTable(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// HandleClusterStatus handles GET /api/v1/cluster/status
+// Returns the overall cluster health status for deployment validation.
+// Query parameter: ?expected_agents=N to specify expected agent count for health check.
+func (h *APIHandlers) HandleClusterStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Parse expected agents from query parameter
+	expectedAgents := 0
+	if exp := r.URL.Query().Get("expected_agents"); exp != "" {
+		if n, err := strconv.Atoi(exp); err == nil && n > 0 {
+			expectedAgents = n
+		}
+	}
+
+	// Get backend information from registry
+	backends := h.registry.GetAllBackends()
+
+	// Build agent status from backends
+	agentMap := make(map[string]*ClusterAgentStatus)
+	backendSummary := ClusterBackendSummary{
+		Total: len(backends),
+	}
+
+	for _, b := range backends {
+		// Count backend status
+		switch b.EffectiveStatus {
+		case StatusHealthy:
+			backendSummary.Healthy++
+		case StatusUnhealthy:
+			backendSummary.Unhealthy++
+		case StatusStale:
+			backendSummary.Stale++
+		}
+
+		// Aggregate agent info
+		if _, exists := agentMap[b.AgentID]; !exists {
+			status := "healthy"
+			if !b.AgentHealthy {
+				status = "unhealthy"
+			}
+			if time.Since(b.AgentLastSeen) > 30*time.Second {
+				status = "stale"
+			}
+			agentMap[b.AgentID] = &ClusterAgentStatus{
+				AgentID:      b.AgentID,
+				Region:       b.Region,
+				Status:       status,
+				LastSeen:     b.AgentLastSeen,
+				BackendCount: 0,
+			}
+		}
+		agentMap[b.AgentID].BackendCount++
+	}
+
+	// Convert agent map to slice
+	agents := make([]ClusterAgentStatus, 0, len(agentMap))
+	healthyAgents := 0
+	for _, agent := range agentMap {
+		agents = append(agents, *agent)
+		if agent.Status == "healthy" {
+			healthyAgents++
+		}
+	}
+
+	// Build overwatch status
+	overwatchStatus := ClusterNodeStatus{
+		Status: "healthy",
+	}
+
+	gossipMembers := 0
+	if h.clusterProvider != nil {
+		overwatchStatus.NodeID = h.clusterProvider.GetLocalNodeID()
+		overwatchStatus.UptimeSeconds = h.clusterProvider.GetUptimeSeconds()
+		gossipMembers = h.clusterProvider.NumMembers()
+	}
+
+	// Determine cluster health
+	clusterHealthy := true
+	if expectedAgents > 0 && healthyAgents < expectedAgents {
+		clusterHealthy = false
+	}
+	if backendSummary.Total > 0 && backendSummary.Healthy == 0 {
+		clusterHealthy = false
+	}
+
+	response := ClusterStatusResponse{
+		ClusterHealthy: clusterHealthy,
+		Overwatch:      overwatchStatus,
+		Agents:         agents,
+		ExpectedAgents: expectedAgents,
+		HealthyAgents:  healthyAgents,
+		GossipMembers:  gossipMembers,
+		BackendSummary: backendSummary,
+		GeneratedAt:    time.Now().UTC(),
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
 // RegisterRoutes registers Overwatch API routes with an HTTP mux.
 func (h *APIHandlers) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/overwatch/backends", h.HandleBackends)
@@ -637,6 +803,9 @@ func (h *APIHandlers) RegisterRoutes(mux *http.ServeMux) {
 
 	// Latency learning endpoints (ADR-017)
 	mux.HandleFunc("/api/v1/overwatch/latency", h.HandleLatencyTable)
+
+	// Cluster status endpoint (for deployment validation)
+	mux.HandleFunc("/api/v1/cluster/status", h.HandleClusterStatus)
 }
 
 // handleAgentRoute routes agent requests based on path.

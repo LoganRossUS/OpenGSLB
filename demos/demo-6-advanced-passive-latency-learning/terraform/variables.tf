@@ -34,28 +34,16 @@ variable "vm_size" {
   default     = "Standard_B2s"
 }
 
-variable "opengslb_git_repo" {
-  description = "Git repository URL for OpenGSLB"
+variable "opengslb_version" {
+  description = "OpenGSLB version to deploy (e.g., 'v0.1.0' or 'latest')"
   type        = string
-  default     = "https://github.com/LoganRossUS/OpenGSLB.git"
+  default     = "latest"
 }
 
-variable "opengslb_git_branch" {
-  description = "Git branch to build from"
+variable "opengslb_github_repo" {
+  description = "GitHub repository for OpenGSLB (owner/repo format)"
   type        = string
-  default     = "main"
-}
-
-variable "gossip_encryption_key" {
-  description = "Base64-encoded 32-byte encryption key for gossip"
-  type        = string
-  default     = "dGVzdC1lbmNyeXB0aW9uLWtleS0zMi1ieXRlcw=="
-}
-
-variable "service_token" {
-  description = "Token for agent authentication to Overwatch"
-  type        = string
-  default     = "test-token-for-latency-testing"
+  default     = "LoganRossUS/OpenGSLB"
 }
 
 variable "tags" {
