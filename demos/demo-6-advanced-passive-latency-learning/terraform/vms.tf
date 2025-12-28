@@ -4,7 +4,10 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 
-# Virtual Machines
+# Virtual Machines - Simplified Deployment
+#
+# Uses bootstrap scripts from GitHub Releases instead of building from source.
+# Deployment time reduced from ~15 minutes to ~2 minutes.
 
 # Overwatch VM (East US)
 resource "azurerm_linux_virtual_machine" "overwatch" {
@@ -36,12 +39,14 @@ resource "azurerm_linux_virtual_machine" "overwatch" {
     version   = "latest"
   }
 
-  custom_data = base64encode(templatefile("${path.module}/scripts/cloud-init-overwatch.yaml", {
-    git_repo              = var.opengslb_git_repo
-    git_branch            = var.opengslb_git_branch
-    gossip_encryption_key = var.gossip_encryption_key
-    service_token         = var.service_token
-  }))
+  custom_data = base64encode(<<-EOF
+    #cloud-config
+    runcmd:
+      - curl -fsSL "https://github.com/${local.github_repo}/releases/download/${local.version}/bootstrap-linux.sh" -o /tmp/bootstrap.sh
+      - chmod +x /tmp/bootstrap.sh
+      - /tmp/bootstrap.sh --role overwatch --region us-east --gossip-key "${local.gossip_key}" --service-token "${local.service_token}" --version "${local.version}" --github-repo "${local.github_repo}" --verbose 2>&1 | tee /var/log/opengslb-bootstrap.log
+  EOF
+  )
 }
 
 # Traffic Generator VM (East US)
@@ -74,9 +79,49 @@ resource "azurerm_linux_virtual_machine" "traffic_eastus" {
     version   = "latest"
   }
 
-  custom_data = base64encode(templatefile("${path.module}/scripts/cloud-init-traffic.yaml", {
-    region = "us-east"
-  }))
+  custom_data = base64encode(<<-EOF
+    #cloud-config
+    packages:
+      - curl
+      - dnsutils
+      - jq
+      - tmux
+      - bc
+      - netcat-openbsd
+    runcmd:
+      # Download hey for load testing
+      - curl -fsSL https://hey-release.s3.us-east-2.amazonaws.com/hey_linux_amd64 -o /usr/local/bin/hey
+      - chmod +x /usr/local/bin/hey
+      # Download validation script
+      - curl -fsSL "https://github.com/${local.github_repo}/releases/download/${local.version}/validate-cluster.sh" -o /usr/local/bin/validate-cluster.sh || curl -fsSL "https://raw.githubusercontent.com/${local.github_repo}/main/scripts/validate-cluster.sh" -o /usr/local/bin/validate-cluster.sh
+      - chmod +x /usr/local/bin/validate-cluster.sh
+      # Create helper scripts
+      - |
+        cat > /usr/local/bin/test-cluster << 'SCRIPT'
+        #!/bin/bash
+        /usr/local/bin/validate-cluster.sh --overwatch-ip ${local.overwatch_ip} --expected-agents 3 "$@"
+        SCRIPT
+      - chmod +x /usr/local/bin/test-cluster
+      - |
+        cat > /usr/local/bin/generate-traffic << 'SCRIPT'
+        #!/bin/bash
+        RATE=$${1:-1}
+        DURATION=$${2:-60}
+        echo "Generating traffic at $RATE req/s for $DURATION seconds..."
+        for i in $(seq 1 $DURATION); do
+          for j in $(seq 1 $RATE); do
+            IP=$(dig @${local.overwatch_ip} web.test.opengslb.local +short | head -1)
+            curl -s -o /dev/null -w "%{http_code}" "http://$IP/" &
+          done
+          sleep 1
+        done
+        wait
+        echo "Done."
+        SCRIPT
+      - chmod +x /usr/local/bin/generate-traffic
+      - echo "Traffic generator ready. Run 'test-cluster' to validate or 'generate-traffic 5 300' for load." > /etc/motd
+  EOF
+  )
 }
 
 # Backend VM (West Europe - Linux)
@@ -109,14 +154,32 @@ resource "azurerm_linux_virtual_machine" "backend_westeurope" {
     version   = "latest"
   }
 
-  custom_data = base64encode(templatefile("${path.module}/scripts/cloud-init-agent.yaml", {
-    git_repo              = var.opengslb_git_repo
-    git_branch            = var.opengslb_git_branch
-    gossip_encryption_key = var.gossip_encryption_key
-    service_token         = var.service_token
-    region                = "eu-west"
-    hostname              = "backend-westeurope"
-  }))
+  custom_data = base64encode(<<-EOF
+    #cloud-config
+    packages:
+      - nginx
+    runcmd:
+      # Configure nginx with region identifier
+      - |
+        cat > /var/www/html/index.html << 'HTML'
+        <!DOCTYPE html>
+        <html>
+        <head><title>OpenGSLB Backend</title></head>
+        <body>
+        <h1>OpenGSLB Backend</h1>
+        <p>Region: eu-west</p>
+        <p>Hostname: backend-westeurope</p>
+        </body>
+        </html>
+        HTML
+      - systemctl enable nginx
+      - systemctl start nginx
+      # Download and run bootstrap script
+      - curl -fsSL "https://github.com/${local.github_repo}/releases/download/${local.version}/bootstrap-linux.sh" -o /tmp/bootstrap.sh
+      - chmod +x /tmp/bootstrap.sh
+      - /tmp/bootstrap.sh --role agent --overwatch-ip ${local.overwatch_ip} --region eu-west --gossip-key "${local.gossip_key}" --service-token "${local.service_token}" --service-name web --backend-port 80 --version "${local.version}" --github-repo "${local.github_repo}" --verbose 2>&1 | tee /var/log/opengslb-bootstrap.log
+  EOF
+  )
 }
 
 # Backend VM (West Europe - Windows)
@@ -144,13 +207,9 @@ resource "azurerm_windows_virtual_machine" "backend_westeurope_win" {
     sku       = "2022-datacenter-azure-edition"
     version   = "latest"
   }
-
-  # Windows setup requires manual or custom script extension
-  # IIS and OpenGSLB agent need to be installed via PowerShell
 }
 
-# Custom Script Extension for Windows VM to install IIS and OpenGSLB
-# Downloads setup script from GitHub and runs with parameters
+# Custom Script Extension for Windows VM - Simplified Bootstrap
 resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   name                 = "setup-opengslb"
   virtual_machine_id   = azurerm_windows_virtual_machine.backend_westeurope_win.id
@@ -160,13 +219,13 @@ resource "azurerm_virtual_machine_extension" "backend_win_setup" {
 
   settings = jsonencode({
     fileUris = [
-      "https://raw.githubusercontent.com/LoganRossUS/OpenGSLB/${var.opengslb_git_branch}/demos/demo-6-advanced-passive-latency-learning/terraform/scripts/setup-windows.ps1"
+      "https://github.com/${local.github_repo}/releases/download/${local.version}/bootstrap-windows.ps1"
     ]
-    commandToExecute = "powershell -ExecutionPolicy Bypass -File setup-windows.ps1 -GitBranch '${var.opengslb_git_branch}' -GitRepo '${var.opengslb_git_repo}' -ServiceToken '${var.service_token}' -GossipKey '${var.gossip_encryption_key}' -AdminUser '${var.admin_username}'"
+    commandToExecute = "powershell -ExecutionPolicy Bypass -File bootstrap-windows.ps1 -Role agent -OverwatchIP ${local.overwatch_ip} -Region eu-west -ServiceToken '${local.service_token}' -GossipKey '${local.gossip_key}' -ServiceName web -BackendPort 80 -Version ${local.version} -GitHubRepo ${local.github_repo} -VerboseOutput"
   })
 
   timeouts {
-    create = "60m"
+    create = "30m"  # Reduced from 60m since we're not building from source
   }
 }
 
@@ -200,14 +259,32 @@ resource "azurerm_linux_virtual_machine" "backend_southeastasia" {
     version   = "latest"
   }
 
-  custom_data = base64encode(templatefile("${path.module}/scripts/cloud-init-agent.yaml", {
-    git_repo              = var.opengslb_git_repo
-    git_branch            = var.opengslb_git_branch
-    gossip_encryption_key = var.gossip_encryption_key
-    service_token         = var.service_token
-    region                = "ap-southeast"
-    hostname              = "backend-southeastasia"
-  }))
+  custom_data = base64encode(<<-EOF
+    #cloud-config
+    packages:
+      - nginx
+    runcmd:
+      # Configure nginx with region identifier
+      - |
+        cat > /var/www/html/index.html << 'HTML'
+        <!DOCTYPE html>
+        <html>
+        <head><title>OpenGSLB Backend</title></head>
+        <body>
+        <h1>OpenGSLB Backend</h1>
+        <p>Region: ap-southeast</p>
+        <p>Hostname: backend-southeastasia</p>
+        </body>
+        </html>
+        HTML
+      - systemctl enable nginx
+      - systemctl start nginx
+      # Download and run bootstrap script
+      - curl -fsSL "https://github.com/${local.github_repo}/releases/download/${local.version}/bootstrap-linux.sh" -o /tmp/bootstrap.sh
+      - chmod +x /tmp/bootstrap.sh
+      - /tmp/bootstrap.sh --role agent --overwatch-ip ${local.overwatch_ip} --region ap-southeast --gossip-key "${local.gossip_key}" --service-token "${local.service_token}" --service-name web --backend-port 80 --version "${local.version}" --github-repo "${local.github_repo}" --verbose 2>&1 | tee /var/log/opengslb-bootstrap.log
+  EOF
+  )
 }
 
 # Traffic Generator VM (Southeast Asia)
@@ -240,7 +317,47 @@ resource "azurerm_linux_virtual_machine" "traffic_southeastasia" {
     version   = "latest"
   }
 
-  custom_data = base64encode(templatefile("${path.module}/scripts/cloud-init-traffic.yaml", {
-    region = "ap-southeast"
-  }))
+  custom_data = base64encode(<<-EOF
+    #cloud-config
+    packages:
+      - curl
+      - dnsutils
+      - jq
+      - tmux
+      - bc
+      - netcat-openbsd
+    runcmd:
+      # Download hey for load testing
+      - curl -fsSL https://hey-release.s3.us-east-2.amazonaws.com/hey_linux_amd64 -o /usr/local/bin/hey
+      - chmod +x /usr/local/bin/hey
+      # Download validation script
+      - curl -fsSL "https://github.com/${local.github_repo}/releases/download/${local.version}/validate-cluster.sh" -o /usr/local/bin/validate-cluster.sh || curl -fsSL "https://raw.githubusercontent.com/${local.github_repo}/main/scripts/validate-cluster.sh" -o /usr/local/bin/validate-cluster.sh
+      - chmod +x /usr/local/bin/validate-cluster.sh
+      # Create helper scripts
+      - |
+        cat > /usr/local/bin/test-cluster << 'SCRIPT'
+        #!/bin/bash
+        /usr/local/bin/validate-cluster.sh --overwatch-ip ${local.overwatch_ip} --expected-agents 3 "$@"
+        SCRIPT
+      - chmod +x /usr/local/bin/test-cluster
+      - |
+        cat > /usr/local/bin/generate-traffic << 'SCRIPT'
+        #!/bin/bash
+        RATE=$${1:-1}
+        DURATION=$${2:-60}
+        echo "Generating traffic at $RATE req/s for $DURATION seconds..."
+        for i in $(seq 1 $DURATION); do
+          for j in $(seq 1 $RATE); do
+            IP=$(dig @${local.overwatch_ip} web.test.opengslb.local +short | head -1)
+            curl -s -o /dev/null -w "%{http_code}" "http://$IP/" &
+          done
+          sleep 1
+        done
+        wait
+        echo "Done."
+        SCRIPT
+      - chmod +x /usr/local/bin/generate-traffic
+      - echo "Traffic generator ready. Run 'test-cluster' to validate or 'generate-traffic 5 300' for load." > /etc/motd
+  EOF
+  )
 }
