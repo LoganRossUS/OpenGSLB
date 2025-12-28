@@ -131,14 +131,14 @@ type ErrorResponse struct {
 // ClusterStatusResponse is the response for GET /api/v1/cluster/status.
 // This endpoint is used by deployment scripts to verify cluster health.
 type ClusterStatusResponse struct {
-	ClusterHealthy  bool                    `json:"cluster_healthy"`
-	Overwatch       ClusterNodeStatus       `json:"overwatch"`
-	Agents          []ClusterAgentStatus    `json:"agents"`
-	ExpectedAgents  int                     `json:"expected_agents,omitempty"`
-	HealthyAgents   int                     `json:"healthy_agents"`
-	GossipMembers   int                     `json:"gossip_members"`
-	BackendSummary  ClusterBackendSummary   `json:"backend_summary"`
-	GeneratedAt     time.Time               `json:"generated_at"`
+	ClusterHealthy bool                  `json:"cluster_healthy"`
+	Overwatch      ClusterNodeStatus     `json:"overwatch"`
+	Agents         []ClusterAgentStatus  `json:"agents"`
+	ExpectedAgents int                   `json:"expected_agents,omitempty"`
+	HealthyAgents  int                   `json:"healthy_agents"`
+	GossipMembers  int                   `json:"gossip_members"`
+	BackendSummary ClusterBackendSummary `json:"backend_summary"`
+	GeneratedAt    time.Time             `json:"generated_at"`
 }
 
 // ClusterNodeStatus represents the Overwatch node's status.
@@ -150,11 +150,11 @@ type ClusterNodeStatus struct {
 
 // ClusterAgentStatus represents an agent's status in the cluster.
 type ClusterAgentStatus struct {
-	AgentID     string    `json:"agent_id"`
-	Region      string    `json:"region"`
-	Status      string    `json:"status"`
-	LastSeen    time.Time `json:"last_seen"`
-	BackendCount int      `json:"backend_count"`
+	AgentID      string    `json:"agent_id"`
+	Region       string    `json:"region"`
+	Status       string    `json:"status"`
+	LastSeen     time.Time `json:"last_seen"`
+	BackendCount int       `json:"backend_count"`
 }
 
 // ClusterBackendSummary provides a summary of backend health across the cluster.
