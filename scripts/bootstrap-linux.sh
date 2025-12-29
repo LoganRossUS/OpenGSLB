@@ -388,12 +388,9 @@ overwatch:
     fallback: geo
 
 domains:
-  - name: "test.opengslb.local"
-    services:
-      - name: "${SERVICE_NAME}"
-        routing:
-          algorithm: latency
-          fallback: geo
+  - name: "${SERVICE_NAME}"
+    ttl: 60
+    routing_algorithm: latency
 
 regions:
   - id: "us-east"
@@ -483,8 +480,9 @@ LimitNOFILE=65536
 
 # Security hardening
 NoNewPrivileges=true
-ProtectSystem=strict
+ProtectSystem=full
 ProtectHome=true
+ReadOnlyPaths=${CONFIG_DIR}
 ReadWritePaths=${LOG_DIR}
 
 [Install]
