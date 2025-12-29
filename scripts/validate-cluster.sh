@@ -209,9 +209,19 @@ test_network_connectivity() {
         test_warn "network_ping" "Overwatch host does not respond to ICMP (may be blocked by firewall)"
     fi
 
+    # Helper function to test port connectivity
+    test_port() {
+        local port=$1
+        if command -v nc >/dev/null 2>&1; then
+            nc -z -w 2 "$OVERWATCH_IP" "$port" 2>/dev/null
+        else
+            timeout 2 bash -c "echo >/dev/tcp/$OVERWATCH_IP/$port" 2>/dev/null
+        fi
+    }
+
     # Port 8080 (API)
     echo "  Testing port 8080 (API)..."
-    if nc -z -w 2 "$OVERWATCH_IP" 8080 2>/dev/null || timeout 2 bash -c "echo >/dev/tcp/$OVERWATCH_IP/8080" 2>/dev/null; then
+    if test_port 8080; then
         test_pass "network_port_8080" "API port 8080 is reachable"
         port_8080_success=true
     else
@@ -228,7 +238,7 @@ test_network_connectivity() {
 
     # Port 53 (DNS)
     echo "  Testing port 53 (DNS)..."
-    if nc -z -w 2 "$OVERWATCH_IP" 53 2>/dev/null || timeout 2 bash -c "echo >/dev/tcp/$OVERWATCH_IP/53" 2>/dev/null; then
+    if test_port 53; then
         test_pass "network_port_53" "DNS port 53 is reachable"
         port_53_success=true
     else
@@ -245,7 +255,7 @@ test_network_connectivity() {
 
     # Port 7946 (Gossip)
     echo "  Testing port 7946 (Gossip)..."
-    if nc -z -w 2 "$OVERWATCH_IP" 7946 2>/dev/null || timeout 2 bash -c "echo >/dev/tcp/$OVERWATCH_IP/7946" 2>/dev/null; then
+    if test_port 7946; then
         test_pass "network_port_7946" "Gossip port 7946 is reachable"
         port_7946_success=true
     else

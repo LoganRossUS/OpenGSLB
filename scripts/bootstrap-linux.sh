@@ -222,57 +222,58 @@ validate_args() {
 }
 
 # Discover local IP address
+# Note: All log output goes to stderr so only the IP is captured when called as $(discover_local_ip)
 discover_local_ip() {
-    log_section "Discovering Local IP Address"
+    log_section "Discovering Local IP Address" >&2
 
     local ip=""
 
     # Try Azure Instance Metadata Service first
-    log_debug "Trying Azure IMDS..."
+    log_debug "Trying Azure IMDS..." >&2
     ip=$(curl -s -H "Metadata: true" --connect-timeout 2 \
         "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/ipAddress/0/privateIpAddress?api-version=2021-02-01&format=text" 2>/dev/null || true)
 
     if [[ -n "$ip" && "$ip" != "null" ]]; then
-        log_success "Discovered IP from Azure IMDS: $ip"
+        log_success "Discovered IP from Azure IMDS: $ip" >&2
         echo "$ip"
         return
     fi
 
     # Try AWS Instance Metadata Service
-    log_debug "Trying AWS IMDS..."
+    log_debug "Trying AWS IMDS..." >&2
     ip=$(curl -s --connect-timeout 2 "http://169.254.169.254/latest/meta-data/local-ipv4" 2>/dev/null || true)
 
     if [[ -n "$ip" && "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        log_success "Discovered IP from AWS IMDS: $ip"
+        log_success "Discovered IP from AWS IMDS: $ip" >&2
         echo "$ip"
         return
     fi
 
     # Try GCP Instance Metadata Service
-    log_debug "Trying GCP IMDS..."
+    log_debug "Trying GCP IMDS..." >&2
     ip=$(curl -s -H "Metadata-Flavor: Google" --connect-timeout 2 \
         "http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/ip" 2>/dev/null || true)
 
     if [[ -n "$ip" && "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        log_success "Discovered IP from GCP IMDS: $ip"
+        log_success "Discovered IP from GCP IMDS: $ip" >&2
         echo "$ip"
         return
     fi
 
     # Fallback: get IP from primary interface
-    log_debug "Falling back to interface discovery..."
+    log_debug "Falling back to interface discovery..." >&2
     ip=$(ip -4 addr show scope global | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
 
     if [[ -n "$ip" ]]; then
-        log_success "Discovered IP from interface: $ip"
+        log_success "Discovered IP from interface: $ip" >&2
         echo "$ip"
         return
     fi
 
-    log_error "Failed to discover local IP address"
-    log_error ""
-    log_error "Network interfaces:"
-    ip addr show 2>/dev/null || ifconfig 2>/dev/null || echo "  Unable to list interfaces"
+    log_error "Failed to discover local IP address" >&2
+    log_error "" >&2
+    log_error "Network interfaces:" >&2
+    ip addr show 2>/dev/null || ifconfig 2>/dev/null || echo "  Unable to list interfaces" >&2
     exit 3
 }
 
