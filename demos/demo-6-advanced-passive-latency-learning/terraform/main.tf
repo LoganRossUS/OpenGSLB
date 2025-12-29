@@ -69,10 +69,10 @@ resource "azurerm_resource_group" "main" {
 
 # Local values for bootstrap parameters
 locals {
-  # Bootstrap script URLs - use raw.githubusercontent.com for reliable Azure downloads
-  # (GitHub releases URLs require redirects that Azure CustomScriptExtension can't follow)
-  bootstrap_linux_url   = "https://raw.githubusercontent.com/${var.opengslb_github_repo}/${var.opengslb_version}/scripts/bootstrap-linux.sh"
-  bootstrap_windows_url = "https://raw.githubusercontent.com/${var.opengslb_github_repo}/${var.opengslb_version}/scripts/bootstrap-windows.ps1"
+  # Bootstrap script URLs - use raw.githubusercontent.com from main branch
+  # (scripts are versioned, but fetch latest script which downloads the correct binary version)
+  bootstrap_linux_url   = "https://raw.githubusercontent.com/${var.opengslb_github_repo}/main/scripts/bootstrap-linux.sh"
+  bootstrap_windows_url = "https://raw.githubusercontent.com/${var.opengslb_github_repo}/main/scripts/bootstrap-windows.ps1"
 
   # Overwatch IP (first IP in overwatch subnet)
   overwatch_ip = "10.1.1.10"
