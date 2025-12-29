@@ -480,8 +480,9 @@ LimitNOFILE=65536
 
 # Security hardening
 NoNewPrivileges=true
-ProtectSystem=strict
+ProtectSystem=full
 ProtectHome=true
+ReadOnlyPaths=${CONFIG_DIR}
 ReadWritePaths=${LOG_DIR}
 
 [Install]

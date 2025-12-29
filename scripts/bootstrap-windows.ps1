@@ -478,14 +478,20 @@ function New-Service {
         # Remove existing task if present
         Unregister-ScheduledTask -TaskName $serviceName -Confirm:$false -ErrorAction SilentlyContinue
 
-        # Create task action
-        $action = New-ScheduledTaskAction -Execute $binaryPath -Argument "--config `"$configPath`""
+        # Create task action with working directory
+        $action = New-ScheduledTaskAction -Execute $binaryPath -Argument "--config `"$configPath`"" -WorkingDirectory $InstallDir
 
         # Create trigger (at startup)
         $trigger = New-ScheduledTaskTrigger -AtStartup
 
-        # Create settings
-        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+        # Create settings - allow manual start and configure for reliability
+        $settings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries `
+            -StartWhenAvailable `
+            -RestartCount 3 `
+            -RestartInterval (New-TimeSpan -Minutes 1) `
+            -ExecutionTimeLimit (New-TimeSpan -Days 365)
 
         # Create principal (run as SYSTEM)
         $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
@@ -527,16 +533,67 @@ function Start-OpenGSLBService {
             exit 4
         }
     } else {
-        # Try scheduled task
-        Start-ScheduledTask -TaskName $serviceName -ErrorAction Stop
-        Start-Sleep -Seconds 2
+        # Try scheduled task with retry logic
+        $maxAttempts = 3
+        $attempt = 1
+        $processStarted = $false
 
-        # Check if process is running
-        $process = Get-Process -Name "opengslb" -ErrorAction SilentlyContinue
-        if (-not $process) {
-            Write-Error "Scheduled task started but process is not running"
+        while ($attempt -le $maxAttempts -and -not $processStarted) {
+            Write-Log "Attempt $attempt/$maxAttempts to start scheduled task..."
+
+            try {
+                # Start the scheduled task
+                Start-ScheduledTask -TaskName $serviceName -ErrorAction Stop
+            } catch {
+                Write-Warning "Failed to start scheduled task: $_"
+            }
+
+            # Wait for process to start (up to 10 seconds)
+            $waitAttempts = 10
+            for ($i = 1; $i -le $waitAttempts; $i++) {
+                Start-Sleep -Seconds 1
+                $process = Get-Process -Name "opengslb" -ErrorAction SilentlyContinue
+                if ($process) {
+                    $processStarted = $true
+                    break
+                }
+                Write-DebugInfo "Waiting for process... ($i/$waitAttempts)"
+            }
+
+            if (-not $processStarted) {
+                # Check task status for debugging
+                $task = Get-ScheduledTask -TaskName $serviceName -ErrorAction SilentlyContinue
+                if ($task) {
+                    $taskInfo = Get-ScheduledTaskInfo -TaskName $serviceName -ErrorAction SilentlyContinue
+                    Write-DebugInfo "Task state: $($task.State)"
+                    if ($taskInfo.LastTaskResult -ne 0) {
+                        Write-Warning "Task last result: $($taskInfo.LastTaskResult)"
+                    }
+                }
+                $attempt++
+            }
+        }
+
+        if (-not $processStarted) {
+            Write-Error "Scheduled task started but process is not running after $maxAttempts attempts"
+            Write-Host ""
+            Write-Host "Task information:"
+            $task = Get-ScheduledTask -TaskName $serviceName -ErrorAction SilentlyContinue
+            if ($task) {
+                Write-Host "  State: $($task.State)"
+                $taskInfo = Get-ScheduledTaskInfo -TaskName $serviceName -ErrorAction SilentlyContinue
+                if ($taskInfo) {
+                    Write-Host "  Last run: $($taskInfo.LastRunTime)"
+                    Write-Host "  Last result: $($taskInfo.LastTaskResult)"
+                }
+            }
             Write-Host ""
             Write-Host "Check logs at: $LogDir"
+            Write-Host ""
+            Write-Host "Try manually starting with:"
+            Write-Host "  Start-ScheduledTask -TaskName $serviceName"
+            Write-Host "  # or run directly:"
+            Write-Host "  & '$InstallDir\$BinaryName' --config '$ConfigDir\config.yaml'"
             exit 4
         }
     }
@@ -659,6 +716,54 @@ function Show-Summary {
     Write-Host ""
 }
 
+# Install IIS for backend web server (agents only)
+function Install-WebServer {
+    if ($Role -ne "agent" -or $BackendPort -ne 80) {
+        return
+    }
+
+    Write-Section "Installing IIS Web Server"
+
+    # Check if IIS is already installed
+    $iis = Get-WindowsFeature -Name Web-Server -ErrorAction SilentlyContinue
+    if ($iis -and $iis.Installed) {
+        Write-Log "IIS is already installed"
+    } else {
+        Write-Log "Installing IIS..."
+        Install-WindowsFeature -Name Web-Server -IncludeManagementTools -ErrorAction Stop | Out-Null
+        Write-Success "IIS installed successfully"
+    }
+
+    # Ensure IIS is running
+    $w3svc = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+    if ($w3svc -and $w3svc.Status -ne "Running") {
+        Write-Log "Starting IIS..."
+        Start-Service -Name W3SVC -ErrorAction SilentlyContinue
+    }
+
+    # Create a simple default page with region info
+    $wwwroot = "C:\inetpub\wwwroot"
+    $indexPath = Join-Path $wwwroot "index.html"
+    $hostname = $env:COMPUTERNAME
+    $region = if ($Region) { $Region } else { "unknown" }
+
+    $html = @"
+<!DOCTYPE html>
+<html>
+<head><title>OpenGSLB Backend</title></head>
+<body>
+<h1>OpenGSLB Backend Server</h1>
+<p>Hostname: $hostname</p>
+<p>Region: $region</p>
+<p>Timestamp: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')</p>
+</body>
+</html>
+"@
+
+    Set-Content -Path $indexPath -Value $html -Force
+    Write-Success "Default web page created at $indexPath"
+}
+
 # Main
 function Main {
     Write-Section "OpenGSLB Bootstrap Script for Windows"
@@ -671,6 +776,7 @@ function Main {
     Test-Arguments
     Get-Binary
     New-Config
+    Install-WebServer
     New-Service
     Start-OpenGSLBService
     Test-Health
