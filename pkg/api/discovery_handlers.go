@@ -183,6 +183,10 @@ func (h *DiscoveryHandlers) HandleV1Root(w http.ResponseWriter, r *http.Request)
 			Path:        "/api/v1/overwatch",
 			Description: "Overwatch-specific endpoints",
 		},
+		{
+			Path:        "/api/v1/cluster",
+			Description: "Cluster status and deployment validation",
+		},
 	}
 
 	resp := APIDiscoveryResponse{
@@ -290,6 +294,16 @@ func (h *DiscoveryHandlers) HandleOverwatchRoot(w http.ResponseWriter, r *http.R
 			Description: "Configuration validation",
 			Methods:     []string{"POST"},
 		},
+		{
+			Path:        "/api/v1/overwatch/latency",
+			Description: "Latency learning data (ADR-017)",
+			Methods:     []string{"GET"},
+		},
+		{
+			Path:        "/api/v1/overwatch/agents",
+			Description: "Agent certificate management",
+			Methods:     []string{"GET"},
+		},
 	}
 
 	resp := APIDiscoveryResponse{
@@ -335,6 +349,35 @@ func (h *DiscoveryHandlers) HandleDNSSECRoot(w http.ResponseWriter, r *http.Requ
 			Path:        "/api/v1/dnssec/sync",
 			Description: "Key synchronization",
 			Methods:     []string{"POST"},
+		},
+	}
+
+	resp := APIDiscoveryResponse{
+		Endpoints:   endpoints,
+		GeneratedAt: time.Now().UTC(),
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// HandleClusterRoot handles GET /api/v1/cluster - returns available cluster endpoints.
+func (h *DiscoveryHandlers) HandleClusterRoot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Only show /api/v1/cluster, not sub-paths
+	if r.URL.Path != "/api/v1/cluster" && r.URL.Path != "/api/v1/cluster/" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	endpoints := []APIEndpoint{
+		{
+			Path:        "/api/v1/cluster/status",
+			Description: "Cluster health status for deployment validation",
+			Methods:     []string{"GET"},
 		},
 	}
 

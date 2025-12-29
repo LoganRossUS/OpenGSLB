@@ -30,6 +30,14 @@ type OverwatchAPIHandlers interface {
 	HandleBackendOverride(w http.ResponseWriter, r *http.Request)
 	HandleStats(w http.ResponseWriter, r *http.Request)
 	HandleValidate(w http.ResponseWriter, r *http.Request)
+	// Cluster status for deployment validation
+	HandleClusterStatus(w http.ResponseWriter, r *http.Request)
+	// Latency learning (ADR-017)
+	HandleLatencyTable(w http.ResponseWriter, r *http.Request)
+	// Agent management
+	HandleAgents(w http.ResponseWriter, r *http.Request)
+	HandleAgentsExpiring(w http.ResponseWriter, r *http.Request)
+	HandleAgentRoute(w http.ResponseWriter, r *http.Request)
 }
 
 // Server provides the HTTP API for OpenGSLB.
@@ -160,6 +168,14 @@ func (s *Server) Start(ctx context.Context) error {
 		mux.HandleFunc("/api/v1/overwatch/backends/", s.withACL(s.overwatchHandlers.HandleBackendOverride))
 		mux.HandleFunc("/api/v1/overwatch/stats", s.withACL(s.overwatchHandlers.HandleStats))
 		mux.HandleFunc("/api/v1/overwatch/validate", s.withACL(s.overwatchHandlers.HandleValidate))
+		// Cluster status for deployment validation
+		mux.HandleFunc("/api/v1/cluster/status", s.withACL(s.overwatchHandlers.HandleClusterStatus))
+		// Latency learning endpoints (ADR-017)
+		mux.HandleFunc("/api/v1/overwatch/latency", s.withACL(s.overwatchHandlers.HandleLatencyTable))
+		// Agent management endpoints
+		mux.HandleFunc("/api/v1/overwatch/agents", s.withACL(s.overwatchHandlers.HandleAgents))
+		mux.HandleFunc("/api/v1/overwatch/agents/expiring", s.withACL(s.overwatchHandlers.HandleAgentsExpiring))
+		mux.HandleFunc("/api/v1/overwatch/agents/", s.withACL(s.overwatchHandlers.HandleAgentRoute))
 	}
 
 	// External override endpoints (Story 6)
@@ -265,18 +281,14 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/v1/geo/", s.discoveryHandlers.HandleGeoRoot)
 	mux.HandleFunc("/api/v1/overwatch", s.discoveryHandlers.HandleOverwatchRoot)
 	mux.HandleFunc("/api/v1/overwatch/", s.discoveryHandlers.HandleOverwatchRoot)
+	mux.HandleFunc("/api/v1/cluster", s.discoveryHandlers.HandleClusterRoot)
+	mux.HandleFunc("/api/v1/cluster/", s.discoveryHandlers.HandleClusterRoot)
 	mux.HandleFunc("/api/v1/version", s.discoveryHandlers.HandleVersion)
 	mux.HandleFunc("/api/v1", s.discoveryHandlers.HandleV1Root)
 	mux.HandleFunc("/api/v1/", s.discoveryHandlers.HandleV1Root)
 	mux.HandleFunc("/api", s.discoveryHandlers.HandleAPIRoot)
 	mux.HandleFunc("/api/", s.discoveryHandlers.HandleAPIRoot)
 	s.logger.Debug("API discovery endpoints registered")
-
-	// ADR-015: Cluster endpoints removed
-	// The following endpoints no longer exist:
-	// - /api/v1/cluster/status
-	// - /api/v1/cluster/join
-	// - /api/v1/cluster/remove
 
 	// Apply CORS middleware if enabled
 	var handler http.Handler = mux
