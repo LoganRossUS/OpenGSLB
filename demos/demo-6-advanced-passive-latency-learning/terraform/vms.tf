@@ -219,17 +219,7 @@ resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   type_handler_version = "1.10"
 
   protected_settings = jsonencode({
-    commandToExecute = <<-EOT
-      powershell -ExecutionPolicy Bypass -Command "
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-        # Download bootstrap script
-        Invoke-WebRequest -Uri '${local.bootstrap_windows_url}' -OutFile C:\bootstrap.ps1 -UseBasicParsing
-
-        # Run bootstrap with parameters
-        powershell -ExecutionPolicy Bypass -File C:\bootstrap.ps1 -Role agent -OverwatchIP '${local.overwatch_ip}' -Region 'eu-west' -ServiceToken '${local.service_token}' -GossipKey '${local.gossip_key}' -ServiceName 'web' -BackendPort 80 -Version '${local.version}' -GitHubRepo '${local.github_repo}' -VerboseOutput
-      "
-    EOT
+    commandToExecute = "powershell -ExecutionPolicy Bypass -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '${local.bootstrap_windows_url}' -OutFile C:\\bootstrap.ps1 -UseBasicParsing; powershell -ExecutionPolicy Bypass -File C:\\bootstrap.ps1 -Role agent -OverwatchIP '${local.overwatch_ip}' -Region 'eu-west' -ServiceToken '${local.service_token}' -GossipKey '${local.gossip_key}' -ServiceName 'web' -BackendPort 80 -Version '${local.version}' -GitHubRepo '${local.github_repo}' -VerboseOutput\""
   })
 
   timeouts {
