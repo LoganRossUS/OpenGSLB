@@ -231,6 +231,5 @@ output "bastion_access" {
     - Backend (SE Asia):   ${azurerm_linux_virtual_machine.backend_southeastasia.id}
     - Backend (Win):       ${azurerm_windows_virtual_machine.backend_westeurope_win.id}
 
-  EOT
-  : "Bastion not enabled. Enable with: terraform apply -var=\"enable_bastion=true\""
+  EOT : "Bastion not enabled. Enable with: terraform apply -var=\"enable_bastion=true\""
 }
