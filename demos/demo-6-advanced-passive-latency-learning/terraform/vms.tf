@@ -111,7 +111,7 @@ resource "azurerm_linux_virtual_machine" "traffic_eastus" {
         for i in $(seq 1 $DURATION); do
           for j in $(seq 1 $RATE); do
             IP=$(dig @${local.overwatch_ip} web.test.opengslb.local +short | head -1)
-            curl -s -o /dev/null -w "%{http_code}" "http://$IP/" &
+            curl -s -o /dev/null -w "%%{http_code}" "http://$IP/" &
           done
           sleep 1
         done
@@ -210,6 +210,7 @@ resource "azurerm_windows_virtual_machine" "backend_westeurope_win" {
 }
 
 # Custom Script Extension for Windows VM - Simplified Bootstrap
+# Uses PowerShell to download script directly (bypasses fileUris download issues)
 resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   name                 = "setup-opengslb"
   virtual_machine_id   = azurerm_windows_virtual_machine.backend_westeurope_win.id
@@ -218,14 +219,11 @@ resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   type_handler_version = "1.10"
 
   settings = jsonencode({
-    fileUris = [
-      "https://github.com/${local.github_repo}/releases/download/${local.version}/bootstrap-windows.ps1"
-    ]
-    commandToExecute = "powershell -ExecutionPolicy Bypass -File bootstrap-windows.ps1 -Role agent -OverwatchIP ${local.overwatch_ip} -Region eu-west -ServiceToken '${local.service_token}' -GossipKey '${local.gossip_key}' -ServiceName web -BackendPort 80 -Version ${local.version} -GitHubRepo ${local.github_repo} -VerboseOutput"
+    commandToExecute = "powershell -ExecutionPolicy Bypass -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '${local.bootstrap_windows_url}' -OutFile C:\\bootstrap.ps1 -UseBasicParsing; & C:\\bootstrap.ps1 -Role 'agent' -OverwatchIP '${local.overwatch_ip}' -Region 'eu-west' -ServiceToken '${local.service_token}' -GossipKey '${local.gossip_key}' -ServiceName 'web' -BackendPort 80 -Version '${local.version}' -GitHubRepo '${local.github_repo}' -VerboseOutput\""
   })
 
   timeouts {
-    create = "30m"  # Reduced from 60m since we're not building from source
+    create = "30m"
   }
 }
 
@@ -349,7 +347,7 @@ resource "azurerm_linux_virtual_machine" "traffic_southeastasia" {
         for i in $(seq 1 $DURATION); do
           for j in $(seq 1 $RATE); do
             IP=$(dig @${local.overwatch_ip} web.test.opengslb.local +short | head -1)
-            curl -s -o /dev/null -w "%{http_code}" "http://$IP/" &
+            curl -s -o /dev/null -w "%%{http_code}" "http://$IP/" &
           done
           sleep 1
         done

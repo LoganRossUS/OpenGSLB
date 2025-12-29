@@ -20,18 +20,11 @@ windows_admin_password = "YourComplexPassword123!"
 # VM size (optional, defaults to Standard_B2s)
 # vm_size = "Standard_B2s"
 
-# Git repository for OpenGSLB (optional, defaults to main repo)
-# opengslb_git_repo = "https://github.com/LoganRossUS/OpenGSLB.git"
+# OpenGSLB version to deploy from GitHub Releases (e.g., "v1.1.1" or "latest")
+# opengslb_version = "v1.1.1"
 
-# Git branch to build from (optional, defaults to main)
-# opengslb_git_branch = "main"
-
-# Gossip encryption key (optional, using test key by default)
-# Generate a real key with: openssl rand -base64 32
-# gossip_encryption_key = "dGVzdC1lbmNyeXB0aW9uLWtleS0zMi1ieXRlcw=="
-
-# Service token for agent auth (optional)
-# service_token = "test-token-for-latency-testing"
+# GitHub repository for OpenGSLB releases (optional, defaults to LoganRossUS/OpenGSLB)
+# opengslb_github_repo = "LoganRossUS/OpenGSLB"
 
 # Tags (optional)
 # tags = {
@@ -39,3 +32,6 @@ windows_admin_password = "YourComplexPassword123!"
 #   purpose = "ADR-017-Testing"
 #   demo    = "passive-latency-learning"
 # }
+
+# Note: Gossip encryption key and service token are now auto-generated
+# by Terraform using the random provider. No need to configure them.
