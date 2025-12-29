@@ -176,3 +176,61 @@ output "cluster_status_url" {
   description = "URL to check cluster status (from within VNet)"
   value       = "http://${azurerm_network_interface.overwatch.private_ip_address}:8080/api/v1/cluster/status"
 }
+
+# Bastion outputs (when enabled)
+
+output "bastion_enabled" {
+  description = "Whether Azure Bastion is enabled"
+  value       = var.enable_bastion
+}
+
+output "bastion_name" {
+  description = "Name of the Azure Bastion host (for portal access)"
+  value       = var.enable_bastion ? azurerm_bastion_host.main[0].name : null
+}
+
+output "bastion_access" {
+  description = "Azure Bastion access instructions"
+  value       = var.enable_bastion ? <<-EOT
+
+    ============================================
+    Azure Bastion Access (No SSH/RDP firewall needed)
+    ============================================
+
+    Bastion provides secure browser-based access to VMs without
+    exposing SSH/RDP ports to the internet.
+
+    Access VMs via Azure Portal:
+    1. Go to: https://portal.azure.com
+    2. Navigate to: Resource Groups > ${var.resource_group_name}
+    3. Select any VM
+    4. Click "Connect" > "Bastion"
+    5. Enter credentials and connect
+
+    Or use Azure CLI:
+
+    # SSH to Linux VMs via Bastion
+    az network bastion ssh \\
+      --name ${azurerm_bastion_host.main[0].name} \\
+      --resource-group ${var.resource_group_name} \\
+      --target-resource-id <VM_RESOURCE_ID> \\
+      --auth-type ssh-key \\
+      --username ${var.admin_username} \\
+      --ssh-key ~/.ssh/id_rsa
+
+    # RDP to Windows VM via Bastion
+    az network bastion rdp \\
+      --name ${azurerm_bastion_host.main[0].name} \\
+      --resource-group ${var.resource_group_name} \\
+      --target-resource-id <VM_RESOURCE_ID>
+
+    VM Resource IDs:
+    - Overwatch:           ${azurerm_linux_virtual_machine.overwatch.id}
+    - Traffic (East US):   ${azurerm_linux_virtual_machine.traffic_eastus.id}
+    - Backend (West EU):   ${azurerm_linux_virtual_machine.backend_westeurope.id}
+    - Backend (SE Asia):   ${azurerm_linux_virtual_machine.backend_southeastasia.id}
+    - Backend (Win):       ${azurerm_windows_virtual_machine.backend_westeurope_win.id}
+
+  EOT
+  : "Bastion not enabled. Enable with: terraform apply -var=\"enable_bastion=true\""
+}

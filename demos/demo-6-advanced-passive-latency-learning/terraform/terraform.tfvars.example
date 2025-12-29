@@ -35,3 +35,17 @@ windows_admin_password = "YourComplexPassword123!"
 
 # Note: Gossip encryption key and service token are now auto-generated
 # by Terraform using the random provider. No need to configure them.
+
+# ============================================================================
+# Azure Bastion (Enterprise/Firewall-restricted environments)
+# ============================================================================
+
+# Enable Azure Bastion for secure browser-based SSH/RDP access
+# Useful when SSH/RDP ports are blocked by corporate firewalls
+# Note: Adds ~$140/month to infrastructure costs
+# enable_bastion = true
+
+# Bastion SKU (optional, defaults to Basic)
+# Basic: Browser-based access only
+# Standard: Native client support, IP-based connection, shareable links
+# bastion_sku = "Basic"
