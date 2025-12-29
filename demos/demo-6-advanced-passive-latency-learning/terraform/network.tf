@@ -46,6 +46,15 @@ resource "azurerm_subnet" "traffic_eastus" {
   address_prefixes     = ["10.1.2.0/24"]
 }
 
+# Azure Bastion Subnet (required name: AzureBastionSubnet, min /26)
+resource "azurerm_subnet" "bastion" {
+  count                = var.enable_bastion ? 1 : 0
+  name                 = "AzureBastionSubnet"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.eastus.name
+  address_prefixes     = ["10.1.3.0/26"]
+}
+
 # Subnets - West Europe
 
 resource "azurerm_subnet" "backends_westeurope" {
@@ -274,5 +283,36 @@ resource "azurerm_network_interface" "traffic_southeastasia" {
     subnet_id                     = azurerm_subnet.traffic_southeastasia.id
     private_ip_address_allocation = "Dynamic"
     public_ip_address_id          = azurerm_public_ip.traffic_southeastasia.id
+  }
+}
+
+# ============================================================================
+# Azure Bastion (Optional)
+# Provides secure browser-based SSH/RDP access without public VM endpoints
+# Enable with: terraform apply -var="enable_bastion=true"
+# ============================================================================
+
+resource "azurerm_public_ip" "bastion" {
+  count               = var.enable_bastion ? 1 : 0
+  name                = "pip-bastion"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = "East US"
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  tags                = var.tags
+}
+
+resource "azurerm_bastion_host" "main" {
+  count               = var.enable_bastion ? 1 : 0
+  name                = "bastion-opengslb"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = "East US"
+  sku                 = var.bastion_sku
+  tags                = var.tags
+
+  ip_configuration {
+    name                 = "configuration"
+    subnet_id            = azurerm_subnet.bastion[0].id
+    public_ip_address_id = azurerm_public_ip.bastion[0].id
   }
 }
