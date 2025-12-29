@@ -190,46 +190,6 @@ output "bastion_name" {
 }
 
 output "bastion_access" {
-  description = "Azure Bastion access instructions"
-  value       = var.enable_bastion ? <<-EOT
-
-    ============================================
-    Azure Bastion Access (No SSH/RDP firewall needed)
-    ============================================
-
-    Bastion provides secure browser-based access to VMs without
-    exposing SSH/RDP ports to the internet.
-
-    Access VMs via Azure Portal:
-    1. Go to: https://portal.azure.com
-    2. Navigate to: Resource Groups > ${var.resource_group_name}
-    3. Select any VM
-    4. Click "Connect" > "Bastion"
-    5. Enter credentials and connect
-
-    Or use Azure CLI:
-
-    # SSH to Linux VMs via Bastion
-    az network bastion ssh \\
-      --name ${azurerm_bastion_host.main[0].name} \\
-      --resource-group ${var.resource_group_name} \\
-      --target-resource-id <VM_RESOURCE_ID> \\
-      --auth-type ssh-key \\
-      --username ${var.admin_username} \\
-      --ssh-key ~/.ssh/id_rsa
-
-    # RDP to Windows VM via Bastion
-    az network bastion rdp \\
-      --name ${azurerm_bastion_host.main[0].name} \\
-      --resource-group ${var.resource_group_name} \\
-      --target-resource-id <VM_RESOURCE_ID>
-
-    VM Resource IDs:
-    - Overwatch:           ${azurerm_linux_virtual_machine.overwatch.id}
-    - Traffic (East US):   ${azurerm_linux_virtual_machine.traffic_eastus.id}
-    - Backend (West EU):   ${azurerm_linux_virtual_machine.backend_westeurope.id}
-    - Backend (SE Asia):   ${azurerm_linux_virtual_machine.backend_southeastasia.id}
-    - Backend (Win):       ${azurerm_windows_virtual_machine.backend_westeurope_win.id}
-
-  EOT : "Bastion not enabled. Enable with: terraform apply -var=\"enable_bastion=true\""
+  description = "Azure Bastion access instructions (shows 'not enabled' if Bastion is disabled)"
+  value       = var.enable_bastion ? "Bastion enabled. Access VMs via Azure Portal: Resource Groups > ${var.resource_group_name} > [VM] > Connect > Bastion" : "Bastion not enabled. Enable with: terraform apply -var=\"enable_bastion=true\""
 }
