@@ -799,7 +799,7 @@ func (h *APIHandlers) RegisterRoutes(mux *http.ServeMux) {
 	// Agent certificate management endpoints
 	mux.HandleFunc("/api/v1/overwatch/agents", h.HandleAgents)
 	mux.HandleFunc("/api/v1/overwatch/agents/expiring", h.HandleAgentsExpiring)
-	mux.HandleFunc("/api/v1/overwatch/agents/", h.handleAgentRoute)
+	mux.HandleFunc("/api/v1/overwatch/agents/", h.HandleAgentRoute)
 
 	// Latency learning endpoints (ADR-017)
 	mux.HandleFunc("/api/v1/overwatch/latency", h.HandleLatencyTable)
@@ -808,8 +808,8 @@ func (h *APIHandlers) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/cluster/status", h.HandleClusterStatus)
 }
 
-// handleAgentRoute routes agent requests based on path.
-func (h *APIHandlers) handleAgentRoute(w http.ResponseWriter, r *http.Request) {
+// HandleAgentRoute routes agent requests based on path.
+func (h *APIHandlers) HandleAgentRoute(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/overwatch/agents/")
 
 	// Check for /expiring which is handled separately
