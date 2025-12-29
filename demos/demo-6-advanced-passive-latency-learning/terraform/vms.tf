@@ -111,7 +111,7 @@ resource "azurerm_linux_virtual_machine" "traffic_eastus" {
         for i in $(seq 1 $DURATION); do
           for j in $(seq 1 $RATE); do
             IP=$(dig @${local.overwatch_ip} web.test.opengslb.local +short | head -1)
-            curl -s -o /dev/null -w "%{http_code}" "http://$IP/" &
+            curl -s -o /dev/null -w "%%{http_code}" "http://$IP/" &
           done
           sleep 1
         done
@@ -349,7 +349,7 @@ resource "azurerm_linux_virtual_machine" "traffic_southeastasia" {
         for i in $(seq 1 $DURATION); do
           for j in $(seq 1 $RATE); do
             IP=$(dig @${local.overwatch_ip} web.test.opengslb.local +short | head -1)
-            curl -s -o /dev/null -w "%{http_code}" "http://$IP/" &
+            curl -s -o /dev/null -w "%%{http_code}" "http://$IP/" &
           done
           sleep 1
         done
