@@ -1,10 +1,10 @@
-#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     OpenGSLB Bootstrap Script for Windows
 
 .DESCRIPTION
     This script downloads and configures OpenGSLB for automated deployments on Windows.
+    Note: This script should be run with Administrator privileges.
 
 .PARAMETER Role
     Role: 'overwatch' or 'agent' (required)
@@ -681,5 +681,14 @@ function Main {
     exit 0
 }
 
-# Run main
-Main
+# Run main with error handling
+try {
+    Main
+} catch {
+    $errorMessage = $_.Exception.Message
+    $errorLine = $_.InvocationInfo.ScriptLineNumber
+    Write-Host "[FATAL] Unhandled exception at line $errorLine : $errorMessage" -ForegroundColor Red
+    Write-Host $_.ScriptStackTrace -ForegroundColor Red
+    Add-Content -Path "C:\opengslb-bootstrap.log" -Value "[FATAL] $errorMessage at line $errorLine" -ErrorAction SilentlyContinue
+    exit 1
+}
