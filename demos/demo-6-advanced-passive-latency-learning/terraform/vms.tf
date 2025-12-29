@@ -42,7 +42,7 @@ resource "azurerm_linux_virtual_machine" "overwatch" {
   custom_data = base64encode(<<-EOF
     #cloud-config
     runcmd:
-      - curl -fsSL "https://github.com/${local.github_repo}/releases/download/${local.version}/bootstrap-linux.sh" -o /tmp/bootstrap.sh
+      - curl -fsSL "${local.bootstrap_linux_url}" -o /tmp/bootstrap.sh
       - chmod +x /tmp/bootstrap.sh
       - /tmp/bootstrap.sh --role overwatch --region us-east --gossip-key "${local.gossip_key}" --service-token "${local.service_token}" --version "${local.version}" --github-repo "${local.github_repo}" --verbose 2>&1 | tee /var/log/opengslb-bootstrap.log
   EOF
@@ -175,7 +175,7 @@ resource "azurerm_linux_virtual_machine" "backend_westeurope" {
       - systemctl enable nginx
       - systemctl start nginx
       # Download and run bootstrap script
-      - curl -fsSL "https://github.com/${local.github_repo}/releases/download/${local.version}/bootstrap-linux.sh" -o /tmp/bootstrap.sh
+      - curl -fsSL "${local.bootstrap_linux_url}" -o /tmp/bootstrap.sh
       - chmod +x /tmp/bootstrap.sh
       - /tmp/bootstrap.sh --role agent --overwatch-ip ${local.overwatch_ip} --region eu-west --gossip-key "${local.gossip_key}" --service-token "${local.service_token}" --service-name web --backend-port 80 --version "${local.version}" --github-repo "${local.github_repo}" --verbose 2>&1 | tee /var/log/opengslb-bootstrap.log
   EOF
@@ -210,7 +210,7 @@ resource "azurerm_windows_virtual_machine" "backend_westeurope_win" {
 }
 
 # Custom Script Extension for Windows VM - Simplified Bootstrap
-# Uses PowerShell to download script directly (bypasses fileUris download issues)
+# Creates a wrapper script to avoid escaping issues with parameters
 resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   name                 = "setup-opengslb"
   virtual_machine_id   = azurerm_windows_virtual_machine.backend_westeurope_win.id
@@ -218,8 +218,18 @@ resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   type                 = "CustomScriptExtension"
   type_handler_version = "1.10"
 
-  settings = jsonencode({
-    commandToExecute = "powershell -ExecutionPolicy Bypass -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '${local.bootstrap_windows_url}' -OutFile C:\\bootstrap.ps1 -UseBasicParsing; & C:\\bootstrap.ps1 -Role 'agent' -OverwatchIP '${local.overwatch_ip}' -Region 'eu-west' -ServiceToken '${local.service_token}' -GossipKey '${local.gossip_key}' -ServiceName 'web' -BackendPort 80 -Version '${local.version}' -GitHubRepo '${local.github_repo}' -VerboseOutput\""
+  protected_settings = jsonencode({
+    commandToExecute = <<-EOT
+      powershell -ExecutionPolicy Bypass -Command "
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+        # Download bootstrap script
+        Invoke-WebRequest -Uri '${local.bootstrap_windows_url}' -OutFile C:\bootstrap.ps1 -UseBasicParsing
+
+        # Run bootstrap with parameters
+        powershell -ExecutionPolicy Bypass -File C:\bootstrap.ps1 -Role agent -OverwatchIP '${local.overwatch_ip}' -Region 'eu-west' -ServiceToken '${local.service_token}' -GossipKey '${local.gossip_key}' -ServiceName 'web' -BackendPort 80 -Version '${local.version}' -GitHubRepo '${local.github_repo}' -VerboseOutput
+      "
+    EOT
   })
 
   timeouts {
@@ -278,7 +288,7 @@ resource "azurerm_linux_virtual_machine" "backend_southeastasia" {
       - systemctl enable nginx
       - systemctl start nginx
       # Download and run bootstrap script
-      - curl -fsSL "https://github.com/${local.github_repo}/releases/download/${local.version}/bootstrap-linux.sh" -o /tmp/bootstrap.sh
+      - curl -fsSL "${local.bootstrap_linux_url}" -o /tmp/bootstrap.sh
       - chmod +x /tmp/bootstrap.sh
       - /tmp/bootstrap.sh --role agent --overwatch-ip ${local.overwatch_ip} --region ap-southeast --gossip-key "${local.gossip_key}" --service-token "${local.service_token}" --service-name web --backend-port 80 --version "${local.version}" --github-repo "${local.github_repo}" --verbose 2>&1 | tee /var/log/opengslb-bootstrap.log
   EOF

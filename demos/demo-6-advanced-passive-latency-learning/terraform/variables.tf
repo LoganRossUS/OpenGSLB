@@ -55,3 +55,15 @@ variable "tags" {
     demo    = "passive-latency-learning"
   }
 }
+
+variable "enable_bastion" {
+  description = "Enable Azure Bastion for secure VM access without public SSH/RDP"
+  type        = bool
+  default     = false
+}
+
+variable "bastion_sku" {
+  description = "Azure Bastion SKU (Basic or Standard)"
+  type        = string
+  default     = "Basic"
+}

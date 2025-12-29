@@ -176,3 +176,20 @@ output "cluster_status_url" {
   description = "URL to check cluster status (from within VNet)"
   value       = "http://${azurerm_network_interface.overwatch.private_ip_address}:8080/api/v1/cluster/status"
 }
+
+# Bastion outputs (when enabled)
+
+output "bastion_enabled" {
+  description = "Whether Azure Bastion is enabled"
+  value       = var.enable_bastion
+}
+
+output "bastion_name" {
+  description = "Name of the Azure Bastion host (for portal access)"
+  value       = var.enable_bastion ? azurerm_bastion_host.main[0].name : null
+}
+
+output "bastion_access" {
+  description = "Azure Bastion access instructions (shows 'not enabled' if Bastion is disabled)"
+  value       = var.enable_bastion ? "Bastion enabled. Access VMs via Azure Portal: Resource Groups > ${var.resource_group_name} > [VM] > Connect > Bastion" : "Bastion not enabled. Enable with: terraform apply -var=\"enable_bastion=true\""
+}
