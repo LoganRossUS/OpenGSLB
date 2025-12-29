@@ -42,7 +42,7 @@ resource "azurerm_linux_virtual_machine" "overwatch" {
   custom_data = base64encode(<<-EOF
     #cloud-config
     runcmd:
-      - curl -fsSL "https://github.com/${local.github_repo}/releases/download/${local.version}/bootstrap-linux.sh" -o /tmp/bootstrap.sh
+      - curl -fsSL "${local.bootstrap_linux_url}" -o /tmp/bootstrap.sh
       - chmod +x /tmp/bootstrap.sh
       - /tmp/bootstrap.sh --role overwatch --region us-east --gossip-key "${local.gossip_key}" --service-token "${local.service_token}" --version "${local.version}" --github-repo "${local.github_repo}" --verbose 2>&1 | tee /var/log/opengslb-bootstrap.log
   EOF
@@ -175,7 +175,7 @@ resource "azurerm_linux_virtual_machine" "backend_westeurope" {
       - systemctl enable nginx
       - systemctl start nginx
       # Download and run bootstrap script
-      - curl -fsSL "https://github.com/${local.github_repo}/releases/download/${local.version}/bootstrap-linux.sh" -o /tmp/bootstrap.sh
+      - curl -fsSL "${local.bootstrap_linux_url}" -o /tmp/bootstrap.sh
       - chmod +x /tmp/bootstrap.sh
       - /tmp/bootstrap.sh --role agent --overwatch-ip ${local.overwatch_ip} --region eu-west --gossip-key "${local.gossip_key}" --service-token "${local.service_token}" --service-name web --backend-port 80 --version "${local.version}" --github-repo "${local.github_repo}" --verbose 2>&1 | tee /var/log/opengslb-bootstrap.log
   EOF
@@ -288,7 +288,7 @@ resource "azurerm_linux_virtual_machine" "backend_southeastasia" {
       - systemctl enable nginx
       - systemctl start nginx
       # Download and run bootstrap script
-      - curl -fsSL "https://github.com/${local.github_repo}/releases/download/${local.version}/bootstrap-linux.sh" -o /tmp/bootstrap.sh
+      - curl -fsSL "${local.bootstrap_linux_url}" -o /tmp/bootstrap.sh
       - chmod +x /tmp/bootstrap.sh
       - /tmp/bootstrap.sh --role agent --overwatch-ip ${local.overwatch_ip} --region ap-southeast --gossip-key "${local.gossip_key}" --service-token "${local.service_token}" --service-name web --backend-port 80 --version "${local.version}" --github-repo "${local.github_repo}" --verbose 2>&1 | tee /var/log/opengslb-bootstrap.log
   EOF
