@@ -219,7 +219,7 @@ resource "azurerm_virtual_machine_extension" "backend_win_setup" {
 
   settings = jsonencode({
     fileUris = [
-      "https://github.com/${local.github_repo}/releases/download/${local.version}/bootstrap-windows.ps1"
+      local.bootstrap_windows_url
     ]
     commandToExecute = "powershell -ExecutionPolicy Bypass -File bootstrap-windows.ps1 -Role agent -OverwatchIP ${local.overwatch_ip} -Region eu-west -ServiceToken '${local.service_token}' -GossipKey '${local.gossip_key}' -ServiceName web -BackendPort 80 -Version ${local.version} -GitHubRepo ${local.github_repo} -VerboseOutput"
   })
