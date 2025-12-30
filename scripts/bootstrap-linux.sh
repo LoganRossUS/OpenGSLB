@@ -390,7 +390,7 @@ overwatch:
 domains:
   - name: "${SERVICE_NAME}.test.opengslb.local"
     ttl: 60
-    routing_algorithm: latency
+    routing_algorithm: learned_latency  # ADR-017: Use passive TCP RTT learning
 
 regions:
   - id: "us-east"
