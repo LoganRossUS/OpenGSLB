@@ -45,12 +45,12 @@ type Application struct {
 	apiServer     *api.Server
 
 	// Overwatch mode components (Story 3)
-	backendRegistry      *overwatch.Registry
-	overwatchValidator   *overwatch.Validator
-	gossipHandler        *overwatch.GossipHandler
-	gossipReceiver       *gossip.MemberlistReceiver
-	overwatchStore       store.Store
-	learnedLatencyTable  *overwatch.LearnedLatencyTable // ADR-017: Passive latency learning
+	backendRegistry     *overwatch.Registry
+	overwatchValidator  *overwatch.Validator
+	gossipHandler       *overwatch.GossipHandler
+	gossipReceiver      *gossip.MemberlistReceiver
+	overwatchStore      store.Store
+	learnedLatencyTable *overwatch.LearnedLatencyTable // ADR-017: Passive latency learning
 
 	// Agent mode components (Story 2)
 	agentInstance *agent.Agent
