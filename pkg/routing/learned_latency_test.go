@@ -220,7 +220,7 @@ func TestLearnedLatencyRouter_NoServerRegion_SkipsServer(t *testing.T) {
 
 func TestLearnedLatencyRouter_InsufficientSamples_FallsBack(t *testing.T) {
 	provider := newMockLearnedLatencyProvider()
-	provider.SetLatency("10.0.0.0/24", "web.test.local", "eu-west", 80*time.Millisecond, 2)      // Not enough
+	provider.SetLatency("10.0.0.0/24", "web.test.local", "eu-west", 80*time.Millisecond, 2)     // Not enough
 	provider.SetLatency("10.0.0.0/24", "web.test.local", "ap-southeast", 5*time.Millisecond, 1) // Not enough
 
 	router := NewLearnedLatencyRouter(LearnedLatencyRouterConfig{
@@ -278,7 +278,7 @@ func TestLearnedLatencyRouter_MixedSamples_SelectsFromValidOnly(t *testing.T) {
 
 func TestLearnedLatencyRouter_MaxLatencyThreshold(t *testing.T) {
 	provider := newMockLearnedLatencyProvider()
-	provider.SetLatency("10.0.0.0/24", "web.test.local", "eu-west", 600*time.Millisecond, 10)    // Above threshold
+	provider.SetLatency("10.0.0.0/24", "web.test.local", "eu-west", 600*time.Millisecond, 10)      // Above threshold
 	provider.SetLatency("10.0.0.0/24", "web.test.local", "ap-southeast", 100*time.Millisecond, 10) // Below threshold
 
 	router := NewLearnedLatencyRouter(LearnedLatencyRouterConfig{
@@ -308,7 +308,7 @@ func TestLearnedLatencyRouter_MaxLatencyThreshold(t *testing.T) {
 
 func TestLearnedLatencyRouter_AllAboveThreshold_SelectsLowest(t *testing.T) {
 	provider := newMockLearnedLatencyProvider()
-	provider.SetLatency("10.0.0.0/24", "web.test.local", "eu-west", 600*time.Millisecond, 10)       // Above threshold but lower
+	provider.SetLatency("10.0.0.0/24", "web.test.local", "eu-west", 600*time.Millisecond, 10)      // Above threshold but lower
 	provider.SetLatency("10.0.0.0/24", "web.test.local", "ap-southeast", 800*time.Millisecond, 10) // Above threshold
 
 	router := NewLearnedLatencyRouter(LearnedLatencyRouterConfig{
