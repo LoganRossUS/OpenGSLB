@@ -99,7 +99,7 @@ resource "azurerm_linux_virtual_machine" "traffic_eastus" {
       - |
         cat > /usr/local/bin/test-cluster << 'SCRIPT'
         #!/bin/bash
-        /usr/local/bin/validate-cluster.sh --overwatch-ip ${local.overwatch_ip} --expected-agents 3 "$@"
+        /usr/local/bin/validate-cluster.sh --overwatch-ip ${local.overwatch_ip} --expected-agents 2 "$@"
         SCRIPT
       - chmod +x /usr/local/bin/test-cluster
       - |
@@ -180,51 +180,6 @@ resource "azurerm_linux_virtual_machine" "backend_westeurope" {
       - /tmp/bootstrap.sh --role agent --overwatch-ip ${local.overwatch_ip} --region eu-west --gossip-key "${local.gossip_key}" --service-token "${local.service_token}" --service-name web --backend-port 80 --version "${local.version}" --github-repo "${local.github_repo}" --verbose 2>&1 | tee /var/log/opengslb-bootstrap.log
   EOF
   )
-}
-
-# Backend VM (West Europe - Windows)
-resource "azurerm_windows_virtual_machine" "backend_westeurope_win" {
-  name                = "vm-backend-win"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = "West Europe"
-  size                = var.vm_size
-  admin_username      = var.admin_username
-  admin_password      = var.windows_admin_password
-  tags                = var.tags
-
-  network_interface_ids = [
-    azurerm_network_interface.backend_westeurope_win.id,
-  ]
-
-  os_disk {
-    caching              = "ReadWrite"
-    storage_account_type = "Standard_LRS"
-  }
-
-  source_image_reference {
-    publisher = "MicrosoftWindowsServer"
-    offer     = "WindowsServer"
-    sku       = "2022-datacenter-azure-edition"
-    version   = "latest"
-  }
-}
-
-# Custom Script Extension for Windows VM
-# Uses cmd.exe wrapper for better escaping, downloads from feature branch
-resource "azurerm_virtual_machine_extension" "backend_win_setup" {
-  name                 = "setup-opengslb"
-  virtual_machine_id   = azurerm_windows_virtual_machine.backend_westeurope_win.id
-  publisher            = "Microsoft.Compute"
-  type                 = "CustomScriptExtension"
-  type_handler_version = "1.10"
-
-  protected_settings = jsonencode({
-    commandToExecute = "cmd /c \"powershell -ExecutionPolicy Bypass -NoProfile -Command \\\"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri '${local.bootstrap_windows_url}' -OutFile C:\\bootstrap.ps1 -UseBasicParsing; C:\\bootstrap.ps1 -Role agent -OverwatchIP '${local.overwatch_ip}' -Region eu-west -ServiceToken '${local.service_token}' -GossipKey '${local.gossip_key}' -ServiceName web -BackendPort 80 -Version '${local.version}' -GitHubRepo '${local.github_repo}' -VerboseOutput\\\"\""
-  })
-
-  timeouts {
-    create = "30m"
-  }
 }
 
 # Backend VM (Southeast Asia)
@@ -335,7 +290,7 @@ resource "azurerm_linux_virtual_machine" "traffic_southeastasia" {
       - |
         cat > /usr/local/bin/test-cluster << 'SCRIPT'
         #!/bin/bash
-        /usr/local/bin/validate-cluster.sh --overwatch-ip ${local.overwatch_ip} --expected-agents 3 "$@"
+        /usr/local/bin/validate-cluster.sh --overwatch-ip ${local.overwatch_ip} --expected-agents 2 "$@"
         SCRIPT
       - chmod +x /usr/local/bin/test-cluster
       - |

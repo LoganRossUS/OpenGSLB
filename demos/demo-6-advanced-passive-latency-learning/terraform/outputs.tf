@@ -31,19 +31,9 @@ output "backend_southeastasia_public_ip" {
   value       = azurerm_public_ip.backend_southeastasia.ip_address
 }
 
-output "backend_westeurope_win_public_ip" {
-  description = "Public IP of West Europe Windows backend (for RDP)"
-  value       = azurerm_public_ip.backend_westeurope_win.ip_address
-}
-
 output "backend_westeurope_private_ip" {
   description = "Private IP of West Europe Linux backend"
   value       = azurerm_network_interface.backend_westeurope.private_ip_address
-}
-
-output "backend_westeurope_win_private_ip" {
-  description = "Private IP of West Europe Windows backend"
-  value       = azurerm_network_interface.backend_westeurope_win.private_ip_address
 }
 
 output "backend_southeastasia_private_ip" {
@@ -62,11 +52,11 @@ output "dns_test_command" {
 }
 
 output "ssh_commands" {
-  description = "SSH/RDP commands for all VMs"
+  description = "SSH commands for all VMs"
   value       = <<-EOT
 
     ============================================
-    SSH Commands for Linux VMs
+    SSH Commands
     ============================================
 
     # Overwatch (East US) - DNS Server
@@ -78,31 +68,18 @@ output "ssh_commands" {
     # Traffic Generator (Southeast Asia)
     ssh ${var.admin_username}@${azurerm_public_ip.traffic_southeastasia.ip_address}
 
-    # Backend (West Europe - Linux)
+    # Backend (West Europe)
     ssh ${var.admin_username}@${azurerm_public_ip.backend_westeurope.ip_address}
 
     # Backend (Southeast Asia)
     ssh ${var.admin_username}@${azurerm_public_ip.backend_southeastasia.ip_address}
 
     ============================================
-    RDP Command for Windows VM
-    ============================================
-
-    # Backend (West Europe - Windows)
-    mstsc /v:${azurerm_public_ip.backend_westeurope_win.ip_address}
-    # Username: ${var.admin_username}
-    # Password: (from terraform.tfvars windows_admin_password)
-
-    ============================================
     Check Bootstrap Logs
     ============================================
 
-    # On any Linux VM:
     cat /var/log/opengslb-bootstrap.log
     sudo journalctl -u opengslb-overwatch -f  # or opengslb-agent
-
-    # On Windows VM:
-    type C:\opengslb-bootstrap.log
 
     ============================================
     Troubleshooting

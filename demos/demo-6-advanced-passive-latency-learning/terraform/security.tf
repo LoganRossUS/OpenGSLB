@@ -299,11 +299,6 @@ resource "azurerm_network_interface_security_group_association" "backend_westeur
   network_security_group_id = azurerm_network_security_group.backend_westeurope.id
 }
 
-resource "azurerm_network_interface_security_group_association" "backend_westeurope_win" {
-  network_interface_id      = azurerm_network_interface.backend_westeurope_win.id
-  network_security_group_id = azurerm_network_security_group.backend_westeurope.id
-}
-
 resource "azurerm_network_interface_security_group_association" "backend_southeastasia" {
   network_interface_id      = azurerm_network_interface.backend_southeastasia.id
   network_security_group_id = azurerm_network_security_group.backend_southeastasia.id

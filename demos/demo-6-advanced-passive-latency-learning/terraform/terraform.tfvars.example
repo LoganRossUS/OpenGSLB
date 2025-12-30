@@ -12,11 +12,6 @@
 # Generate one with: ssh-keygen -t rsa -b 4096 -f ~/.ssh/azure_rsa
 ssh_public_key_path = "~/.ssh/azure_rsa.pub"
 
-# Windows VM admin password (required - must be complex)
-# Must contain: uppercase, lowercase, number, special character
-# Minimum 12 characters
-windows_admin_password = "YourComplexPassword123!"
-
 # VM size (optional, defaults to Standard_B2s)
 # vm_size = "Standard_B2s"
 

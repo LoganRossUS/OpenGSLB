@@ -2,6 +2,12 @@
 
 This Terraform configuration deploys a complete multi-region Azure environment for testing the Passive Latency Learning feature (ADR-017).
 
+## Key Features
+
+- **Auto-Registration**: Agent nodes automatically register with the Overwatch cluster
+- **Latency-Based Routing**: DNS responses are optimized based on learned client latency data
+- **Multi-Region**: Demonstrates routing across 3 Azure regions
+
 ## Prerequisites
 
 1. **Azure CLI** installed and authenticated:
@@ -38,12 +44,12 @@ terraform init
 
 # Copy and edit variables
 cp terraform.tfvars.example terraform.tfvars
-vim terraform.tfvars  # Set your SSH key path and Windows password
+vim terraform.tfvars  # Set your SSH key path
 
 # Preview the deployment
 terraform plan
 
-# Deploy (takes ~10-15 minutes)
+# Deploy (takes ~2 minutes)
 terraform apply
 
 # View outputs with connection info
@@ -52,12 +58,6 @@ terraform output
 
 ## Configuration
 
-### Required Variables
-
-| Variable | Description |
-|----------|-------------|
-| `windows_admin_password` | Password for Windows VM (must be complex) |
-
 ### Optional Variables
 
 | Variable | Default | Description |
@@ -65,19 +65,19 @@ terraform output
 | `ssh_public_key_path` | `~/.ssh/id_rsa.pub` | Path to SSH public key |
 | `admin_username` | `azureuser` | Admin username for VMs |
 | `vm_size` | `Standard_B2s` | Azure VM size |
-| `opengslb_git_repo` | GitHub repo | Git repository URL |
-| `opengslb_git_branch` | `main` | Branch to build from |
+| `opengslb_version` | `latest` | OpenGSLB version to deploy |
+| `opengslb_github_repo` | `LoganRossUS/OpenGSLB` | GitHub repository |
+| `enable_bastion` | `false` | Enable Azure Bastion for secure access |
 
 ## What Gets Deployed
 
-### VMs (6 total)
+### VMs (5 total)
 
 | VM | Region | Role |
 |----|--------|------|
 | vm-overwatch-eastus | East US | Overwatch DNS server |
 | vm-traffic-eastus | East US | Traffic generator |
 | vm-backend-westeurope | West Europe | Linux backend + agent |
-| vm-backend-win | West Europe | Windows backend + agent |
 | vm-backend-southeastasia | Southeast Asia | Linux backend + agent |
 | vm-traffic-southeastasia | Southeast Asia | Traffic generator |
 
@@ -87,34 +87,17 @@ terraform output
 - Full mesh VNet peering (all regions can communicate)
 - NSGs for security
 
-### Auto-Configuration (via cloud-init)
+### Auto-Configuration (via bootstrap scripts)
 
 All VMs automatically:
-1. Install Go 1.23
-2. Clone OpenGSLB from GitHub
-3. Build the binary
-4. Create configuration files
-5. Start the service (systemd on Linux)
+1. Download pre-built OpenGSLB binary from GitHub Releases
+2. Generate configuration files
+3. Start the service (systemd)
+4. Register with the cluster (agents)
 
 ## Testing the Deployment
 
-### 1. Wait for Cloud-Init
-
-VMs need ~10 minutes to complete setup. Check progress:
-
-```bash
-# SSH to Overwatch
-ssh azureuser@$(terraform output -raw overwatch_public_ip)
-
-# Check cloud-init status
-cloud-init status --wait
-
-# Check service
-sudo systemctl status opengslb-overwatch
-sudo journalctl -u opengslb-overwatch -f
-```
-
-### 2. Generate Traffic
+### 1. Validate the Cluster
 
 From the traffic generator:
 
@@ -122,35 +105,41 @@ From the traffic generator:
 # SSH to traffic generator
 ssh azureuser@$(terraform output -raw traffic_eastus_public_ip)
 
-# Generate sustained traffic (1 req/s for 5 minutes)
-generate-traffic.sh 1 300
-
-# Run load test
-load-test.sh 1000 10
+# Run validation (waits for all agents to register)
+test-cluster
 ```
 
-### 3. Verify Latency Learning
+### 2. Generate Traffic
 
 ```bash
-# On traffic generator
-show-latency.sh
-
-# Test DNS routing
-query-dns.sh 5
+# Generate sustained traffic (5 req/s for 5 minutes)
+generate-traffic 5 300
 ```
 
-### 4. Check Metrics
+### 3. Check Latency Learning
 
 ```bash
-# From any VM with access to Overwatch
-curl http://10.1.1.10:9090/metrics | grep opengslb_latency
+# View learned latency data
+curl http://10.1.1.10:8080/api/v1/overwatch/latency | jq .
+
+# Check cluster status
+curl http://10.1.1.10:8080/api/v1/cluster/status | jq .
+```
+
+### 4. Test DNS Routing
+
+```bash
+# Query DNS multiple times - should return optimal backend
+for i in {1..10}; do
+  dig @10.1.1.10 web.test.opengslb.local +short
+done
 ```
 
 ## Troubleshooting
 
-### Cloud-init failed
+### Bootstrap failed
 ```bash
-sudo cat /var/log/cloud-init-output.log
+cat /var/log/opengslb-bootstrap.log
 ```
 
 ### Service won't start
@@ -160,16 +149,13 @@ sudo journalctl -u opengslb-agent --no-pager
 ```
 
 ### No latency data
-1. Verify agents are running
-2. Check gossip connectivity: `curl http://10.1.1.10:8080/api/v1/health`
-3. Verify traffic is flowing
+1. Verify agents are running: `curl http://10.1.1.10:8080/api/v1/overwatch/agents`
+2. Check gossip connectivity
+3. Generate traffic first - latency is learned from actual requests
 
-### Windows agent issues
-```powershell
-# RDP to Windows VM through traffic generator (bastion)
-Get-Content C:\opengslb\logs\agent.log
-Get-ScheduledTask -TaskName "OpenGSLB Agent"
-```
+## Adding Windows Agents
+
+For Windows Server support, see the [Windows Setup Guide](../../../docs/windows-agent-setup.md).
 
 ## Cleanup
 
@@ -186,11 +172,10 @@ az group delete --name rg-opengslb-latency-test --yes --no-wait
 | Resource | Monthly Cost |
 |----------|--------------|
 | 5 Linux VMs (Standard_B2s) | ~$75 |
-| 1 Windows VM (Standard_B2s) | ~$25 |
 | Managed Disks | ~$10 |
 | Public IPs | ~$10 |
 | VNet Peering (data) | ~$20 |
-| **Total** | **~$140/month** |
+| **Total** | **~$115/month** |
 
 **Cost Optimization Tips:**
 - Deallocate VMs when not testing
