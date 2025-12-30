@@ -20,7 +20,8 @@ const (
 	AlgorithmWeighted   = "weighted"
 	AlgorithmFailover   = "failover"
 	// AlgorithmGeolocation is defined in geo.go
-	AlgorithmLatency = "latency"
+	AlgorithmLatency        = "latency"
+	AlgorithmLearnedLatency = "learned_latency"
 )
 
 // NewRouter creates a router based on the algorithm name.
@@ -48,22 +49,24 @@ func NewRouter(algorithm string) (Router, error) {
 
 // Factory creates routers with access to shared resources like geo resolver.
 type Factory struct {
-	geoResolver       *geo.Resolver
-	latencyProvider   LatencyProvider
-	defaultRegion     string
-	maxLatencyMs      int
-	minLatencySamples int
-	logger            *slog.Logger
+	geoResolver            *geo.Resolver
+	latencyProvider        LatencyProvider
+	learnedLatencyProvider LearnedLatencyProvider // ADR-017: Passive latency learning
+	defaultRegion          string
+	maxLatencyMs           int
+	minLatencySamples      int
+	logger                 *slog.Logger
 }
 
 // FactoryConfig contains configuration for creating a Factory.
 type FactoryConfig struct {
-	GeoResolver       *geo.Resolver
-	LatencyProvider   LatencyProvider
-	DefaultRegion     string
-	MaxLatencyMs      int // Max latency threshold for latency routing (default: 500)
-	MinLatencySamples int // Min samples required before using latency data (default: 3)
-	Logger            *slog.Logger
+	GeoResolver            *geo.Resolver
+	LatencyProvider        LatencyProvider
+	LearnedLatencyProvider LearnedLatencyProvider // ADR-017: Passive latency learning
+	DefaultRegion          string
+	MaxLatencyMs           int // Max latency threshold for latency routing (default: 500)
+	MinLatencySamples      int // Min samples required before using latency data (default: 3)
+	Logger                 *slog.Logger
 }
 
 // NewFactory creates a new router Factory.
@@ -84,12 +87,13 @@ func NewFactory(cfg FactoryConfig) *Factory {
 	}
 
 	return &Factory{
-		geoResolver:       cfg.GeoResolver,
-		latencyProvider:   cfg.LatencyProvider,
-		defaultRegion:     cfg.DefaultRegion,
-		maxLatencyMs:      maxLatencyMs,
-		minLatencySamples: minSamples,
-		logger:            logger,
+		geoResolver:            cfg.GeoResolver,
+		latencyProvider:        cfg.LatencyProvider,
+		learnedLatencyProvider: cfg.LearnedLatencyProvider,
+		defaultRegion:          cfg.DefaultRegion,
+		maxLatencyMs:           maxLatencyMs,
+		minLatencySamples:      minSamples,
+		logger:                 logger,
 	}
 }
 
@@ -116,6 +120,14 @@ func (f *Factory) NewRouter(algorithm string) (Router, error) {
 			MinSamples:   f.minLatencySamples,
 			Logger:       f.logger,
 		}), nil
+	case AlgorithmLearnedLatency, "learned-latency":
+		// ADR-017: Passive latency learning using TCP RTT from agents
+		return NewLearnedLatencyRouter(LearnedLatencyRouterConfig{
+			Provider:     f.learnedLatencyProvider,
+			MaxLatencyMs: f.maxLatencyMs,
+			MinSamples:   f.minLatencySamples,
+			Logger:       f.logger,
+		}), nil
 	default:
 		return nil, fmt.Errorf("unknown routing algorithm: %s", algorithm)
 	}
@@ -134,6 +146,11 @@ func (f *Factory) SetDefaultRegion(region string) {
 // SetLatencyProvider sets or updates the latency provider for creating LatencyRouters.
 func (f *Factory) SetLatencyProvider(provider LatencyProvider) {
 	f.latencyProvider = provider
+}
+
+// SetLearnedLatencyProvider sets the learned latency provider for ADR-017 routing.
+func (f *Factory) SetLearnedLatencyProvider(provider LearnedLatencyProvider) {
+	f.learnedLatencyProvider = provider
 }
 
 // SetLatencyConfig updates the latency routing configuration.
