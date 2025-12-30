@@ -17,7 +17,7 @@
 #
 # Usage:
 #   terraform init
-#   terraform apply -var="windows_admin_password=YourComplexPassword123!"
+#   terraform apply
 #
 # After deployment (~2 minutes instead of ~15 minutes):
 #   1. Overwatch and agents start automatically
@@ -69,11 +69,8 @@ resource "azurerm_resource_group" "main" {
 
 # Local values for bootstrap parameters
 locals {
-  # Bootstrap script URLs - use raw.githubusercontent.com
-  # NOTE: Using feature branch for testing. Change back to 'main' after merge.
-  bootstrap_branch      = "claude/simplify-opengslb-deployment-VeGaM"
-  bootstrap_linux_url   = "https://raw.githubusercontent.com/${var.opengslb_github_repo}/${local.bootstrap_branch}/scripts/bootstrap-linux.sh"
-  bootstrap_windows_url = "https://raw.githubusercontent.com/${var.opengslb_github_repo}/${local.bootstrap_branch}/scripts/bootstrap-windows.ps1"
+  # Bootstrap script URL from main branch
+  bootstrap_linux_url = "https://raw.githubusercontent.com/${var.opengslb_github_repo}/main/scripts/bootstrap-linux.sh"
 
   # Overwatch IP (first IP in overwatch subnet)
   overwatch_ip = "10.1.1.10"
