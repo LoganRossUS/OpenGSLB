@@ -126,10 +126,17 @@ func (h *Handler) handleAQuery(m *dns.Msg, qname string, q dns.Question, clientI
 	}
 
 	// Create context with client IP for geolocation routing
+	// and domain name for learned latency routing (ADR-017)
 	ctx := context.Background()
 	if clientIP != nil {
 		ctx = routing.WithClientIP(ctx, clientIP)
 	}
+	// Use entry.Name which is normalized, strip trailing dot for service name format
+	domainName := entry.Name
+	if len(domainName) > 0 && domainName[len(domainName)-1] == '.' {
+		domainName = domainName[:len(domainName)-1]
+	}
+	ctx = routing.WithDomain(ctx, domainName)
 
 	pool := routing.NewSimpleServerPool(servers)
 	selected, err := entry.Router.Route(ctx, pool)
@@ -169,10 +176,17 @@ func (h *Handler) handleAAAAQuery(m *dns.Msg, qname string, q dns.Question, clie
 	}
 
 	// Create context with client IP for geolocation routing
+	// and domain name for learned latency routing (ADR-017)
 	ctx := context.Background()
 	if clientIP != nil {
 		ctx = routing.WithClientIP(ctx, clientIP)
 	}
+	// Use entry.Name which is normalized, strip trailing dot for service name format
+	domainName := entry.Name
+	if len(domainName) > 0 && domainName[len(domainName)-1] == '.' {
+		domainName = domainName[:len(domainName)-1]
+	}
+	ctx = routing.WithDomain(ctx, domainName)
 
 	pool := routing.NewSimpleServerPool(servers)
 	selected, err := entry.Router.Route(ctx, pool)
