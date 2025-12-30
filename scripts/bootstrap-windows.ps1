@@ -717,6 +717,7 @@ function Show-Summary {
 }
 
 # Install IIS for backend web server (agents only)
+# This is optional - failure here should not block OpenGSLB agent
 function Install-WebServer {
     if ($Role -ne "agent" -or $BackendPort -ne 80) {
         return
@@ -724,30 +725,39 @@ function Install-WebServer {
 
     Write-Section "Installing IIS Web Server"
 
-    # Check if IIS is already installed
-    $iis = Get-WindowsFeature -Name Web-Server -ErrorAction SilentlyContinue
-    if ($iis -and $iis.Installed) {
-        Write-Log "IIS is already installed"
-    } else {
-        Write-Log "Installing IIS..."
-        Install-WindowsFeature -Name Web-Server -IncludeManagementTools -ErrorAction Stop | Out-Null
-        Write-Success "IIS installed successfully"
-    }
+    try {
+        # Check if Get-WindowsFeature cmdlet is available (requires ServerManager module)
+        if (-not (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue)) {
+            Write-Warning "Get-WindowsFeature not available - skipping IIS installation"
+            Write-Warning "You may need to install IIS manually: Install-WindowsFeature Web-Server"
+            return
+        }
 
-    # Ensure IIS is running
-    $w3svc = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
-    if ($w3svc -and $w3svc.Status -ne "Running") {
-        Write-Log "Starting IIS..."
-        Start-Service -Name W3SVC -ErrorAction SilentlyContinue
-    }
+        # Check if IIS is already installed
+        $iis = Get-WindowsFeature -Name Web-Server -ErrorAction SilentlyContinue
+        if ($iis -and $iis.Installed) {
+            Write-Log "IIS is already installed"
+        } else {
+            Write-Log "Installing IIS..."
+            Install-WindowsFeature -Name Web-Server -IncludeManagementTools -ErrorAction Stop | Out-Null
+            Write-Success "IIS installed successfully"
+        }
 
-    # Create a simple default page with region info
-    $wwwroot = "C:\inetpub\wwwroot"
-    $indexPath = Join-Path $wwwroot "index.html"
-    $hostname = $env:COMPUTERNAME
-    $region = if ($Region) { $Region } else { "unknown" }
+        # Ensure IIS is running
+        $w3svc = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+        if ($w3svc -and $w3svc.Status -ne "Running") {
+            Write-Log "Starting IIS..."
+            Start-Service -Name W3SVC -ErrorAction SilentlyContinue
+        }
 
-    $html = @"
+        # Create a simple default page with region info
+        $wwwroot = "C:\inetpub\wwwroot"
+        if (Test-Path $wwwroot) {
+            $indexPath = Join-Path $wwwroot "index.html"
+            $hostname = $env:COMPUTERNAME
+            $region = if ($Region) { $Region } else { "unknown" }
+
+            $html = @"
 <!DOCTYPE html>
 <html>
 <head><title>OpenGSLB Backend</title></head>
@@ -760,8 +770,14 @@ function Install-WebServer {
 </html>
 "@
 
-    Set-Content -Path $indexPath -Value $html -Force
-    Write-Success "Default web page created at $indexPath"
+            Set-Content -Path $indexPath -Value $html -Force
+            Write-Success "Default web page created at $indexPath"
+        }
+    } catch {
+        Write-Warning "Failed to install IIS: $_"
+        Write-Warning "OpenGSLB agent will continue without IIS backend"
+        Write-Warning "You can install IIS manually later with: Install-WindowsFeature Web-Server"
+    }
 }
 
 # Main

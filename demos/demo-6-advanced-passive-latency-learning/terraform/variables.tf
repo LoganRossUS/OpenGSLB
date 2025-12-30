@@ -22,12 +22,6 @@ variable "ssh_public_key_path" {
   default     = "~/.ssh/id_rsa.pub"
 }
 
-variable "windows_admin_password" {
-  description = "Admin password for Windows VM (must be complex)"
-  type        = string
-  sensitive   = true
-}
-
 variable "vm_size" {
   description = "Azure VM size for all VMs"
   type        = string
