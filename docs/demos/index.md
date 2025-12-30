@@ -11,6 +11,7 @@ OpenGSLB includes a comprehensive set of interactive demos that showcase its fea
 | [Demo 3: Latency Routing](demo-3-latency-routing) | Performance Optimization | Latency-based routing, automatic adaptation |
 | [Demo 4: GeoIP Routing](demo-4-geoip-routing) | Geographic Distribution | GeoIP routing, EDNS Client Subnet, custom CIDR |
 | [Demo 5: Predictive Health](demo-5-predictive-health) | Proactive Health | Predictive monitoring, chaos engineering, Grafana |
+| [Demo 6: Passive Latency Learning](demo-6-passive-latency-learning) | Real Client Latency | TCP RTT learning, subnet aggregation, Azure multi-region |
 
 ## Prerequisites
 
@@ -72,11 +73,12 @@ Once comfortable with the basics, explore:
 - **Demo 2**: Learn about the agent-overwatch architecture and proactive health signaling
 - **Demo 3**: Understand latency-based routing and automatic traffic optimization
 
-### Advanced: Demos 4 & 5
+### Advanced: Demos 4, 5 & 6
 
 For production-ready scenarios:
 - **Demo 4**: Geographic routing with GeoIP databases and custom CIDR mappings
 - **Demo 5**: Predictive health monitoring with chaos engineering
+- **Demo 6**: Passive latency learning with real TCP RTT data (requires Azure)
 
 ## Demo Architecture Comparison
 
@@ -139,4 +141,5 @@ demo-2-agent-overwatch
 demo-3-latency-routing
 demo-4-geoip-routing
 demo-5-predictive-health
+demo-6-passive-latency-learning
 ```

@@ -1,7 +1,10 @@
 # OpenGSLB
-[![CI](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml/badge.svg)](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml) [![Docker Build](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml/badge.svg)](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml)
 
-Buy Me a Coffee ☕: https://www.buymeacoffee.com/OpenGSLB 
+[![CI](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml/badge.svg)](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml) [![Docker Build](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml/badge.svg)](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml) [![Release](https://img.shields.io/github/v/release/loganrossus/OpenGSLB?label=stable)](https://github.com/loganrossus/OpenGSLB/releases)
+
+**v1.1.9 Stable Release** - Production-ready DNS-first global load balancing.
+
+[Website](https://opengslb.org) | [Documentation](https://docs.opengslb.org) | [Discord](https://discord.gg/H4s8RG6Az) | [Reddit](https://www.reddit.com/r/OpenGSLB)
 
 ## Overview
 
@@ -31,6 +34,7 @@ See [LICENSE](LICENSE) for full terms.
 - **Failover (Active/Standby)**: Predictable primary → secondary → tertiary failover with automatic return-to-primary
 - **Geolocation-Based**: Route clients to nearest region using MaxMind GeoIP2 with custom CIDR overrides
 - **Latency-Based**: Dynamically route to lowest-latency backends with EMA smoothing to prevent flapping
+- **Learned Latency**: Route based on real client-to-backend TCP RTT data collected by agents (ADR-017)
 - **EDNS Client Subnet (ECS)**: Extract client location from recursive resolvers for accurate geo-routing
 
 ### Health Checking
@@ -46,8 +50,8 @@ See [LICENSE](LICENSE) for full terms.
 - **Structured Logging**: JSON or text format with configurable log levels
 - **Prometheus Metrics**: DNS queries, health check results, routing decisions, and more
 - **Health Status API**: JSON endpoint for current server health status
-- **Server Management API**: CRUD operations for dynamic server management (v1.1.0)
-- **CLI Management Tool**: gslbctl for server and domain management
+- **Server Management API**: CRUD operations for dynamic server management
+- **CLI Management Tool**: Full-featured CLI for status, overrides, and management
 
 ### Deployment
 - **Single Binary**: No runtime dependencies
@@ -175,36 +179,37 @@ domains:
 
 ## Documentation
 
-- [Configuration Reference](docs/configuration.md) - Complete configuration options
-- [Docker Deployment](docs/docker.md) - Container deployment guide
-- [Prometheus Metrics](docs/metrics.md) - Available metrics and alerting
-- [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
-- [Architecture Decisions](docs/ARCHITECTURE_DECISIONS.md) - Design rationale
+Full documentation is available at **[docs.opengslb.org](https://docs.opengslb.org)**
+
+- [Configuration Reference](https://docs.opengslb.org/en/latest/configuration/) - Complete configuration options
+- [Interactive Demos](https://docs.opengslb.org/en/latest/demos/) - Hands-on tutorials
+- [Docker Deployment](https://docs.opengslb.org/en/latest/docker/) - Container deployment guide
+- [API Reference](https://docs.opengslb.org/en/latest/api/) - REST API documentation
+- [Troubleshooting](https://docs.opengslb.org/en/latest/troubleshooting/) - Common issues and solutions
 
 ## Roadmap
 
-### Completed
+### v1.1.9 Stable (Current)
 - ✅ DNS server with A and AAAA record support
 - ✅ Round-robin, weighted, and failover routing
-- ✅ HTTP and TCP health checks
-- ✅ Prometheus metrics and structured logging
-- ✅ Configuration hot-reload (SIGHUP)
-- ✅ Health status API endpoint
-- ✅ Docker deployment
-- ✅ DNSSEC support with automatic key management
 - ✅ Geolocation-based routing (GeoIP + custom CIDR mappings)
 - ✅ Latency-based routing (EMA smoothing)
+- ✅ Learned latency routing (passive TCP RTT from agents)
 - ✅ EDNS Client Subnet (ECS) support
+- ✅ HTTP and TCP health checks
+- ✅ Predictive health monitoring (CPU, memory, error rate)
 - ✅ Agent-Overwatch distributed architecture
+- ✅ DNSSEC support with automatic key management
+- ✅ Server management CRUD API
 - ✅ Multi-file configuration with includes
-- ✅ CLI management tool (gslbctl)
-- ✅ **NEW in v1.1.0**: Unified server architecture (static, agent, API)
-- ✅ **NEW in v1.1.0**: Server management CRUD API
-- ✅ **NEW in v1.1.0**: Dynamic DNS registration for API/agent servers
+- ✅ Prometheus metrics and structured logging
+- ✅ CLI management tool
+- ✅ Docker deployment
 
 ### Planned
-- 🔲 Web UI dashboard
+- 🔲 Web UI dashboard (Overlord)
 - 🔲 Kubernetes operator
+- 🔲 DNS-over-HTTPS/TLS
 
 ## Target Use Cases
 
@@ -214,7 +219,18 @@ domains:
 - **High-Security Environments**: No external dependencies or data sharing
 - **Cost-Conscious Enterprises**: Enterprise features without SaaS pricing
 
+## Community
+
+- [Discord](https://discord.gg/H4s8RG6Az) - Real-time chat and support
+- [Reddit](https://www.reddit.com/r/OpenGSLB) - Discussions and announcements
+- [GitHub Discussions](https://github.com/LoganRossUS/OpenGSLB/discussions) - Q&A and ideas
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and workflow.
-Buy Me a Coffee ☕: https://www.buymeacoffee.com/OpenGSLB 
+
+## Support the Project
+
+If OpenGSLB is useful to you, consider supporting continued development:
+
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/OpenGSLB) 

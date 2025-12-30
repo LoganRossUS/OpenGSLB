@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Support | OpenGSLB</title>
+    <meta name="description" content="Get help with OpenGSLB - documentation, community support, and commercial licensing options.">
+    <meta name="robots" content="index, follow">
+    <meta name="theme-color" content="#0A84FF">
+    <link rel="canonical" href="https://opengslb.org/support.html">
+    <link rel="icon" type="image/png" href="https://raw.githubusercontent.com/LoganRossUS/OpenGSLB/main/docs/images/OpenGSLB.png">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #0A84FF;
+            --success: #00D084;
+            --danger: #FF453A;
+            --bg-dark: #0f172a;
+            --bg-darker: #0a1120;
+            --border: #1e293b;
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+        }
+        body {
+            font-family: 'IBM Plex Sans', system-ui, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            line-height: 1.7;
+        }
+        .mono {
+            font-family: 'IBM Plex Mono', 'Courier New', monospace;
+        }
+        .navbar {
+            background: rgba(15, 23, 42, 0.95);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--border);
+            padding: 0;
+        }
+        .navbar .navbar-brand {
+            padding: 8px 0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .navbar .logo-img {
+            height: 64px;
+            width: auto;
+            object-fit: contain;
+        }
+        .navbar .logo-text {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: white;
+            letter-spacing: -0.02em;
+        }
+        .navbar .nav-link {
+            font-family: 'IBM Plex Sans', sans-serif;
+            color: var(--text-secondary) !important;
+            font-weight: 500;
+            padding: 0.6rem 1.2rem !important;
+            border-radius: 6px;
+            transition: all 0.2s;
+            font-size: 0.95rem;
+        }
+        .navbar .nav-link:hover {
+            color: white !important;
+            background: rgba(255,255,255,0.08);
+        }
+        .page-header {
+            background: linear-gradient(135deg, #0A84FF 0%, #7B68EE 50%, #D946EF 100%);
+            padding: 140px 0 80px;
+            text-align: center;
+        }
+        .page-header h1 {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+        .page-header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        .section {
+            padding: 80px 0;
+        }
+        .section-alt {
+            background: var(--bg-darker);
+            border-top: 1px solid var(--border);
+        }
+        .support-card {
+            background: #111827;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 2rem;
+            height: 100%;
+            transition: all 0.3s;
+        }
+        .support-card:hover {
+            transform: translateY(-5px);
+            border-color: var(--primary);
+            box-shadow: 0 12px 30px rgba(10, 132, 255, 0.15);
+        }
+        .support-card h3 {
+            font-family: 'IBM Plex Mono', monospace;
+            color: var(--primary);
+            margin-bottom: 1rem;
+            font-size: 1.4rem;
+        }
+        .support-card p {
+            color: var(--text-secondary);
+            margin-bottom: 1.5rem;
+        }
+        .support-card .btn {
+            font-family: 'IBM Plex Mono', monospace;
+        }
+        .btn-primary-custom {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: white;
+            padding: 10px 24px;
+            border-radius: 6px;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s;
+        }
+        .btn-primary-custom:hover {
+            background: #0070e0;
+            border-color: #0070e0;
+            color: white;
+            transform: translateY(-2px);
+        }
+        .btn-outline-custom {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 10px 24px;
+            border-radius: 6px;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s;
+        }
+        .btn-outline-custom:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+        .icon-large {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            color: var(--primary);
+        }
+        .faq-item {
+            background: #111827;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            overflow: hidden;
+        }
+        .faq-question {
+            padding: 1.25rem 1.5rem;
+            font-family: 'IBM Plex Mono', monospace;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background 0.2s;
+        }
+        .faq-question:hover {
+            background: rgba(255,255,255,0.03);
+        }
+        .faq-answer {
+            padding: 0 1.5rem 1.25rem;
+            color: var(--text-secondary);
+            display: none;
+        }
+        .faq-item.active .faq-answer {
+            display: block;
+        }
+        .faq-item.active .faq-icon {
+            transform: rotate(180deg);
+        }
+        .faq-icon {
+            transition: transform 0.2s;
+        }
+        .coffee-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: #FFDD00;
+            color: #000;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 1rem;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .coffee-link:hover {
+            background: #FFE433;
+            transform: translateY(-2px);
+            color: #000;
+        }
+        footer {
+            background: #000;
+            padding: 3rem 0 1.5rem;
+            margin-top: 0;
+            border-top: 1px solid var(--border);
+        }
+        footer a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+        footer a:hover {
+            color: #60a5fa;
+        }
+        @media (max-width: 768px) {
+            .page-header { padding: 120px 0 60px; }
+            .page-header h1 { font-size: 2.2rem; }
+            .navbar .logo-img { height: 42px; }
+            .navbar .logo-text { font-size: 1.1rem; }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg fixed-top">
+        <div class="container">
+            <a class="navbar-brand" href="index.html">
+                <img src="https://raw.githubusercontent.com/LoganRossUS/OpenGSLB/main/docs/images/OpenGSLB.png" alt="OpenGSLB Logo" class="logo-img">
+                <span class="logo-text">OpenGSLB</span>
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="nav">
+                <ul class="navbar-nav ms-auto gap-2">
+                    <li class="nav-item"><a class="nav-link" href="index.html#why">Why OpenGSLB</a></li>
+                    <li class="nav-item"><a class="nav-link" href="index.html#architecture">Architecture</a></li>
+                    <li class="nav-item"><a class="nav-link" href="index.html#features">Features</a></li>
+                    <li class="nav-item"><a class="nav-link" href="index.html#quickstart">Quick Start</a></li>
+                    <li class="nav-item"><a class="nav-link" href="https://docs.opengslb.org" target="_blank">Documentation</a></li>
+                    <li class="nav-item"><a class="nav-link active" href="support.html">Support</a></li>
+                    <li class="nav-item"><a class="nav-link" href="https://github.com/LoganRossUS/OpenGSLB" target="_blank">GitHub</a></li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <section class="page-header text-white">
+        <div class="container">
+            <h1>Support</h1>
+            <p>Get help with OpenGSLB through community resources, documentation, or commercial support options.</p>
+        </div>
+    </section>
+
+    <section class="section">
+        <div class="container">
+            <div class="row g-4">
+                <div class="col-md-6 col-lg-4">
+                    <div class="support-card">
+                        <i class="bi bi-book icon-large"></i>
+                        <h3>Documentation</h3>
+                        <p>Comprehensive guides covering installation, configuration, API reference, and operational best practices.</p>
+                        <a href="https://docs.opengslb.org" class="btn-primary-custom" target="_blank">
+                            <i class="bi bi-arrow-right"></i> Read the Docs
+                        </a>
+                    </div>
+                </div>
+                <div class="col-md-6 col-lg-4">
+                    <div class="support-card">
+                        <i class="bi bi-github icon-large"></i>
+                        <h3>GitHub Issues</h3>
+                        <p>Report bugs, request features, or browse existing issues. Our primary channel for community support.</p>
+                        <a href="https://github.com/LoganRossUS/OpenGSLB/issues" class="btn-primary-custom" target="_blank">
+                            <i class="bi bi-arrow-right"></i> Open an Issue
+                        </a>
+                    </div>
+                </div>
+                <div class="col-md-6 col-lg-4">
+                    <div class="support-card">
+                        <i class="bi bi-chat-dots icon-large"></i>
+                        <h3>Discussions</h3>
+                        <p>Ask questions, share ideas, and connect with other OpenGSLB users in GitHub Discussions.</p>
+                        <a href="https://github.com/LoganRossUS/OpenGSLB/discussions" class="btn-primary-custom" target="_blank">
+                            <i class="bi bi-arrow-right"></i> Join Discussion
+                        </a>
+                    </div>
+                </div>
+                <div class="col-md-6 col-lg-4">
+                    <div class="support-card">
+                        <i class="bi bi-discord icon-large"></i>
+                        <h3>Discord</h3>
+                        <p>Join our Discord server for real-time chat, quick questions, and community discussions.</p>
+                        <a href="https://discord.gg/H4s8RG6Az" class="btn-primary-custom" target="_blank">
+                            <i class="bi bi-arrow-right"></i> Join Discord
+                        </a>
+                    </div>
+                </div>
+                <div class="col-md-6 col-lg-4">
+                    <div class="support-card">
+                        <i class="bi bi-reddit icon-large"></i>
+                        <h3>Reddit</h3>
+                        <p>Follow r/OpenGSLB for announcements, tutorials, and community discussions on Reddit.</p>
+                        <a href="https://www.reddit.com/r/OpenGSLB" class="btn-primary-custom" target="_blank">
+                            <i class="bi bi-arrow-right"></i> Visit Subreddit
+                        </a>
+                    </div>
+                </div>
+                <div class="col-md-6 col-lg-4">
+                    <div class="support-card">
+                        <i class="bi bi-file-earmark-code icon-large"></i>
+                        <h3>Configuration Guide</h3>
+                        <p>Complete configuration reference with examples for every routing algorithm and deployment scenario.</p>
+                        <a href="https://docs.opengslb.org/en/latest/configuration/" class="btn-outline-custom" target="_blank">
+                            <i class="bi bi-book"></i> View Config Docs
+                        </a>
+                    </div>
+                </div>
+                <div class="col-md-6 col-lg-4">
+                    <div class="support-card">
+                        <i class="bi bi-play-circle icon-large"></i>
+                        <h3>Interactive Demos</h3>
+                        <p>Hands-on tutorials from basic DNS load balancing to advanced latency-based routing.</p>
+                        <a href="https://docs.opengslb.org/en/latest/demos/" class="btn-outline-custom" target="_blank">
+                            <i class="bi bi-play-circle"></i> Try Demos
+                        </a>
+                    </div>
+                </div>
+                <div class="col-md-6 col-lg-4">
+                    <div class="support-card">
+                        <i class="bi bi-building icon-large"></i>
+                        <h3>Commercial License</h3>
+                        <p>Need to use OpenGSLB in a proprietary product or appliance? Contact us for commercial licensing.</p>
+                        <a href="mailto:licensing@opengslb.org" class="btn-outline-custom">
+                            <i class="bi bi-envelope"></i> Contact Sales
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section section-alt">
+        <div class="container">
+            <h2 class="text-center mb-5" style="font-family: 'IBM Plex Mono', monospace;">Frequently Asked Questions</h2>
+            <div class="row justify-content-center">
+                <div class="col-lg-8">
+                    <div class="faq-item">
+                        <div class="faq-question" onclick="toggleFaq(this)">
+                            Is OpenGSLB production-ready?
+                            <i class="bi bi-chevron-down faq-icon"></i>
+                        </div>
+                        <div class="faq-answer">
+                            Yes! OpenGSLB v1.1.9 includes all core GSLB features: multiple routing algorithms, health checks with predictive failure detection, DNSSEC, and the agent-overwatch architecture for distributed deployments. It's been designed with production use cases in mind from the start.
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <div class="faq-question" onclick="toggleFaq(this)">
+                            Can I use OpenGSLB for free?
+                            <i class="bi bi-chevron-down faq-icon"></i>
+                        </div>
+                        <div class="faq-answer">
+                            Absolutely! OpenGSLB is free under AGPLv3 for open-source projects, internal use, and anyone willing to share their modifications. If you're building a proprietary product or appliance, you'll need a commercial license.
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <div class="faq-question" onclick="toggleFaq(this)">
+                            What's the difference between Agent and Overwatch modes?
+                            <i class="bi bi-chevron-down faq-icon"></i>
+                        </div>
+                        <div class="faq-answer">
+                            <strong>Agents</strong> run alongside your application servers, performing local health checks and gossiping status to Overwatches. <strong>Overwatches</strong> serve authoritative DNS, maintain the backend registry, and independently validate agent claims. This dual-perspective approach eliminates false positives.
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <div class="faq-question" onclick="toggleFaq(this)">
+                            Do I need a GeoIP database for geolocation routing?
+                            <i class="bi bi-chevron-down faq-icon"></i>
+                        </div>
+                        <div class="faq-answer">
+                            OpenGSLB supports MaxMind GeoIP2/GeoLite2 databases for geographic routing. You can use the free GeoLite2 database or purchase a commercial GeoIP2 database for higher accuracy. You can also define custom CIDR-to-region mappings for known IP ranges.
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <div class="faq-question" onclick="toggleFaq(this)">
+                            How do I update OpenGSLB without downtime?
+                            <i class="bi bi-chevron-down faq-icon"></i>
+                        </div>
+                        <div class="faq-answer">
+                            OpenGSLB supports configuration hot-reload via SIGHUP&mdash;no restart required for config changes. For binary updates, deploy multiple Overwatch nodes and update them one at a time. DNS clients automatically retry on failure, ensuring zero downtime.
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <div class="faq-question" onclick="toggleFaq(this)">
+                            Does OpenGSLB work with Kubernetes?
+                            <i class="bi bi-chevron-down faq-icon"></i>
+                        </div>
+                        <div class="faq-answer">
+                            Yes, OpenGSLB can be deployed in Kubernetes using our Docker images. A native Kubernetes operator with CRDs is on the roadmap for future releases. Currently, you can use the Server Management API for dynamic service registration.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section text-center">
+        <div class="container">
+            <h2 style="font-family: 'IBM Plex Mono', monospace; margin-bottom: 1.5rem;">Support the Project</h2>
+            <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto 2rem;">
+                OpenGSLB is developed and maintained by Logan Ross. If you find it useful, consider buying me a coffee to support continued development!
+            </p>
+            <a href="https://www.buymeacoffee.com/OpenGSLB" class="coffee-link" target="_blank">
+                <i class="bi bi-cup-hot-fill"></i> Buy Me a Coffee
+            </a>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container text-center">
+            <p class="mono mb-3" style="color: var(--text-secondary);">
+                <strong>OpenGSLB</strong> &mdash; DNS-first global load balancing
+            </p>
+            <p class="text-white-50">
+                &copy; 2025 Logan Ross &bull;
+                <a href="https://github.com/LoganRossUS/OpenGSLB" target="_blank">GitHub</a> &bull;
+                <a href="https://discord.gg/H4s8RG6Az" target="_blank">Discord</a> &bull;
+                <a href="https://www.reddit.com/r/OpenGSLB" target="_blank">Reddit</a> &bull;
+                <a href="mailto:licensing@opengslb.org">Commercial License</a>
+            </p>
+            <p class="small text-white-50 mt-3">
+                AGPLv3 for open source &bull; Paid license for closed-source appliances
+            </p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        function toggleFaq(element) {
+            const item = element.parentElement;
+            item.classList.toggle('active');
+        }
+    </script>
+</body>
+</html>
