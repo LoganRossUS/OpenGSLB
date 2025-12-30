@@ -34,7 +34,7 @@
         "description": "Open-source, self-hosted Global Server Load Balancing (GSLB) system for intelligent DNS-based traffic distribution across multiple data centers and cloud regions.",
         "url": "https://opengslb.org/",
         "downloadUrl": "https://github.com/LoganRossUS/OpenGSLB/releases",
-        "softwareVersion": "1.1.0",
+        "softwareVersion": "1.1.9",
         "author": {
             "@type": "Person",
             "name": "Logan Ross"
@@ -535,7 +535,7 @@
             </p>
             <div class="hero-buttons">
                 <a href="https://github.com/LoganRossUS/OpenGSLB/releases" class="btn btn-terminal btn-lg btn-download">
-                    <i class="bi bi-download"></i> Download <span class="version-badge">v1.1.0</span>
+                    <i class="bi bi-download"></i> Download <span class="version-badge">v1.1.9</span>
                 </a>
                 <a href="https://github.com/LoganRossUS/OpenGSLB" class="btn btn-terminal btn-lg" target="_blank">
                     <i class="bi bi-github"></i> View on GitHub
@@ -778,15 +778,15 @@
                     <p>Agent-side failure prediction monitors CPU, memory, and error rates. Detects degradation before it impacts DNS responses&mdash;something no SaaS GSLB offers.</p>
                 </div>
                 <div class="feature-card">
-                    <h4>Unified Server Architecture<span class="new-badge">v1.1.0</span></h4>
+                    <h4>Unified Server Architecture</h4>
                     <p>Three server sources unified into one: static configuration, agent registration, and API registration. All participate equally in routing decisions.</p>
                 </div>
                 <div class="feature-card">
-                    <h4>Server Management API<span class="new-badge">v1.1.0</span></h4>
+                    <h4>Server Management API</h4>
                     <p>Full CRUD API for dynamic server management. Add, update, or remove servers at runtime without configuration changes or restarts.</p>
                 </div>
                 <div class="feature-card">
-                    <h4>Dynamic DNS Registration<span class="new-badge">v1.1.0</span></h4>
+                    <h4>Dynamic DNS Registration</h4>
                     <p>Servers registered via API or agents automatically participate in DNS routing based on their service associations. No manual domain configuration needed.</p>
                 </div>
                 <div class="feature-card">
@@ -850,7 +850,7 @@ cd OpenGSLB && go build -o opengslb ./cmd/opengslb
                     </div>
                     <div class="code-block mt-4">
                         <div class="code-block-header">
-                            <span class="code-block-title">Dynamic Server Registration via API (NEW in v1.1.0)</span>
+                            <span class="code-block-title">Dynamic Server Registration via API</span>
                         </div>
                         <div class="code-content">
 <span class="code-comment"># Register a server dynamically</span>
@@ -937,7 +937,7 @@ curl -X POST http://localhost:9090/api/v1/servers \
                         <div class="timeline-marker"></div>
                         <div class="timeline-card">
                             <div class="timeline-phase">Dec 2025</div>
-                            <div class="timeline-title">v1.1.0: Unified Architecture</div>
+                            <div class="timeline-title">v1.1.9: Stable Release</div>
                             <ul class="timeline-features">
                                 <li>Unified server architecture</li>
                                 <li>Server management CRUD API</li>
