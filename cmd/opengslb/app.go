@@ -45,11 +45,12 @@ type Application struct {
 	apiServer     *api.Server
 
 	// Overwatch mode components (Story 3)
-	backendRegistry    *overwatch.Registry
-	overwatchValidator *overwatch.Validator
-	gossipHandler      *overwatch.GossipHandler
-	gossipReceiver     *gossip.MemberlistReceiver
-	overwatchStore     store.Store
+	backendRegistry      *overwatch.Registry
+	overwatchValidator   *overwatch.Validator
+	gossipHandler        *overwatch.GossipHandler
+	gossipReceiver       *gossip.MemberlistReceiver
+	overwatchStore       store.Store
+	learnedLatencyTable  *overwatch.LearnedLatencyTable // ADR-017: Passive latency learning
 
 	// Agent mode components (Story 2)
 	agentInstance *agent.Agent
@@ -510,6 +511,11 @@ func (a *Application) initializeGossipHandler() error {
 	// v1.1.0: DNS registry will be set later via SetDNSRegistry after DNS initialization
 	a.gossipHandler = overwatch.NewGossipHandler(a.backendRegistry, nil, a.logger)
 
+	// ADR-017: Initialize learned latency table for passive latency learning
+	a.learnedLatencyTable = overwatch.NewLearnedLatencyTable(overwatch.LearnedLatencyConfig{})
+	a.gossipHandler.SetLatencyTable(a.learnedLatencyTable)
+	a.logger.Info("learned latency table initialized")
+
 	// Initialize gossip receiver if configured
 	if a.config.Overwatch.Gossip.EncryptionKey != "" {
 		bindAddr := a.config.Overwatch.Gossip.BindAddress
@@ -669,6 +675,10 @@ func (a *Application) initializeAPIServer() error {
 	// Set Overwatch API handlers (Story 3)
 	if a.backendRegistry != nil {
 		overwatchHandlers := overwatch.NewAPIHandlers(a.backendRegistry, a.overwatchValidator)
+		// ADR-017: Wire learned latency table to API handlers
+		if a.learnedLatencyTable != nil {
+			overwatchHandlers.SetLatencyTable(a.learnedLatencyTable)
+		}
 		server.SetOverwatchHandlers(overwatchHandlers)
 		a.logger.Debug("overwatch API handlers registered")
 
