@@ -210,7 +210,7 @@ resource "azurerm_windows_virtual_machine" "backend_westeurope_win" {
 }
 
 # Custom Script Extension for Windows VM - Simplified Bootstrap
-# Creates a wrapper script to avoid escaping issues with parameters
+# Downloads and runs bootstrap script with inline PowerShell
 resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   name                 = "setup-opengslb"
   virtual_machine_id   = azurerm_windows_virtual_machine.backend_westeurope_win.id
@@ -219,7 +219,7 @@ resource "azurerm_virtual_machine_extension" "backend_win_setup" {
   type_handler_version = "1.10"
 
   protected_settings = jsonencode({
-    commandToExecute = "powershell -ExecutionPolicy Bypass -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '${local.bootstrap_windows_url}' -OutFile C:\\bootstrap.ps1 -UseBasicParsing; powershell -ExecutionPolicy Bypass -File C:\\bootstrap.ps1 -Role agent -OverwatchIP '${local.overwatch_ip}' -Region 'eu-west' -ServiceToken '${local.service_token}' -GossipKey '${local.gossip_key}' -ServiceName 'web' -BackendPort 80 -Version '${local.version}' -GitHubRepo '${local.github_repo}' -VerboseOutput\""
+    commandToExecute = "powershell -ExecutionPolicy Bypass -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri '${local.bootstrap_windows_url}' -OutFile C:\\bootstrap.ps1 -UseBasicParsing; & C:\\bootstrap.ps1 -Role agent -OverwatchIP '${local.overwatch_ip}' -Region 'eu-west' -ServiceToken '${local.service_token}' -GossipKey '${local.gossip_key}' -ServiceName 'web' -BackendPort 80 -Version '${local.version}' -GitHubRepo '${local.github_repo}' -VerboseOutput\""
   })
 
   timeouts {
