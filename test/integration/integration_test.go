@@ -835,10 +835,11 @@ func TestLearnedLatencyRouting(t *testing.T) {
 		}
 
 		// Inject latency data for localhost subnet
-		if err := injectLatency("127.0.0.0/8", "latency.test", "region-a", 100, 10); err != nil {
+		// Note: The table uses /24 prefix for IPv4 lookups, so we must inject with /24
+		if err := injectLatency("127.0.0.0/24", "latency.test", "region-a", 100, 10); err != nil {
 			t.Fatalf("Failed to inject latency for region-a: %v", err)
 		}
-		if err := injectLatency("127.0.0.0/8", "latency.test", "region-b", 10, 10); err != nil {
+		if err := injectLatency("127.0.0.0/24", "latency.test", "region-b", 10, 10); err != nil {
 			t.Fatalf("Failed to inject latency for region-b: %v", err)
 		}
 
