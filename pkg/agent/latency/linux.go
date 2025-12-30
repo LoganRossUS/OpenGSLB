@@ -166,13 +166,10 @@ func (c *linuxCollector) pollFamily(family uint8, now time.Time) {
 		}
 
 		// Convert remote address to netip.Addr
-		var remoteAddr netip.Addr
-		if family == unix.AF_INET {
-			// IPv4: first 4 bytes of destination
-			remoteAddr = netip.AddrFrom4([4]byte(sock.InetDiagMsg.ID.Destination[:4]))
-		} else {
-			// IPv6: full 16 bytes
-			remoteAddr = netip.AddrFrom16([16]byte(sock.InetDiagMsg.ID.Destination))
+		// Note: net.IP can be 4 or 16 bytes; AddrFromSlice handles both correctly
+		remoteAddr, ok := netip.AddrFromSlice(sock.InetDiagMsg.ID.Destination)
+		if !ok {
+			continue
 		}
 
 		// Handle IPv4-mapped IPv6 addresses: normalize to IPv4

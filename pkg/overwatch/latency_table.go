@@ -20,7 +20,8 @@ type LearnedLatencyTable struct {
 	config LearnedLatencyConfig
 	logger *slog.Logger
 
-	// data maps subnet -> backend -> BackendLatency
+	// data maps subnet -> backendKey -> BackendLatency
+	// backendKey is "backend|region" to track each region's latency separately
 	data map[netip.Prefix]map[string]*BackendLatency
 }
 
@@ -122,14 +123,16 @@ func (t *LearnedLatencyTable) Update(agentID, region, backend string, subnets []
 		}
 
 		// Update backend latency
-		entry := backendMap[backend]
+		// Key by backend|region to track each region's latency separately
+		backendKey := backend + "|" + region
+		entry := backendMap[backendKey]
 		if entry == nil {
 			entry = &BackendLatency{
 				Backend: backend,
 				Region:  region,
 				Source:  agentID,
 			}
-			backendMap[backend] = entry
+			backendMap[backendKey] = entry
 		}
 
 		entry.EWMA = time.Duration(s.EWMA)
@@ -186,8 +189,9 @@ func (t *LearnedLatencyTable) GetBestBackend(clientIP netip.Addr, healthy []stri
 	}
 
 	// Find the lowest latency healthy backend
-	for backendName, entry := range backendMap {
-		if !healthySet[backendName] {
+	// Note: backendKey is "backend|region", but we check against entry.Backend
+	for _, entry := range backendMap {
+		if !healthySet[entry.Backend] {
 			continue
 		}
 
@@ -210,7 +214,8 @@ func (t *LearnedLatencyTable) GetBestBackend(clientIP netip.Addr, healthy []stri
 	return bestBackend
 }
 
-// GetLatencyForBackend returns the learned latency for a specific client->backend pair.
+// GetLatencyForBackend returns the lowest learned latency for a specific client->backend pair.
+// Since latency is tracked per region, this finds the best region for the given backend.
 func (t *LearnedLatencyTable) GetLatencyForBackend(clientIP netip.Addr, backend string) (*BackendLatency, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -233,18 +238,29 @@ func (t *LearnedLatencyTable) GetLatencyForBackend(clientIP netip.Addr, backend 
 		return nil, false
 	}
 
-	entry, exists := backendMap[backend]
-	if !exists {
-		return nil, false
+	// Find the lowest latency entry for this backend (across all regions)
+	var bestEntry *BackendLatency
+	for _, entry := range backendMap {
+		if entry.Backend != backend {
+			continue
+		}
+
+		// Check for staleness
+		if time.Since(entry.LastUpdated) > t.config.EntryTTL {
+			continue
+		}
+
+		if bestEntry == nil || entry.EWMA < bestEntry.EWMA {
+			bestEntry = entry
+		}
 	}
 
-	// Check for staleness
-	if time.Since(entry.LastUpdated) > t.config.EntryTTL {
+	if bestEntry == nil {
 		return nil, false
 	}
 
 	// Return a copy to prevent external modification
-	entryCopy := *entry
+	entryCopy := *bestEntry
 	return &entryCopy, true
 }
 
