@@ -136,7 +136,7 @@ runcmd:
     curl -s "http://${local.overwatch_ip}:8080/api/v1/overwatch/backends" | jq .
     SCRIPT
   - chmod +x /usr/local/bin/show-backends
-  - echo "Traffic generator ready. Commands: generate-traffic, show-latency, show-backends, test-cluster" > /etc/motd
+  - 'echo "Traffic generator ready. Run: generate-traffic, show-latency, show-backends, test-cluster" > /etc/motd'
 EOF
   )
 }
@@ -344,7 +344,7 @@ runcmd:
     curl -s "http://${local.overwatch_ip}:8080/api/v1/overwatch/backends" | jq .
     SCRIPT
   - chmod +x /usr/local/bin/show-backends
-  - echo "Traffic generator ready. Commands: generate-traffic, show-latency, show-backends, test-cluster" > /etc/motd
+  - 'echo "Traffic generator ready. Run: generate-traffic, show-latency, show-backends, test-cluster" > /etc/motd'
 EOF
   )
 }
