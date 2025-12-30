@@ -1,0 +1,290 @@
+# =============================================================================
+# OpenGSLB Agent Mode - Complete Configuration Reference
+# =============================================================================
+#
+# This file documents EVERY configuration option available for Agent mode.
+# Agents run alongside your application servers, monitoring health and
+# reporting to Overwatch nodes via gossip protocol.
+#
+# Generate encryption key: openssl rand -base64 32
+#
+# Documentation: https://docs.opengslb.org/en/latest/configuration/
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Runtime Mode (REQUIRED)
+# -----------------------------------------------------------------------------
+# Agent mode monitors local backends and reports to Overwatch nodes
+mode: agent
+
+# -----------------------------------------------------------------------------
+# Configuration Includes (Optional)
+# -----------------------------------------------------------------------------
+# Split configuration across multiple files.
+# includes:
+#   - "backends/*.yaml"
+
+# =============================================================================
+# AGENT-SPECIFIC CONFIGURATION
+# =============================================================================
+
+agent:
+  # ---------------------------------------------------------------------------
+  # Identity Settings
+  # ---------------------------------------------------------------------------
+  identity:
+    # Pre-shared token for authentication with Overwatch
+    # Must match a token in the Overwatch's agent_tokens configuration
+    # Generate: openssl rand -hex 32
+    service_token: "your-service-token-matching-overwatch"
+
+    # Geographic region this agent belongs to
+    # Used for routing decisions and metrics
+    region: "us-east"
+
+    # Path to store agent's TLS certificate (TOFU - Trust On First Use)
+    # Default: /var/lib/opengslb/agent.crt
+    cert_path: "/var/lib/opengslb/agent.crt"
+
+    # Path to store agent's private key
+    # Default: /var/lib/opengslb/agent.key
+    key_path: "/var/lib/opengslb/agent.key"
+
+  # ---------------------------------------------------------------------------
+  # Backend Services to Monitor
+  # ---------------------------------------------------------------------------
+  # Each agent can monitor multiple backends on the same host.
+  backends:
+    # Web service backend
+    - service: "app.example.com"    # Maps to DNS domain
+      address: "127.0.0.1"          # Backend address (usually localhost)
+      port: 80                       # Backend port
+      weight: 100                    # Routing weight (0-1000)
+      health_check:
+        type: http                   # http, https, or tcp
+        interval: 10s                # Check frequency
+        timeout: 5s                  # Check timeout
+        path: /health                # HTTP path to check
+        host: ""                     # Host header (optional)
+        failure_threshold: 3         # Failures before unhealthy
+        success_threshold: 2         # Successes before healthy
+
+    # API service backend (HTTPS)
+    - service: "api.example.com"
+      address: "127.0.0.1"
+      port: 8443
+      weight: 100
+      health_check:
+        type: https
+        interval: 15s
+        timeout: 5s
+        path: /api/health
+        failure_threshold: 3
+        success_threshold: 2
+
+    # Database backend (TCP only)
+    - service: "db.example.com"
+      address: "127.0.0.1"
+      port: 5432
+      weight: 100
+      health_check:
+        type: tcp
+        interval: 10s
+        timeout: 3s
+        failure_threshold: 2
+        success_threshold: 1
+
+    # Low-priority backup server (weight 0 = standby only)
+    - service: "app.example.com"
+      address: "127.0.0.1"
+      port: 8080
+      weight: 0                      # Only used when others fail
+      health_check:
+        type: http
+        interval: 30s
+        timeout: 5s
+        path: /health
+
+  # ---------------------------------------------------------------------------
+  # Predictive Health Monitoring
+  # ---------------------------------------------------------------------------
+  # Agent can predict failures BEFORE they happen by monitoring system metrics.
+  # When thresholds are exceeded, the agent signals "degraded" to Overwatch,
+  # allowing traffic to be routed away proactively.
+  predictive:
+    # Enable predictive health monitoring
+    # Default: false
+    enabled: true
+
+    # How often to check system metrics
+    # Default: 5s
+    check_interval: 5s
+
+    # CPU utilization threshold (0.0 - 1.0)
+    cpu:
+      # Threshold above which to signal degradation (e.g., 0.85 = 85%)
+      threshold: 0.85
+      # How long to wait after recovery before signaling healthy
+      bleed_duration: 30s
+
+    # Memory utilization threshold (0.0 - 1.0)
+    memory:
+      threshold: 0.90               # 90% memory usage triggers degradation
+      bleed_duration: 30s
+
+    # Error rate threshold
+    error_rate:
+      # Error rate threshold (e.g., 0.05 = 5% errors)
+      threshold: 0.05
+      # Time window for calculating error rate
+      window: 1m
+      # Recovery delay
+      bleed_duration: 60s
+
+  # ---------------------------------------------------------------------------
+  # Gossip Protocol Settings
+  # ---------------------------------------------------------------------------
+  gossip:
+    # REQUIRED: 32-byte base64-encoded encryption key
+    # Must match the key used by Overwatch nodes
+    # Generate: openssl rand -base64 32
+    encryption_key: "your-32-byte-base64-encryption-key-here=="
+
+    # List of Overwatch nodes to connect to
+    # Agent will gossip to ALL listed nodes for redundancy
+    # Format: "host:port"
+    overwatch_nodes:
+      - "overwatch-1.internal:7946"
+      - "overwatch-2.internal:7946"
+      - "overwatch-3.internal:7946"
+
+  # ---------------------------------------------------------------------------
+  # Heartbeat Settings
+  # ---------------------------------------------------------------------------
+  heartbeat:
+    # Interval between heartbeat messages to Overwatch
+    # Default: 10s
+    interval: 10s
+
+    # Number of missed heartbeats before Overwatch marks this agent's
+    # backends as stale and removes them from DNS rotation
+    # Default: 3
+    missed_threshold: 3
+
+  # ---------------------------------------------------------------------------
+  # Passive Latency Learning (ADR-017)
+  # ---------------------------------------------------------------------------
+  # Learn real client-to-backend latency by reading TCP RTT data from the OS.
+  # This data is gossiped to Overwatch for intelligent routing decisions.
+  #
+  # Requirements:
+  # - Linux: CAP_NET_ADMIN capability or root
+  # - Windows: Administrator privileges
+  latency_learning:
+    # Enable passive latency learning
+    # Default: false
+    enabled: true
+
+    # How often to poll the OS for TCP connection RTT data
+    # Default: 10s
+    poll_interval: 10s
+
+    # Minimum connection age before collecting RTT data
+    # New connections have unstable RTT measurements
+    # Default: 5s
+    min_connection_age: 5s
+
+    # IPv4 subnet prefix length for aggregation
+    # /24 means all IPs in 10.0.1.0-10.0.1.255 are grouped together
+    # Default: 24
+    ipv4_prefix: 24
+
+    # IPv6 subnet prefix length for aggregation
+    # Default: 48
+    ipv6_prefix: 48
+
+    # EWMA (Exponential Weighted Moving Average) smoothing factor
+    # Higher values (closer to 1.0) give more weight to recent samples
+    # Lower values provide more stability
+    # Default: 0.3
+    ewma_alpha: 0.3
+
+    # Maximum number of subnets to track
+    # Prevents unbounded memory growth from many unique client subnets
+    # Default: 100000
+    max_subnets: 100000
+
+    # How long to keep subnet entries without updates
+    # Stale entries are automatically cleaned up
+    # Default: 168h (7 days)
+    subnet_ttl: 168h
+
+    # Minimum samples required before reporting a subnet's latency
+    # Prevents noisy data from single observations
+    # Default: 5
+    min_samples: 5
+
+    # How often to send latency reports to Overwatch nodes
+    # Default: 30s
+    report_interval: 30s
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+
+logging:
+  # Log level: debug, info, warn, error
+  # Use debug for troubleshooting, info for production
+  # Default: info
+  level: info
+
+  # Log format: json (structured) or text (human-readable)
+  # Use json for production log aggregation
+  # Default: json
+  format: json
+
+# =============================================================================
+# METRICS CONFIGURATION (Prometheus)
+# =============================================================================
+
+metrics:
+  # Enable Prometheus metrics endpoint
+  # Default: true
+  enabled: true
+
+  # Address for metrics server
+  # Metrics available at http://address/metrics
+  # Default: ":9091"
+  address: ":9091"
+
+# =============================================================================
+# NOTES FOR OPERATORS
+# =============================================================================
+#
+# 1. SECURITY
+#    - The encryption_key MUST match between agents and Overwatch nodes
+#    - Service tokens are verified on first connection (TOFU model)
+#    - After initial trust, certificates are pinned for security
+#
+# 2. CAPABILITY REQUIREMENTS (Linux)
+#    For latency_learning, the agent needs CAP_NET_ADMIN:
+#    sudo setcap cap_net_admin+ep /usr/local/bin/opengslb
+#
+# 3. WINDOWS REQUIREMENTS
+#    For latency_learning on Windows:
+#    - Run as Administrator
+#    - Uses GetPerTcpConnectionEStats API
+#
+# 4. MULTIPLE BACKENDS
+#    A single agent can monitor multiple backends on the same host.
+#    Each backend independently reports health to Overwatch.
+#
+# 5. GRACEFUL SHUTDOWN
+#    When the agent stops (SIGTERM/SIGINT), it deregisters all backends
+#    from Overwatch before exiting, enabling immediate failover.
+#
+# 6. HOT RELOAD
+#    Send SIGHUP to reload configuration without restart:
+#    kill -HUP $(pgrep opengslb)
+#
+# =============================================================================

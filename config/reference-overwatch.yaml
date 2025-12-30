@@ -1,0 +1,463 @@
+# =============================================================================
+# OpenGSLB Overwatch Mode - Complete Configuration Reference
+# =============================================================================
+#
+# This file documents EVERY configuration option available for Overwatch mode.
+# Overwatch nodes serve authoritative DNS and validate agent health claims.
+#
+# Generate encryption key: openssl rand -base64 32
+#
+# Documentation: https://docs.opengslb.org/en/latest/configuration/
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Runtime Mode (REQUIRED)
+# -----------------------------------------------------------------------------
+# Overwatch mode serves DNS and coordinates agents
+mode: overwatch
+
+# -----------------------------------------------------------------------------
+# Configuration Includes (Optional)
+# -----------------------------------------------------------------------------
+# Split configuration across multiple files for team-based management.
+# Patterns are relative to this config file's directory.
+# includes:
+#   - "regions/*.yaml"           # Load all region definitions
+#   - "domains/**/*.yaml"        # Load all domain definitions recursively
+#   - "/etc/opengslb/conf.d/*.yaml"  # Absolute path also supported
+
+# =============================================================================
+# OVERWATCH-SPECIFIC CONFIGURATION
+# =============================================================================
+
+overwatch:
+  # ---------------------------------------------------------------------------
+  # Identity Settings
+  # ---------------------------------------------------------------------------
+  identity:
+    # Unique identifier for this Overwatch node
+    # Default: hostname
+    node_id: "overwatch-us-east-1"
+
+    # Geographic region this Overwatch serves
+    # Used for logging and metrics
+    region: "us-east"
+
+  # ---------------------------------------------------------------------------
+  # Agent Authentication Tokens
+  # ---------------------------------------------------------------------------
+  # Map of service names to their pre-shared authentication tokens.
+  # Agents must present a matching token to register backends.
+  # Generate tokens: openssl rand -hex 32
+  agent_tokens:
+    web-service: "your-secure-token-for-web-service"
+    api-service: "your-secure-token-for-api-service"
+    # Add more services as needed
+
+  # ---------------------------------------------------------------------------
+  # Gossip Protocol Settings (Agent Communication)
+  # ---------------------------------------------------------------------------
+  gossip:
+    # Address to bind for receiving agent gossip messages
+    # Format: "host:port"
+    # Default: "0.0.0.0:7946"
+    bind_address: "0.0.0.0:7946"
+
+    # REQUIRED: 32-byte base64-encoded encryption key
+    # Must match the key used by all agents
+    # Generate: openssl rand -base64 32
+    encryption_key: "your-32-byte-base64-encryption-key-here=="
+
+    # Interval between failure detection probes
+    # Default: 1s
+    probe_interval: 1s
+
+    # Timeout for a single probe attempt
+    # Default: 500ms
+    probe_timeout: 500ms
+
+    # Interval between gossip protocol messages
+    # Default: 200ms
+    gossip_interval: 200ms
+
+  # ---------------------------------------------------------------------------
+  # External Health Validation
+  # ---------------------------------------------------------------------------
+  # Overwatch independently validates agent health claims.
+  # External validation ALWAYS overrides agent claims (security feature).
+  validation:
+    # Enable/disable external validation
+    # Default: true
+    enabled: true
+
+    # Frequency of validation health checks
+    # Default: 30s
+    check_interval: 30s
+
+    # Timeout for each validation check
+    # Default: 5s
+    check_timeout: 5s
+
+  # ---------------------------------------------------------------------------
+  # Stale Backend Detection
+  # ---------------------------------------------------------------------------
+  # Detect and remove backends that stop sending heartbeats.
+  stale:
+    # Time without heartbeat before marking backend as stale
+    # Stale backends are excluded from DNS responses
+    # Default: 30s
+    threshold: 30s
+
+    # Time after which stale backends are completely removed
+    # Default: 5m
+    remove_after: 5m
+
+  # ---------------------------------------------------------------------------
+  # DNSSEC Configuration
+  # ---------------------------------------------------------------------------
+  dnssec:
+    # Enable DNSSEC signing (strongly recommended)
+    # Default: true
+    enabled: true
+
+    # If disabling DNSSEC, you MUST acknowledge the security implications
+    # Required text: "I understand that disabling DNSSEC reduces security"
+    # security_acknowledgment: ""
+
+    # Signing algorithm
+    # Options: ECDSAP256SHA256, ECDSAP384SHA384, RSASHA256, RSASHA512
+    # Default: ECDSAP256SHA256
+    algorithm: "ECDSAP256SHA256"
+
+    # Key synchronization between Overwatch nodes
+    key_sync:
+      # API addresses of peer Overwatch nodes for key sync
+      peers:
+        - "http://overwatch-2.internal:9090"
+        - "http://overwatch-3.internal:9090"
+
+      # Interval between key sync polls
+      # Default: 1h
+      poll_interval: 1h
+
+      # Timeout for key sync requests
+      # Default: 30s
+      timeout: 30s
+
+  # ---------------------------------------------------------------------------
+  # Geolocation Routing Configuration
+  # ---------------------------------------------------------------------------
+  geolocation:
+    # Path to MaxMind GeoLite2-Country or GeoIP2-Country database
+    # Required for geolocation routing to function
+    # Download free database: https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
+    database_path: "/var/lib/opengslb/GeoLite2-Country.mmdb"
+
+    # Fallback region when geo lookup fails or IP not found
+    # REQUIRED when using geolocation routing
+    default_region: "us-east"
+
+    # Parse EDNS Client Subnet (ECS) for accurate geo when using public resolvers
+    # Default: true
+    ecs_enabled: true
+
+    # Custom CIDR-to-region mappings (evaluated BEFORE GeoIP database)
+    # Useful for corporate networks, VPNs, or known IP ranges
+    custom_mappings:
+      - cidr: "10.0.0.0/8"
+        region: "us-east"
+        comment: "Corporate internal network - East Coast DC"
+      - cidr: "172.16.0.0/12"
+        region: "us-west"
+        comment: "Corporate internal network - West Coast DC"
+      - cidr: "192.168.0.0/16"
+        region: "eu-west"
+        comment: "European office networks"
+
+  # ---------------------------------------------------------------------------
+  # Data Directory
+  # ---------------------------------------------------------------------------
+  # Directory for persistent data (bbolt database for state, keys, etc.)
+  # Default: /var/lib/opengslb
+  data_dir: "/var/lib/opengslb"
+
+# =============================================================================
+# DNS SERVER CONFIGURATION
+# =============================================================================
+
+dns:
+  # Address and port to listen for DNS queries
+  # Format: "host:port" or ":port" for all interfaces
+  # Default: ":53"
+  listen_address: ":53"
+
+  # Default TTL for DNS responses (seconds)
+  # Can be overridden per-domain
+  # Default: 60
+  default_ttl: 60
+
+  # When all backends for a domain are unhealthy:
+  # - true: Return the last known healthy backend (risky but available)
+  # - false: Return SERVFAIL (safe but unavailable)
+  # Default: false
+  return_last_healthy: false
+
+  # Authoritative zones this Overwatch serves
+  # Queries outside these zones return REFUSED
+  # zones:
+  #   - "example.com."
+  #   - "internal.corp."
+
+# =============================================================================
+# API SERVER CONFIGURATION
+# =============================================================================
+
+api:
+  # Enable the HTTP API server
+  # Default: true
+  enabled: true
+
+  # Address and port for the API server
+  # Default: ":9090"
+  address: ":9090"
+
+  # IP networks allowed to access the API
+  # Empty list = localhost only
+  # Use ["0.0.0.0/0"] for all networks (not recommended in production)
+  allowed_networks:
+    - "127.0.0.1/32"      # Localhost IPv4
+    - "::1/128"           # Localhost IPv6
+    - "10.0.0.0/8"        # Internal network
+    - "172.16.0.0/12"     # Docker networks
+    - "192.168.0.0/16"    # Private networks
+
+  # Trust X-Forwarded-For headers for client IP detection
+  # Enable only if behind a trusted reverse proxy
+  # Default: false
+  trust_proxy_headers: false
+
+# =============================================================================
+# STATIC REGIONS CONFIGURATION (Optional for Overwatch)
+# =============================================================================
+# Static regions can be defined for fallback or standalone operation.
+# In typical agent-overwatch deployments, backends register dynamically.
+
+regions:
+  - name: us-east
+    # Countries served by this region (ISO 3166-1 alpha-2 codes)
+    countries: ["US", "CA", "MX"]
+    # Continents served (AF, AN, AS, EU, NA, OC, SA)
+    continents: ["NA"]
+
+    # Static servers (optional - agents typically register dynamically)
+    servers:
+      - address: "10.0.1.10"
+        port: 80
+        weight: 100
+        service: "app.example.com"
+      - address: "10.0.1.11"
+        port: 80
+        weight: 100
+        service: "app.example.com"
+      - address: "2001:db8::1"    # IPv6 support
+        port: 80
+        weight: 100
+        service: "app.example.com"
+
+    # Health check configuration for static servers
+    health_check:
+      # Type: http, https, or tcp
+      type: http
+      # Check interval
+      interval: 30s
+      # Check timeout
+      timeout: 5s
+      # HTTP/HTTPS path to check
+      path: /health
+      # Host header for HTTP checks (optional)
+      host: ""
+      # Failures before marking unhealthy
+      failure_threshold: 3
+      # Successes before marking healthy again
+      success_threshold: 2
+
+  - name: us-west
+    countries: ["US"]
+    continents: ["NA"]
+    servers:
+      - address: "10.0.2.10"
+        port: 80
+        weight: 100
+        service: "app.example.com"
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+
+  - name: eu-west
+    countries: ["GB", "DE", "FR", "NL", "IE"]
+    continents: ["EU"]
+    servers:
+      - address: "10.0.3.10"
+        port: 80
+        weight: 100
+        service: "app.example.com"
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+
+  - name: ap-southeast
+    countries: ["SG", "AU", "JP", "KR", "IN"]
+    continents: ["AS", "OC"]
+    servers:
+      - address: "10.0.4.10"
+        port: 80
+        weight: 100
+        service: "app.example.com"
+    health_check:
+      type: http
+      interval: 30s
+      timeout: 5s
+      path: /health
+
+  # Example: Database region with TCP health checks
+  - name: database
+    servers:
+      - address: "10.0.5.10"
+        port: 5432
+        weight: 100
+        service: "db.example.com"
+    health_check:
+      type: tcp
+      interval: 15s
+      timeout: 3s
+      failure_threshold: 2
+      success_threshold: 1
+
+# =============================================================================
+# DOMAINS CONFIGURATION
+# =============================================================================
+# Define DNS domains and their routing behavior.
+
+domains:
+  # ---------------------------------------------------------------------------
+  # Round-Robin Example
+  # ---------------------------------------------------------------------------
+  - name: app.example.com
+    routing_algorithm: round-robin  # Even distribution
+    regions:
+      - us-east
+      - us-west
+      - eu-west
+      - ap-southeast
+    ttl: 30  # Short TTL for faster failover
+
+  # ---------------------------------------------------------------------------
+  # Weighted Routing Example
+  # ---------------------------------------------------------------------------
+  - name: weighted.example.com
+    routing_algorithm: weighted  # Distribute by server weight
+    regions:
+      - us-east   # Higher weight servers get more traffic
+      - us-west
+    ttl: 60
+
+  # ---------------------------------------------------------------------------
+  # Failover (Active/Standby) Example
+  # ---------------------------------------------------------------------------
+  - name: api.example.com
+    routing_algorithm: failover  # Primary -> Secondary -> Tertiary
+    regions:
+      - us-east    # Primary
+      - us-west    # Secondary
+      - eu-west    # Tertiary
+    ttl: 15  # Very short TTL for fast failover
+
+  # ---------------------------------------------------------------------------
+  # Geolocation Routing Example
+  # ---------------------------------------------------------------------------
+  - name: global.example.com
+    routing_algorithm: geolocation  # Route by client location
+    regions:
+      - us-east
+      - us-west
+      - eu-west
+      - ap-southeast
+    ttl: 60
+
+  # ---------------------------------------------------------------------------
+  # Latency-Based Routing Example (Active Health Check Latency)
+  # ---------------------------------------------------------------------------
+  - name: fast.example.com
+    routing_algorithm: latency  # Route to lowest-latency backend
+    regions:
+      - us-east
+      - us-west
+      - eu-west
+    ttl: 30
+    latency_config:
+      # EMA smoothing factor (0-1). Higher = more responsive to changes
+      smoothing_factor: 0.3
+      # Exclude servers with latency above this threshold (ms)
+      max_latency_ms: 500
+      # Minimum samples before using latency data
+      min_samples: 3
+
+  # ---------------------------------------------------------------------------
+  # Learned Latency Routing Example (Passive TCP RTT - ADR-017)
+  # ---------------------------------------------------------------------------
+  # Uses real client-to-backend latency learned from TCP connections.
+  # Requires agents with latency_learning enabled.
+  - name: optimized.example.com
+    routing_algorithm: learned_latency
+    regions:
+      - us-east
+      - us-west
+      - eu-west
+      - ap-southeast
+    ttl: 60
+    latency_config:
+      # Exclude servers with latency above this threshold (ms)
+      max_latency_ms: 300
+      # Minimum samples before using learned latency data
+      min_samples: 5
+
+  # ---------------------------------------------------------------------------
+  # Database (TCP) Example
+  # ---------------------------------------------------------------------------
+  - name: db.example.com
+    routing_algorithm: round-robin
+    regions:
+      - database
+    ttl: 60
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+
+logging:
+  # Log level: debug, info, warn, error
+  # Default: info
+  level: info
+
+  # Log format: json (structured) or text (human-readable)
+  # Use json for production, text for development
+  # Default: json
+  format: json
+
+# =============================================================================
+# METRICS CONFIGURATION (Prometheus)
+# =============================================================================
+
+metrics:
+  # Enable Prometheus metrics endpoint
+  # Default: true
+  enabled: true
+
+  # Address for metrics server
+  # Metrics available at http://address/metrics
+  # Default: ":9091"
+  address: ":9091"
