@@ -388,7 +388,7 @@ overwatch:
     fallback: geo
 
 domains:
-  - name: "${SERVICE_NAME}"
+  - name: "${SERVICE_NAME}.test.opengslb.local"
     ttl: 60
     routing_algorithm: latency
 
@@ -419,7 +419,7 @@ agent:
     region: "${REGION:-default}"
     service_token: "${SERVICE_TOKEN}"
   backends:
-    - service: "${SERVICE_NAME}"
+    - service: "${SERVICE_NAME}.test.opengslb.local"
       address: "${local_ip}"
       port: ${BACKEND_PORT}
       weight: 100

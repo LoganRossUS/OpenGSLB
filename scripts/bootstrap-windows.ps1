@@ -373,12 +373,9 @@ overwatch:
     fallback: geo
 
 domains:
-  - name: "test.opengslb.local"
-    services:
-      - name: "$ServiceName"
-        routing:
-          algorithm: latency
-          fallback: geo
+  - name: "$ServiceName.test.opengslb.local"
+    ttl: 60
+    routing_algorithm: latency
 
 regions:
   - id: "us-east"
@@ -406,7 +403,7 @@ agent:
     region: "$(if ($Region) { $Region } else { 'default' })"
     service_token: "$ServiceToken"
   backends:
-    - service: "$ServiceName"
+    - service: "$ServiceName.test.opengslb.local"
       address: "$localIP"
       port: $BackendPort
       weight: 100

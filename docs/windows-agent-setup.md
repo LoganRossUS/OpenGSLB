@@ -73,8 +73,8 @@ agent:
     service_token: "your-token-here"   # Must match Overwatch configuration
 
   backends:
-    - service: "web"                   # Service name to register
-      address: "10.2.1.11"             # This server's IP address
+    - service: "web.test.opengslb.local"  # Service FQDN (must match Overwatch domain)
+      address: "10.2.1.11"                # This server's IP address
       port: 80                         # Backend port (IIS, nginx, etc.)
       weight: 100
       health_check:
@@ -102,6 +102,7 @@ metrics:
 - `agent_id`: Unique name for this agent (e.g., hostname)
 - `region`: Your region identifier (must match Overwatch regions config)
 - `service_token`: Authentication token (get from Overwatch admin)
+- `service`: FQDN format like `web.test.opengslb.local` (must match Overwatch domain config)
 - `address`: This server's IP address
 - `overwatch_nodes`: IP:port of your Overwatch server
 - `encryption_key`: Base64-encoded 32-byte gossip encryption key
