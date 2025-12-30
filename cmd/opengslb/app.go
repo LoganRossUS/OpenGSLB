@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -553,11 +554,19 @@ func (a *Application) initializeGossipHandler() error {
 func (a *Application) initializeDNSServer() error {
 	// v1.1.0: Use backend registry for latency (unified for static, agent, and API servers)
 	latencyProvider := &backendRegistryLatencyProvider{registry: a.backendRegistry}
+
+	// ADR-017: Create adapter for learned latency routing
+	var learnedLatencyProvider routing.LearnedLatencyProvider
+	if a.learnedLatencyTable != nil {
+		learnedLatencyProvider = &learnedLatencyTableAdapter{table: a.learnedLatencyTable}
+	}
+
 	routerFactory := routing.NewFactory(routing.FactoryConfig{
-		LatencyProvider:   latencyProvider,
-		MinLatencySamples: 1,             // Backend registry tracks latency from external validation
-		GeoResolver:       a.geoResolver, // Demo 4: GeoIP-based routing
-		Logger:            a.logger,
+		LatencyProvider:        latencyProvider,
+		LearnedLatencyProvider: learnedLatencyProvider, // ADR-017: Passive latency learning
+		MinLatencySamples:      1,                      // Backend registry tracks latency from external validation
+		GeoResolver:            a.geoResolver,          // Demo 4: GeoIP-based routing
+		Logger:                 a.logger,
 	})
 
 	registry, err := dns.BuildRegistry(a.config, routerFactory.NewRouter)
@@ -1379,4 +1388,25 @@ func (p *backendRegistryLatencyProvider) GetLatency(address string, port int) ro
 		Samples:         info.Samples,
 		HasData:         info.HasData,
 	}
+}
+
+// learnedLatencyTableAdapter adapts LearnedLatencyTable to routing.LearnedLatencyProvider.
+// ADR-017: Enables latency routing based on passive TCP RTT learning.
+type learnedLatencyTableAdapter struct {
+	table *overwatch.LearnedLatencyTable
+}
+
+// GetLatencyForBackend returns learned latency for a client->backend pair.
+func (a *learnedLatencyTableAdapter) GetLatencyForBackend(clientIP netip.Addr, backend string) (*routing.LearnedLatencyData, bool) {
+	entry, ok := a.table.GetLatencyForBackend(clientIP, backend)
+	if !ok {
+		return nil, false
+	}
+	// Convert overwatch.BackendLatency to routing.LearnedLatencyData
+	return &routing.LearnedLatencyData{
+		Backend:     entry.Backend,
+		EWMA:        entry.EWMA,
+		SampleCount: entry.SampleCount,
+		LastUpdated: entry.LastUpdated,
+	}, true
 }
