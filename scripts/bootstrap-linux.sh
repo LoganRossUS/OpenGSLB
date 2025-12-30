@@ -432,14 +432,14 @@ agent:
     overwatch_nodes:
       - "${OVERWATCH_IP}:7946"
     encryption_key: "${GOSSIP_KEY}"
-  latency:
+  latency_learning:
     enabled: true
     poll_interval: 10s
     ipv4_prefix: 24
     min_connection_age: 5s
     max_subnets: 10000
-    subnet_ttl: 24h
-    min_samples_per_subnet: 3
+    subnet_ttl: 168h
+    min_samples: 3
     report_interval: 30s
     ewma_alpha: 0.3
 

@@ -88,7 +88,7 @@ agent:
       - "10.1.1.10:7946"               # Overwatch gossip address
     encryption_key: "your-base64-key"  # 32-byte base64 gossip key
 
-  latency:
+  latency_learning:
     enabled: true
     poll_interval: 10s
     report_interval: 30s
