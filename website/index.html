@@ -1,0 +1,1006 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenGSLB | DNS-First Global Load Balancing</title>
+    <meta name="description" content="Enterprise GSLB without the enterprise tax. Self-hosted, predictive health checks, zero vendor lock-in.">
+    <meta name="keywords" content="GSLB, global server load balancing, DNS load balancer, open source GSLB, self-hosted load balancing, DNS failover, health checks, weighted routing, geolocation DNS, multi-datacenter, high availability, F5 GTM alternative, NetScaler alternative">
+    <meta name="author" content="Logan Ross">
+    <meta name="robots" content="index, follow">
+    <meta name="theme-color" content="#0A84FF">
+    <link rel="canonical" href="https://opengslb.org/">
+    <link rel="icon" type="image/png" href="https://raw.githubusercontent.com/LoganRossUS/OpenGSLB/main/docs/images/OpenGSLB.png">
+    <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/LoganRossUS/OpenGSLB/main/docs/images/OpenGSLB.png">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://opengslb.org/">
+    <meta property="og:title" content="OpenGSLB | DNS-First Global Load Balancing">
+    <meta property="og:description" content="Enterprise GSLB without the enterprise tax. Self-hosted, predictive health checks, zero vendor lock-in. Open source alternative to F5 GTM and NetScaler.">
+    <meta property="og:image" content="https://raw.githubusercontent.com/LoganRossUS/OpenGSLB/main/docs/images/OpenGSLB.png">
+    <meta property="og:site_name" content="OpenGSLB">
+    <meta property="og:locale" content="en_US">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="https://opengslb.org/">
+    <meta name="twitter:title" content="OpenGSLB | DNS-First Global Load Balancing">
+    <meta name="twitter:description" content="Enterprise GSLB without the enterprise tax. Self-hosted, predictive health checks, zero vendor lock-in.">
+    <meta name="twitter:image" content="https://raw.githubusercontent.com/LoganRossUS/OpenGSLB/main/docs/images/OpenGSLB.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "OpenGSLB",
+        "applicationCategory": "NetworkApplication",
+        "operatingSystem": "Linux, Windows",
+        "description": "Open-source, self-hosted Global Server Load Balancing (GSLB) system for intelligent DNS-based traffic distribution across multiple data centers and cloud regions.",
+        "url": "https://opengslb.org/",
+        "downloadUrl": "https://github.com/LoganRossUS/OpenGSLB/releases",
+        "softwareVersion": "1.1.0",
+        "author": {
+            "@type": "Person",
+            "name": "Logan Ross"
+        },
+        "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+        "codeRepository": "https://github.com/LoganRossUS/OpenGSLB",
+        "programmingLanguage": "Go",
+        "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+        },
+        "featureList": [
+            "DNS-based global load balancing",
+            "Round-robin routing",
+            "Weighted routing",
+            "Active/standby failover",
+            "Geolocation routing",
+            "Latency-based routing",
+            "EDNS Client Subnet (ECS) support",
+            "HTTP and TCP health checks",
+            "Predictive health monitoring",
+            "DNSSEC support",
+            "Agent-Overwatch architecture",
+            "Unified server architecture",
+            "Server management CRUD API",
+            "Dynamic DNS registration",
+            "Prometheus metrics",
+            "Configuration hot-reload",
+            "CLI management tool"
+        ],
+        "screenshot": "https://raw.githubusercontent.com/LoganRossUS/OpenGSLB/main/docs/images/distributed-architecture.png"
+    }
+    </script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #0A84FF;
+            --success: #00D084;
+            --danger: #FF453A;
+            --bg-dark: #0f172a;
+            --bg-darker: #0a1120;
+            --border: #1e293b;
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+        }
+        body {
+            font-family: 'IBM Plex Sans', system-ui, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            line-height: 1.7;
+        }
+        .mono, code, pre, .code-block, .terminal-prompt, .navbar-brand {
+            font-family: 'IBM Plex Mono', 'Courier New', monospace;
+        }
+        .navbar {
+            background: rgba(15, 23, 42, 0.95);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--border);
+            padding: 0;
+        }
+        .navbar .navbar-brand {
+            padding: 8px 0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .navbar .logo-img {
+            height: 64px;
+            width: auto;
+            object-fit: contain;
+        }
+        .navbar .logo-text {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: white;
+            letter-spacing: -0.02em;
+        }
+        .navbar .nav-link {
+            font-family: 'IBM Plex Sans', sans-serif;
+            color: var(--text-secondary) !important;
+            font-weight: 500;
+            padding: 0.6rem 1.2rem !important;
+            border-radius: 6px;
+            transition: all 0.2s;
+            font-size: 0.95rem;
+        }
+        .navbar .nav-link:hover {
+            color: white !important;
+            background: rgba(255,255,255,0.08);
+        }
+        .hero {
+            background: linear-gradient(135deg, #0A84FF 0%, #7B68EE 50%, #D946EF 100%);
+            padding: 160px 0 120px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background:
+                repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0px, transparent 1px, transparent 40px, rgba(255,255,255,0.02) 41px),
+                repeating-linear-gradient(0deg, rgba(255,255,255,0.02) 0px, transparent 1px, transparent 40px, rgba(255,255,255,0.02) 41px);
+            opacity: 0.3;
+        }
+        .hero-content { position: relative; z-index: 1; }
+        .hero h1 {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 4rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            letter-spacing: -0.03em;
+            text-shadow: 0 2px 20px rgba(0,0,0,0.3);
+            line-height: 1;
+            display: flex;
+            align-items: baseline;
+            justify-content: center;
+        }
+        .hero .terminal-prompt {
+            color: rgba(255,255,255,0.7);
+            font-size: 3.5rem;
+            margin-right: 0.5rem;
+        }
+        .hero .tagline {
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 1.3rem;
+            max-width: 700px;
+            margin: 0 auto 1rem;
+            opacity: 0.95;
+            font-weight: 500;
+        }
+        .hero .sub-tagline {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 1rem;
+            color: rgba(255,255,255,0.8);
+            max-width: 600px;
+            margin: 0 auto 3rem;
+        }
+        .hero-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .btn-terminal {
+            font-family: 'IBM Plex Mono', monospace;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(10px);
+            color: white;
+            border: 1px solid rgba(255,255,255,0.2);
+            padding: 14px 36px;
+            font-size: 1rem;
+            border-radius: 6px;
+            transition: all 0.2s;
+            font-weight: 500;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+        }
+        .btn-terminal:hover {
+            background: rgba(0,0,0,0.8);
+            border-color: rgba(255,255,255,0.4);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            color: white;
+        }
+        .btn-terminal i { margin-right: 8px; }
+        .btn-download {
+            background: var(--success);
+            border-color: var(--success);
+        }
+        .btn-download:hover {
+            background: #00b872;
+            border-color: #00b872;
+        }
+        .version-badge {
+            font-size: 0.75rem;
+            background: rgba(255,255,255,0.2);
+            padding: 2px 8px;
+            border-radius: 4px;
+            margin-left: 8px;
+        }
+        .new-badge {
+            font-size: 0.65rem;
+            background: var(--danger);
+            color: white;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-left: 6px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .value-prop {
+            padding: 80px 0;
+            background: var(--bg-darker);
+            border-top: 1px solid var(--border);
+        }
+        .value-prop h2 {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 2.5rem;
+            margin-bottom: 3rem;
+            text-align: center;
+            font-weight: 600;
+        }
+        .comparison-table {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: #111827;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .comparison-table table { width: 100%; margin: 0; }
+        .comparison-table th {
+            font-family: 'IBM Plex Mono', monospace;
+            background: #1e293b;
+            padding: 1rem;
+            font-weight: 600;
+            border-bottom: 2px solid var(--border);
+            font-size: 0.9rem;
+        }
+        .comparison-table td {
+            padding: 1rem;
+            border-bottom: 1px solid #1e293b;
+            font-size: 0.95rem;
+        }
+        .comparison-table tr:last-child td { border-bottom: none; }
+        .comparison-table td:first-child { font-family: 'IBM Plex Mono', monospace; font-weight: 500; }
+        .comparison-table .check { color: var(--success); font-weight: bold; }
+        .comparison-table .cross { color: var(--text-secondary); opacity: 0.5; }
+        .comparison-table .highlight { background: rgba(10, 132, 255, 0.08); }
+        .section { padding: 80px 0; }
+        .section-alt { background: var(--bg-darker); border-top: 1px solid var(--border); }
+        .section h2 {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 2.5rem;
+            margin-bottom: 3rem;
+            font-weight: 600;
+        }
+        .architecture-diagram {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: #0d1117;
+            padding: 2rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+        }
+        .architecture-diagram img {
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 8px;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+        .feature-card {
+            background: #111827;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 2rem;
+            transition: all 0.3s;
+        }
+        .feature-card:hover {
+            transform: translateY(-5px);
+            border-color: var(--primary);
+            box-shadow: 0 12px 30px rgba(10, 132, 255, 0.15);
+        }
+        .feature-card h4 {
+            font-family: 'IBM Plex Mono', monospace;
+            color: var(--primary);
+            margin-bottom: 1rem;
+            font-size: 1.2rem;
+            font-weight: 600;
+        }
+        .feature-card p {
+            color: var(--text-secondary);
+            line-height: 1.6;
+            margin: 0;
+        }
+        .code-block {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 1.5rem;
+            overflow-x: auto;
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+        .code-block-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+            padding-bottom: 0.8rem;
+            border-bottom: 1px solid #30363d;
+        }
+        .code-block-title {
+            font-family: 'IBM Plex Mono', monospace;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        .code-content { color: #e6edf3; }
+        .code-comment { color: #8b949e; }
+        .roadmap { padding: 80px 0; }
+        .roadmap h2 { text-align: center; }
+        .timeline-container {
+            position: relative;
+            max-width: 1200px;
+            margin: 4rem auto 0;
+            padding: 0 20px;
+        }
+        .timeline-track {
+            display: flex;
+            gap: 3rem;
+            overflow-x: auto;
+            padding: 2rem 0 4rem;
+            scroll-snap-type: x mandatory;
+            -webkit-overflow-scrolling: touch;
+        }
+        .timeline-track::-webkit-scrollbar { height: 8px; }
+        .timeline-track::-webkit-scrollbar-track { background: #1e293b; border-radius: 4px; }
+        .timeline-track::-webkit-scrollbar-thumb { background: var(--primary); border-radius: 4px; }
+        .timeline-item {
+            min-width: 350px;
+            scroll-snap-align: start;
+            position: relative;
+        }
+        .timeline-marker {
+            width: 16px;
+            height: 16px;
+            background: var(--primary);
+            border-radius: 50%;
+            border: 3px solid var(--bg-dark);
+            margin: 0 auto 1.5rem;
+            position: relative;
+            z-index: 2;
+        }
+        .timeline-item.completed .timeline-marker { background: var(--success); }
+        .timeline-card {
+            background: #111827;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.5rem;
+            min-height: 280px;
+        }
+        .timeline-item.completed .timeline-card { border-left: 3px solid var(--success); }
+        .timeline-item:not(.completed) .timeline-card { border-left: 3px solid var(--primary); }
+        .timeline-phase {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .timeline-title {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+        .timeline-features {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .timeline-features li {
+            padding: 0.4rem 0;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            padding-left: 1.2rem;
+            position: relative;
+        }
+        .timeline-features li:before {
+            content: "\25B8";
+            position: absolute;
+            left: 0;
+            color: var(--primary);
+            font-weight: bold;
+        }
+        .timeline-item.completed .timeline-features li:before {
+            content: "\2713";
+            color: var(--success);
+        }
+        .security-badge {
+            display: inline-block;
+            background: rgba(0, 208, 132, 0.15);
+            color: var(--success);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        footer {
+            background: #000;
+            padding: 3rem 0 1.5rem;
+            margin-top: 5rem;
+            border-top: 1px solid var(--border);
+        }
+        footer a {
+            color: var(--primary);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        footer a:hover { color: #60a5fa; }
+        .footer-mono {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        .coffee-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #FFDD00;
+            color: #000;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .coffee-link:hover {
+            background: #FFE433;
+            transform: translateY(-2px);
+            color: #000;
+        }
+        @media (max-width: 768px) {
+            .hero { padding: 120px 0 80px; }
+            .hero h1 { font-size: 2.8rem; }
+            .hero .terminal-prompt { font-size: 2.5rem; }
+            .hero .tagline { font-size: 1.1rem; }
+            .hero-buttons { flex-direction: column; align-items: center; }
+            .btn-terminal { width: 100%; max-width: 300px; justify-content: center; }
+            .comparison-table { overflow-x: auto; }
+            .comparison-table table { min-width: 800px; }
+            .section h2 { font-size: 2rem; }
+            .architecture-diagram { padding: 1rem; }
+            .navbar .logo-img { height: 42px; }
+            .navbar .logo-text { font-size: 1.1rem; }
+            .navbar .navbar-brand { gap: 8px; }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg fixed-top">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <img src="https://raw.githubusercontent.com/LoganRossUS/OpenGSLB/main/docs/images/OpenGSLB.png" alt="OpenGSLB Logo" class="logo-img">
+                <span class="logo-text">OpenGSLB</span>
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="nav">
+                <ul class="navbar-nav ms-auto gap-2">
+                    <li class="nav-item"><a class="nav-link" href="#why">Why OpenGSLB</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#architecture">Architecture</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#security">Security</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#features">Features</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#quickstart">Quick Start</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#roadmap">Roadmap</a></li>
+                    <li class="nav-item"><a class="nav-link" href="https://docs.opengslb.org" target="_blank">Documentation</a></li>
+                    <li class="nav-item"><a class="nav-link" href="support.html">Support</a></li>
+                    <li class="nav-item"><a class="nav-link" href="https://github.com/LoganRossUS/OpenGSLB" target="_blank">GitHub</a></li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <section class="hero text-white">
+        <div class="container hero-content">
+            <h1><span class="terminal-prompt">$</span> OpenGSLB</h1>
+            <p class="tagline">
+                DNS-first global load balancing.<br>
+                Not a service mesh. Not a proxy. Just intelligent DNS.
+            </p>
+            <p class="sub-tagline">
+                Enterprise GSLB without the enterprise tax
+            </p>
+            <div class="hero-buttons">
+                <a href="https://github.com/LoganRossUS/OpenGSLB/releases" class="btn btn-terminal btn-lg btn-download">
+                    <i class="bi bi-download"></i> Download <span class="version-badge">v1.1.0</span>
+                </a>
+                <a href="https://github.com/LoganRossUS/OpenGSLB" class="btn btn-terminal btn-lg" target="_blank">
+                    <i class="bi bi-github"></i> View on GitHub
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <section id="why" class="value-prop">
+        <div class="container">
+            <h2>Why OpenGSLB?</h2>
+            <div class="comparison-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 24%;">Feature</th>
+                            <th style="width: 11%;">F5 GTM</th>
+                            <th style="width: 11%;">NetScaler</th>
+                            <th style="width: 11%;">Route53</th>
+                            <th style="width: 11%;">Cloudflare</th>
+                            <th style="width: 11%;">Consul</th>
+                            <th style="width: 11%; background: rgba(10,132,255,0.1);">OpenGSLB</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Self-hosted / Data sovereignty</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>No vendor lock-in</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>Geolocation routing</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>Latency / RTT-based routing</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>EDNS Client Subnet (ECS)</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>Weighted failover chains</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>Predictive health checks</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>Agent-side failure prediction</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>External health validation</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>DNSSEC support</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>Server management API</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>Gossip-based state sync</td>
+                            <td class="check">&#10003;</td>
+                            <td class="check">&#10003;</td>
+                            <td>N/A</td>
+                            <td>N/A</td>
+                            <td class="check">&#10003;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>Open source</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="cross">&#10007;</td>
+                            <td class="check">&#10003;</td>
+                            <td class="highlight check">&#10003;</td>
+                        </tr>
+                        <tr>
+                            <td>Annual cost</td>
+                            <td>$50K-$250K</td>
+                            <td>$20K-$100K+</td>
+                            <td>Pay/query</td>
+                            <td>$200+/mo</td>
+                            <td>Free</td>
+                            <td class="highlight">Free</td>
+                        </tr>
+                        <tr>
+                            <td>Setup complexity</td>
+                            <td>High</td>
+                            <td>High</td>
+                            <td>Low</td>
+                            <td>Low</td>
+                            <td>Medium</td>
+                            <td class="highlight">Low</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section id="architecture" class="section">
+        <div class="container">
+            <h2 class="text-center mb-4">Agent-Overwatch Architecture</h2>
+            <p class="text-center mb-5" style="max-width: 900px; margin: 0 auto; color: var(--text-secondary); font-size: 1.1rem;">
+                OpenGSLB uses a simplified two-component architecture. <strong>Agents</strong> run alongside your applications,
+                monitoring local health and gossiping state to <strong>Overwatch</strong> nodes. Overwatches serve authoritative DNS
+                and independently validate agent claims&mdash;no complex consensus protocols, no VIP management,
+                just DNS client retry for redundancy.
+            </p>
+            <div class="architecture-diagram">
+                <img src="https://raw.githubusercontent.com/LoganRossUS/OpenGSLB/main/docs/images/distributed-architecture.png" alt="OpenGSLB Agent-Overwatch Architecture - Agents gossip to independent Overwatch nodes that serve DNS" loading="lazy">
+            </div>
+            <div class="text-center mt-4">
+                <p class="mono" style="color: var(--text-secondary); font-size: 0.9rem;">
+                    Agents gossip to all Overwatch nodes &bull; Each Overwatch operates independently &bull; DNS clients retry on failure
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <section id="security" class="section section-alt">
+        <div class="container">
+            <h2 class="text-center">Security First <span class="security-badge">MANDATORY</span></h2>
+            <p class="text-center mb-5" style="max-width: 800px; margin: 0 auto; color: var(--text-secondary);">
+                Unlike other solutions where security is optional, OpenGSLB enforces security by default with no opt-out for critical features.
+            </p>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4><i class="bi bi-shield-lock me-2"></i>Mandatory Gossip Encryption</h4>
+                    <p>All agent-to-overwatch communication uses AES-256 encryption. There is no "disable encryption" option&mdash;OpenGSLB won't start without a valid encryption key.</p>
+                </div>
+                <div class="feature-card">
+                    <h4><i class="bi bi-key me-2"></i>TOFU Certificate Pinning</h4>
+                    <p>Agents authenticate using service tokens on first connection, then certificates are pinned. Prevents impersonation attacks even if tokens are compromised later.</p>
+                </div>
+                <div class="feature-card">
+                    <h4><i class="bi bi-patch-check me-2"></i>DNSSEC Support</h4>
+                    <p>DNSSEC signing with NSEC3 to prevent zone enumeration. Includes automatic key generation, inter-Overwatch key synchronization, and configurable algorithms.</p>
+                </div>
+                <div class="feature-card">
+                    <h4><i class="bi bi-diagram-3 me-2"></i>Health Authority Hierarchy</h4>
+                    <p>Four-level trust model: Agent claims &rarr; Overwatch validation &rarr; External tools &rarr; Human override. Overwatch external checks always win over agent claims.</p>
+                </div>
+                <div class="feature-card">
+                    <h4><i class="bi bi-hdd-network me-2"></i>IP-Based Access Control</h4>
+                    <p>API and metrics endpoints secured via IP allowlists by default. Localhost-only access unless explicitly configured for network access.</p>
+                </div>
+                <div class="feature-card">
+                    <h4><i class="bi bi-journal-text me-2"></i>Audit Logging</h4>
+                    <p>All override changes, certificate pins, and administrative actions are logged with timestamps and source identification for compliance requirements.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="features" class="section">
+        <div class="container">
+            <h2 class="text-center">Built for Production</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>DNS Authoritative Server</h4>
+                    <p>Full DNS implementation with A/AAAA records, UDP+TCP transport, configurable TTLs, NXDOMAIN handling, and DNSSEC signing.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Smart Routing Algorithms</h4>
+                    <p>Round-robin, weighted distribution, active/standby failover, geolocation routing with custom CIDR mappings, and latency-based routing with EMA smoothing.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>EDNS Client Subnet (ECS)<span class="new-badge">New</span></h4>
+                    <p>Extract client location from recursive resolvers for accurate geo-routing even when clients use public DNS services like Google or Cloudflare.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Predictive Health Checks</h4>
+                    <p>Agent-side failure prediction monitors CPU, memory, and error rates. Detects degradation before it impacts DNS responses&mdash;something no SaaS GSLB offers.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Unified Server Architecture<span class="new-badge">v1.1.0</span></h4>
+                    <p>Three server sources unified into one: static configuration, agent registration, and API registration. All participate equally in routing decisions.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Server Management API<span class="new-badge">v1.1.0</span></h4>
+                    <p>Full CRUD API for dynamic server management. Add, update, or remove servers at runtime without configuration changes or restarts.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Dynamic DNS Registration<span class="new-badge">v1.1.0</span></h4>
+                    <p>Servers registered via API or agents automatically participate in DNS routing based on their service associations. No manual domain configuration needed.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Dual-Perspective Validation</h4>
+                    <p>Agents know they're about to fail (predictive). Overwatches validate claims independently (reactive). Both perspectives combined eliminate false positives.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Observability First</h4>
+                    <p>Structured logging (JSON/text), Prometheus metrics, health status API, CLI management tool. Hot-reload configuration via SIGHUP without downtime.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Multi-File Configuration</h4>
+                    <p>Split configuration across multiple files with glob patterns, environment variable expansion, and layered merging for team-based management.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>CLI Management Tool</h4>
+                    <p>Full-featured opengslb-cli for status monitoring, server management, override control, geo testing, DNSSEC management, and config validation.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Zero External Dependencies</h4>
+                    <p>Single Go binary. No external databases, no service mesh, no Kubernetes required. Deploy via Docker, systemd, or bare metal. Works on Linux and Windows.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="quickstart" class="section section-alt">
+        <div class="container">
+            <h2 class="text-center mb-5">Run in 30 Seconds</h2>
+            <div class="row justify-content-center">
+                <div class="col-lg-10">
+                    <div class="code-block">
+                        <div class="code-block-header">
+                            <span class="code-block-title">Overwatch Node (serves DNS)</span>
+                        </div>
+                        <div class="code-content">
+<span class="code-comment"># Pull and run as Overwatch</span>
+docker run -d \
+  -p 53:53/udp -p 53:53/tcp -p 9090:9090 \
+  -v ./overwatch.yaml:/config.yaml \
+  ghcr.io/loganrossus/opengslb:latest \
+  --mode=overwatch --config /config.yaml
+
+<span class="code-comment"># Or build from source</span>
+git clone https://github.com/LoganRossUS/OpenGSLB.git
+cd OpenGSLB && go build -o opengslb ./cmd/opengslb
+./opengslb --mode=overwatch --config config/overwatch-example.yaml
+                        </div>
+                    </div>
+                    <div class="code-block mt-4">
+                        <div class="code-block-header">
+                            <span class="code-block-title">Agent (runs alongside your app)</span>
+                        </div>
+                        <div class="code-content">
+<span class="code-comment"># Run agent on application servers</span>
+./opengslb --mode=agent --config agent.yaml
+
+<span class="code-comment"># Agent config registers backends and gossips to Overwatches</span>
+<span class="code-comment"># Multiple backends per agent supported</span>
+                        </div>
+                    </div>
+                    <div class="code-block mt-4">
+                        <div class="code-block-header">
+                            <span class="code-block-title">Dynamic Server Registration via API (NEW in v1.1.0)</span>
+                        </div>
+                        <div class="code-content">
+<span class="code-comment"># Register a server dynamically</span>
+curl -X POST http://localhost:9090/api/v1/servers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "10.0.1.50",
+    "port": 80,
+    "service": "app.example.com",
+    "weight": 100,
+    "region": "us-east"
+  }'
+
+<span class="code-comment"># Server immediately participates in DNS routing!</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="roadmap" class="section roadmap">
+        <div class="container">
+            <h2 class="text-center">Development Roadmap</h2>
+            <div class="timeline-container">
+                <div class="timeline-track">
+                    <div class="timeline-item completed">
+                        <div class="timeline-marker"></div>
+                        <div class="timeline-card">
+                            <div class="timeline-phase">Nov 2025</div>
+                            <div class="timeline-title">Sprint 1-2: Foundation</div>
+                            <ul class="timeline-features">
+                                <li>CI/CD pipelines & Docker builds</li>
+                                <li>DNS server (A/AAAA, UDP/TCP)</li>
+                                <li>HTTP health checks</li>
+                                <li>Round-robin routing</li>
+                                <li>Prometheus metrics & logging</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="timeline-item completed">
+                        <div class="timeline-marker"></div>
+                        <div class="timeline-card">
+                            <div class="timeline-phase">Dec 2025</div>
+                            <div class="timeline-title">Sprint 3-4: Advanced Routing</div>
+                            <ul class="timeline-features">
+                                <li>Weighted & failover routing</li>
+                                <li>TCP health checks</li>
+                                <li>Config hot-reload (SIGHUP)</li>
+                                <li>Health status API</li>
+                                <li>Agent-Overwatch architecture</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="timeline-item completed">
+                        <div class="timeline-marker"></div>
+                        <div class="timeline-card">
+                            <div class="timeline-phase">Dec 2025</div>
+                            <div class="timeline-title">Sprint 5: Security</div>
+                            <ul class="timeline-features">
+                                <li>Mandatory gossip encryption</li>
+                                <li>TOFU certificate pinning</li>
+                                <li>DNSSEC with NSEC3</li>
+                                <li>External override API</li>
+                                <li>Multi-backend agents</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="timeline-item completed">
+                        <div class="timeline-marker"></div>
+                        <div class="timeline-card">
+                            <div class="timeline-phase">Dec 2025</div>
+                            <div class="timeline-title">Sprint 6: Intelligence</div>
+                            <ul class="timeline-features">
+                                <li>Geolocation routing (GeoIP)</li>
+                                <li>Custom CIDR mappings</li>
+                                <li>Latency-based routing (EMA)</li>
+                                <li>EDNS Client Subnet (ECS)</li>
+                                <li>CLI management tool</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="timeline-item completed">
+                        <div class="timeline-marker"></div>
+                        <div class="timeline-card">
+                            <div class="timeline-phase">Dec 2025</div>
+                            <div class="timeline-title">v1.1.0: Unified Architecture</div>
+                            <ul class="timeline-features">
+                                <li>Unified server architecture</li>
+                                <li>Server management CRUD API</li>
+                                <li>Dynamic DNS registration</li>
+                                <li>API/agent server parity</li>
+                                <li>Enhanced operational runbooks</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="timeline-item">
+                        <div class="timeline-marker"></div>
+                        <div class="timeline-card">
+                            <div class="timeline-phase">Q1 2026 (Next)</div>
+                            <div class="timeline-title">Sprint 7-8: Overlord</div>
+                            <ul class="timeline-features">
+                                <li>Centralized web dashboard</li>
+                                <li>Historical data & trends</li>
+                                <li>Alerting & notifications</li>
+                                <li>Multi-Overwatch aggregation</li>
+                                <li>Grafana dashboard templates</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="timeline-item">
+                        <div class="timeline-marker"></div>
+                        <div class="timeline-card">
+                            <div class="timeline-phase">Future</div>
+                            <div class="timeline-title">Advanced Features</div>
+                            <ul class="timeline-features">
+                                <li>DNS-over-HTTPS/TLS</li>
+                                <li>Dynamic service registration</li>
+                                <li>Rate limiting & DDoS protection</li>
+                                <li>Kubernetes operator</li>
+                                <li>Terraform provider</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container text-center">
+            <p class="footer-mono mb-3">
+                <strong>OpenGSLB</strong> &mdash; DNS-first global load balancing
+            </p>
+            <p class="mb-3">
+                <a href="https://www.buymeacoffee.com/OpenGSLB" class="coffee-link" target="_blank">
+                    <i class="bi bi-cup-hot-fill"></i> Buy Me a Coffee
+                </a>
+            </p>
+            <p class="text-white-50">
+                &copy; 2025 Logan Ross &bull;
+                <a href="https://github.com/LoganRossUS/OpenGSLB" target="_blank">GitHub</a> &bull;
+                <a href="mailto:licensing@opengslb.org">Commercial License</a>
+            </p>
+            <p class="small text-white-50 mt-3">
+                AGPLv3 for open source &bull; Paid license for closed-source appliances
+            </p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
