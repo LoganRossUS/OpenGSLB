@@ -427,3 +427,31 @@ func (t *LearnedLatencyTable) GetAllEntries() []LatencyEntry {
 	}
 	return entries
 }
+
+// InjectTestData adds latency data directly for testing purposes.
+// This bypasses the agent/gossip layer and is used for integration testing.
+func (t *LearnedLatencyTable) InjectTestData(subnetStr, backend, region string, latencyMs int64, samples uint64) error {
+	prefix, err := netip.ParsePrefix(subnetStr)
+	if err != nil {
+		return err
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.data[prefix] == nil {
+		t.data[prefix] = make(map[string]*BackendLatency)
+	}
+
+	key := backend + "|" + region
+	t.data[prefix][key] = &BackendLatency{
+		Backend:     backend,
+		Region:      region,
+		EWMA:        time.Duration(latencyMs) * time.Millisecond,
+		SampleCount: samples,
+		LastUpdated: time.Now(),
+		Source:      "test-injection",
+	}
+
+	return nil
+}

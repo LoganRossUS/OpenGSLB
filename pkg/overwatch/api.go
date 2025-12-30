@@ -660,14 +660,21 @@ func (h *APIHandlers) HandleAgentsExpiring(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// HandleLatencyTable handles GET /api/v1/overwatch/latency
-// Returns the learned latency data from agents (ADR-017).
+// HandleLatencyTable handles GET/POST /api/v1/overwatch/latency
+// GET: Returns the learned latency data from agents (ADR-017).
+// POST: Injects test latency data for integration testing.
 func (h *APIHandlers) HandleLatencyTable(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleLatencyTableGet(w, r)
+	case http.MethodPost:
+		h.handleLatencyTablePost(w, r)
+	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
 	}
+}
 
+func (h *APIHandlers) handleLatencyTableGet(w http.ResponseWriter, r *http.Request) {
 	if h.latencyTable == nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"entries":      []LatencyEntry{},
@@ -684,6 +691,46 @@ func (h *APIHandlers) HandleLatencyTable(w http.ResponseWriter, r *http.Request)
 		"count":        len(entries),
 		"subnet_count": h.latencyTable.SubnetCount(),
 		"generated_at": time.Now().UTC(),
+	})
+}
+
+// latencyInjectRequest is the request body for POST /api/v1/overwatch/latency
+type latencyInjectRequest struct {
+	Subnet    string `json:"subnet"`     // e.g., "10.0.0.0/24"
+	Backend   string `json:"backend"`    // e.g., "web.test.local"
+	Region    string `json:"region"`     // e.g., "eu-west"
+	LatencyMs int64  `json:"latency_ms"` // e.g., 80
+	Samples   uint64 `json:"samples"`    // e.g., 10
+}
+
+func (h *APIHandlers) handleLatencyTablePost(w http.ResponseWriter, r *http.Request) {
+	if h.latencyTable == nil {
+		writeError(w, http.StatusServiceUnavailable, "latency table not initialized")
+		return
+	}
+
+	var req latencyInjectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	// Validate required fields
+	if req.Subnet == "" || req.Backend == "" || req.Region == "" {
+		writeError(w, http.StatusBadRequest, "subnet, backend, and region are required")
+		return
+	}
+
+	if err := h.latencyTable.InjectTestData(req.Subnet, req.Backend, req.Region, req.LatencyMs, req.Samples); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid subnet: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"message": "latency data injected",
+		"subnet":  req.Subnet,
+		"backend": req.Backend,
+		"region":  req.Region,
 	})
 }
 
