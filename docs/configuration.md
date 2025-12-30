@@ -136,6 +136,47 @@ Predictive health allows agents to signal impending failures before they impact 
 | `error_rate.window` | duration | `60s` | Window for error rate calculation |
 | `error_rate.bleed_duration` | duration | `30s` | Duration to gradually drain traffic |
 
+### Agent Latency Learning Settings (ADR-017)
+
+Passive latency learning allows agents to collect real client-to-backend TCP RTT data and report it to Overwatch for intelligent routing. This captures actual client experience rather than Overwatch-to-backend latency.
+
+```yaml
+agent:
+  latency_learning:
+    enabled: true
+    poll_interval: 10s
+    min_connection_age: 5s
+    ipv4_prefix: 24
+    ipv6_prefix: 48
+    ewma_alpha: 0.3
+    max_subnets: 100000
+    subnet_ttl: 168h
+    min_samples: 5
+    report_interval: 30s
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `false` | Enable passive latency learning |
+| `poll_interval` | duration | `10s` | How often to poll OS for TCP connection RTT data |
+| `min_connection_age` | duration | `5s` | Minimum connection age before collecting RTT (new connections have unstable RTT) |
+| `ipv4_prefix` | integer | `24` | IPv4 subnet prefix for aggregation (e.g., /24 groups all 10.0.1.x together) |
+| `ipv6_prefix` | integer | `48` | IPv6 subnet prefix for aggregation |
+| `ewma_alpha` | float | `0.3` | EWMA smoothing factor (0-1). Higher = more responsive to recent samples |
+| `max_subnets` | integer | `100000` | Maximum subnets to track (prevents unbounded memory growth) |
+| `subnet_ttl` | duration | `168h` | How long to keep subnet entries without updates (7 days default) |
+| `min_samples` | integer | `5` | Minimum samples before reporting a subnet's latency |
+| `report_interval` | duration | `30s` | How often to send latency reports to Overwatch via gossip |
+
+**Requirements:**
+- **Linux**: CAP_NET_ADMIN capability or root privileges
+- **Windows**: Administrator privileges (uses GetPerTcpConnectionEStats API)
+
+Grant capability on Linux:
+```bash
+sudo setcap cap_net_admin+ep /usr/local/bin/opengslb
+```
+
 ## Overwatch Mode Configuration
 
 Overwatch mode serves DNS and validates health claims from agents.
@@ -1050,6 +1091,126 @@ Monitor these metrics:
 ### Combining with Geolocation
 
 For optimal performance, consider using geolocation routing with latency as a secondary factor. Configure regions geographically, and latency routing will select the fastest server within the client's region.
+
+## Learned Latency Routing (ADR-017)
+
+Learned latency routing uses **passive TCP RTT data** collected by agents to route clients to the backend with the lowest measured latency. Unlike standard latency routing (which measures Overwatch-to-backend latency), this captures the actual client-to-backend experience.
+
+### How It Differs from Standard Latency Routing
+
+| Aspect | Standard Latency | Learned Latency |
+|--------|-----------------|-----------------|
+| **What's measured** | Overwatch → Backend | Client → Backend |
+| **Measurement method** | Active health check probes | Passive TCP RTT from OS |
+| **Accuracy** | Proxy's perspective | Client's actual experience |
+| **Data source** | Overwatch only | Agent gossip |
+| **Cold start** | Falls back to round-robin | Falls back to geolocation |
+
+### Configuration
+
+```yaml
+domains:
+  - name: app.example.com
+    routing_algorithm: learned_latency
+    regions:
+      - us-east
+      - us-west
+      - eu-west
+      - ap-southeast
+    ttl: 60
+    latency_config:
+      max_latency_ms: 300
+      min_samples: 5
+```
+
+**Important**: Learned latency routing requires agents with `latency_learning.enabled: true` to collect and gossip RTT data.
+
+### Learned Latency Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_latency_ms` | integer | `500` | Exclude backends with latency above this threshold |
+| `min_samples` | integer | `3` | Minimum samples required before using learned data for a subnet |
+
+### How It Works
+
+1. **Agents collect TCP RTT**: When clients connect to backends, agents read TCP connection RTT from the OS kernel
+2. **Subnet aggregation**: RTT samples are aggregated by client subnet (default /24 for IPv4)
+3. **Gossip to Overwatch**: Agents periodically send latency reports to all Overwatch nodes
+4. **DNS routing**: When a query arrives, Overwatch looks up learned latency for that client's subnet and selects the lowest-latency backend
+5. **Cold start fallback**: If no learned data exists for a subnet, falls back to geolocation routing
+
+### Viewing Learned Latency Data
+
+Query the Overwatch API to see collected latency data:
+
+```bash
+curl http://localhost:9090/api/v1/overwatch/latency | jq .
+```
+
+Example response:
+```json
+{
+  "entries": [
+    {
+      "subnet": "10.1.2.0/24",
+      "domain": "app.example.com",
+      "region": "eu-west",
+      "rtt_ms": 85,
+      "samples": 150,
+      "last_updated": "2025-12-19T10:05:00Z"
+    }
+  ]
+}
+```
+
+### Use Cases
+
+- **True client optimization**: Route based on actual client experience, not proxy measurements
+- **CDN-like behavior**: Automatically route clients to their lowest-latency backend
+- **Multi-cloud arbitrage**: Discover which cloud provider is fastest for each client subnet
+- **ISP-aware routing**: Different ISPs may have different latency to your backends
+
+### Example: Full Learned Latency Deployment
+
+**Overwatch configuration:**
+```yaml
+mode: overwatch
+
+domains:
+  - name: app.example.com
+    routing_algorithm: learned_latency
+    regions:
+      - us-east
+      - eu-west
+      - ap-southeast
+    latency_config:
+      max_latency_ms: 300
+      min_samples: 5
+
+overwatch:
+  geolocation:
+    database_path: /var/lib/opengslb/GeoLite2-Country.mmdb
+    default_region: us-east
+```
+
+**Agent configuration:**
+```yaml
+mode: agent
+
+agent:
+  backends:
+    - service: "app.example.com"
+      address: "127.0.0.1"
+      port: 80
+      weight: 100
+
+  latency_learning:
+    enabled: true
+    poll_interval: 10s
+    min_connection_age: 5s
+    report_interval: 30s
+```
 
 ## Configuration Hot-Reload
 
