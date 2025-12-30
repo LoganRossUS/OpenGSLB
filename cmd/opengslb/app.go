@@ -1396,9 +1396,9 @@ type learnedLatencyTableAdapter struct {
 	table *overwatch.LearnedLatencyTable
 }
 
-// GetLatencyForBackend returns learned latency for a client->backend pair.
-func (a *learnedLatencyTableAdapter) GetLatencyForBackend(clientIP netip.Addr, backend string) (*routing.LearnedLatencyData, bool) {
-	entry, ok := a.table.GetLatencyForBackend(clientIP, backend)
+// GetLatencyForBackendInRegion returns learned latency for a client->backend->region triple.
+func (a *learnedLatencyTableAdapter) GetLatencyForBackendInRegion(clientIP netip.Addr, backend, region string) (*routing.LearnedLatencyData, bool) {
+	entry, ok := a.table.GetLatencyForBackendInRegion(clientIP, backend, region)
 	if !ok {
 		return nil, false
 	}
