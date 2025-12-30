@@ -105,21 +105,53 @@ resource "azurerm_linux_virtual_machine" "traffic_eastus" {
       - |
         cat > /usr/local/bin/generate-traffic << 'SCRIPT'
         #!/bin/bash
-        RATE=$${1:-1}
+        # Generate traffic using hey with persistent connections for latency learning
+        # Usage: generate-traffic [rate_per_second] [duration_seconds]
+        RATE=$${1:-5}
         DURATION=$${2:-60}
+        OVERWATCH_IP="${local.overwatch_ip}"
+
+        # Resolve backend IPs via DNS
+        echo "Resolving backends via DNS..."
+        BACKEND1=$(dig @$OVERWATCH_IP web.test.opengslb.local +short | head -1)
+        BACKEND2=$(dig @$OVERWATCH_IP web.test.opengslb.local +short | tail -1)
+
+        if [ -z "$BACKEND1" ]; then
+          echo "ERROR: Could not resolve any backends from DNS"
+          exit 1
+        fi
+
         echo "Generating traffic at $RATE req/s for $DURATION seconds..."
-        for i in $(seq 1 $DURATION); do
-          for j in $(seq 1 $RATE); do
-            IP=$(dig @${local.overwatch_ip} web.test.opengslb.local +short | head -1)
-            curl -s -o /dev/null -w "%%{http_code}" "http://$IP/" &
-          done
-          sleep 1
+        echo "Using backends: $BACKEND1 $BACKEND2"
+        echo ""
+
+        # Use hey with persistent connections (keep-alive enabled by default)
+        # -z duration, -q rate limit, -c concurrent connections
+        for IP in $BACKEND1 $BACKEND2; do
+          if [ -n "$IP" ]; then
+            echo "Starting load to $IP..."
+            hey -z $${DURATION}s -q $RATE -c 5 -disable-compression "http://$IP/" &
+          fi
         done
+
         wait
-        echo "Done."
+        echo ""
+        echo "Done. Check latency data with: curl http://$OVERWATCH_IP:8080/api/v1/overwatch/latency | jq ."
         SCRIPT
       - chmod +x /usr/local/bin/generate-traffic
-      - echo "Traffic generator ready. Run 'test-cluster' to validate or 'generate-traffic 5 300' for load." > /etc/motd
+      - |
+        cat > /usr/local/bin/show-latency << 'SCRIPT'
+        #!/bin/bash
+        curl -s "http://${local.overwatch_ip}:8080/api/v1/overwatch/latency" | jq .
+        SCRIPT
+      - chmod +x /usr/local/bin/show-latency
+      - |
+        cat > /usr/local/bin/show-backends << 'SCRIPT'
+        #!/bin/bash
+        curl -s "http://${local.overwatch_ip}:8080/api/v1/overwatch/backends" | jq .
+        SCRIPT
+      - chmod +x /usr/local/bin/show-backends
+      - echo "Traffic generator ready. Commands: generate-traffic [rate] [duration], show-latency, show-backends, test-cluster" > /etc/motd
   EOF
   )
 }
@@ -296,21 +328,53 @@ resource "azurerm_linux_virtual_machine" "traffic_southeastasia" {
       - |
         cat > /usr/local/bin/generate-traffic << 'SCRIPT'
         #!/bin/bash
-        RATE=$${1:-1}
+        # Generate traffic using hey with persistent connections for latency learning
+        # Usage: generate-traffic [rate_per_second] [duration_seconds]
+        RATE=$${1:-5}
         DURATION=$${2:-60}
+        OVERWATCH_IP="${local.overwatch_ip}"
+
+        # Resolve backend IPs via DNS
+        echo "Resolving backends via DNS..."
+        BACKEND1=$(dig @$OVERWATCH_IP web.test.opengslb.local +short | head -1)
+        BACKEND2=$(dig @$OVERWATCH_IP web.test.opengslb.local +short | tail -1)
+
+        if [ -z "$BACKEND1" ]; then
+          echo "ERROR: Could not resolve any backends from DNS"
+          exit 1
+        fi
+
         echo "Generating traffic at $RATE req/s for $DURATION seconds..."
-        for i in $(seq 1 $DURATION); do
-          for j in $(seq 1 $RATE); do
-            IP=$(dig @${local.overwatch_ip} web.test.opengslb.local +short | head -1)
-            curl -s -o /dev/null -w "%%{http_code}" "http://$IP/" &
-          done
-          sleep 1
+        echo "Using backends: $BACKEND1 $BACKEND2"
+        echo ""
+
+        # Use hey with persistent connections (keep-alive enabled by default)
+        # -z duration, -q rate limit, -c concurrent connections
+        for IP in $BACKEND1 $BACKEND2; do
+          if [ -n "$IP" ]; then
+            echo "Starting load to $IP..."
+            hey -z $${DURATION}s -q $RATE -c 5 -disable-compression "http://$IP/" &
+          fi
         done
+
         wait
-        echo "Done."
+        echo ""
+        echo "Done. Check latency data with: curl http://$OVERWATCH_IP:8080/api/v1/overwatch/latency | jq ."
         SCRIPT
       - chmod +x /usr/local/bin/generate-traffic
-      - echo "Traffic generator ready. Run 'test-cluster' to validate or 'generate-traffic 5 300' for load." > /etc/motd
+      - |
+        cat > /usr/local/bin/show-latency << 'SCRIPT'
+        #!/bin/bash
+        curl -s "http://${local.overwatch_ip}:8080/api/v1/overwatch/latency" | jq .
+        SCRIPT
+      - chmod +x /usr/local/bin/show-latency
+      - |
+        cat > /usr/local/bin/show-backends << 'SCRIPT'
+        #!/bin/bash
+        curl -s "http://${local.overwatch_ip}:8080/api/v1/overwatch/backends" | jq .
+        SCRIPT
+      - chmod +x /usr/local/bin/show-backends
+      - echo "Traffic generator ready. Commands: generate-traffic [rate] [duration], show-latency, show-backends, test-cluster" > /etc/motd
   EOF
   )
 }

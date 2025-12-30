@@ -373,12 +373,9 @@ overwatch:
     fallback: geo
 
 domains:
-  - name: "test.opengslb.local"
-    services:
-      - name: "$ServiceName"
-        routing:
-          algorithm: latency
-          fallback: geo
+  - name: "$ServiceName.test.opengslb.local"
+    ttl: 60
+    routing_algorithm: latency
 
 regions:
   - id: "us-east"
@@ -406,7 +403,7 @@ agent:
     region: "$(if ($Region) { $Region } else { 'default' })"
     service_token: "$ServiceToken"
   backends:
-    - service: "$ServiceName"
+    - service: "$ServiceName.test.opengslb.local"
       address: "$localIP"
       port: $BackendPort
       weight: 100
@@ -419,14 +416,14 @@ agent:
     overwatch_nodes:
       - "${OverwatchIP}:7946"
     encryption_key: "$GossipKey"
-  latency:
+  latency_learning:
     enabled: true
     poll_interval: 10s
     ipv4_prefix: 24
     min_connection_age: 5s
     max_subnets: 10000
-    subnet_ttl: 24h
-    min_samples_per_subnet: 3
+    subnet_ttl: 168h
+    min_samples: 3
     report_interval: 30s
     ewma_alpha: 0.3
 
