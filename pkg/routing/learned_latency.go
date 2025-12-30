@@ -33,8 +33,9 @@ type LearnedLatencyData struct {
 // LearnedLatencyProvider provides learned latency data for client-backend pairs.
 // This is implemented by overwatch.LearnedLatencyTable.
 type LearnedLatencyProvider interface {
-	// GetLatencyForBackend returns the learned latency for a specific client->backend pair.
-	GetLatencyForBackend(clientIP netip.Addr, backend string) (*LearnedLatencyData, bool)
+	// GetLatencyForBackendInRegion returns the learned latency for a client->backend pair in a specific region.
+	// The region parameter allows matching latency data to specific servers.
+	GetLatencyForBackendInRegion(clientIP netip.Addr, backend, region string) (*LearnedLatencyData, bool)
 }
 
 // LearnedLatencyRouterConfig contains configuration for the LearnedLatencyRouter.
@@ -183,9 +184,12 @@ func (r *LearnedLatencyRouter) Route(ctx context.Context, pool ServerPool) (*Ser
 	now := time.Now()
 
 	for _, server := range servers {
-		// Use server address as backend identifier
-		backendKey := fmt.Sprintf("%s:%d", server.Address, server.Port)
-		data, hasData := provider.GetLatencyForBackend(clientIP, backendKey)
+		// Look up latency by domain (service name) and server's region
+		// The latency data is stored per (subnet, backend, region) in the table
+		if domain == "" || server.Region == "" {
+			continue
+		}
+		data, hasData := provider.GetLatencyForBackendInRegion(clientIP, domain, server.Region)
 
 		if !hasData {
 			continue

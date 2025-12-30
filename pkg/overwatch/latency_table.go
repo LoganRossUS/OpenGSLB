@@ -214,6 +214,47 @@ func (t *LearnedLatencyTable) GetBestBackend(clientIP netip.Addr, healthy []stri
 	return bestBackend
 }
 
+// GetLatencyForBackendInRegion returns the learned latency for a specific client->backend->region triple.
+// This is used by the LearnedLatencyRouter to match latency data to specific servers.
+func (t *LearnedLatencyTable) GetLatencyForBackendInRegion(clientIP netip.Addr, backend, region string) (*BackendLatency, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	// Determine prefix length based on IP version
+	var prefixBits int
+	if clientIP.Is4() {
+		prefixBits = 24
+	} else {
+		prefixBits = 48
+	}
+
+	prefix, err := clientIP.Prefix(prefixBits)
+	if err != nil {
+		return nil, false
+	}
+
+	backendMap, exists := t.data[prefix]
+	if !exists {
+		return nil, false
+	}
+
+	// Look up by the combined backend|region key
+	backendKey := backend + "|" + region
+	entry, exists := backendMap[backendKey]
+	if !exists {
+		return nil, false
+	}
+
+	// Check for staleness
+	if time.Since(entry.LastUpdated) > t.config.EntryTTL {
+		return nil, false
+	}
+
+	// Return a copy to prevent external modification
+	entryCopy := *entry
+	return &entryCopy, true
+}
+
 // GetLatencyForBackend returns the lowest learned latency for a specific client->backend pair.
 // Since latency is tracked per region, this finds the best region for the given backend.
 func (t *LearnedLatencyTable) GetLatencyForBackend(clientIP netip.Addr, backend string) (*BackendLatency, bool) {
