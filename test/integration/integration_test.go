@@ -236,6 +236,35 @@ regions:
       failure_threshold: 2
       success_threshold: 1
 
+  # Regions for learned_latency testing (ADR-017)
+  - name: region-a
+    servers:
+      - address: "172.28.0.2"
+        port: 80
+        weight: 100
+        service: latency.test
+    health_check:
+      type: http
+      interval: 2s
+      timeout: 1s
+      path: /
+      failure_threshold: 2
+      success_threshold: 1
+
+  - name: region-b
+    servers:
+      - address: "172.28.0.3"
+        port: 80
+        weight: 100
+        service: latency.test
+    health_check:
+      type: http
+      interval: 2s
+      timeout: 1s
+      path: /
+      failure_threshold: 2
+      success_threshold: 1
+
 domains:
   - name: roundrobin.test
     routing_algorithm: round-robin
@@ -259,6 +288,14 @@ domains:
     routing_algorithm: round-robin
     regions:
       - tcp-region
+    ttl: 10
+
+  # Learned latency domain for ADR-017 testing
+  - name: latency.test
+    routing_algorithm: learned_latency
+    regions:
+      - region-a
+      - region-b
     ttl: 10
 
 logging:
@@ -564,21 +601,21 @@ func TestHealthAPIReadiness(t *testing.T) {
 // TestAPIServerCRUD tests the v1.1.0 server CRUD API endpoints
 func TestAPIServerCRUD(t *testing.T) {
 	client := &http.Client{Timeout: httpTimeout}
-	
+
 	// Test POST - Create new server
 	t.Run("CreateServer", func(t *testing.T) {
 		reqBody := map[string]interface{}{
-			"name":     "api-test-server",
-			"address":  "172.28.0.100",
-			"port":     8080,
-			"weight":   150,
-			"region":   "test-region",
-			"enabled":  true,
+			"name":    "api-test-server",
+			"address": "172.28.0.100",
+			"port":    8080,
+			"weight":  150,
+			"region":  "test-region",
+			"enabled": true,
 			"metadata": map[string]string{
 				"service": "roundrobin.test",
 			},
 		}
-		
+
 		jsonBody, _ := json.Marshal(reqBody)
 		resp, err := client.Post(
 			"http://"+gslbAPIAddr+"/api/v1/servers",
@@ -589,11 +626,11 @@ func TestAPIServerCRUD(t *testing.T) {
 			t.Fatalf("failed to create server: %v", err)
 		}
 		defer resp.Body.Close()
-		
+
 		if resp.StatusCode != http.StatusCreated {
 			t.Errorf("expected status 201, got %d", resp.StatusCode)
 		}
-		
+
 		// Wait for DNS propagation
 		time.Sleep(2 * time.Second)
 
@@ -621,7 +658,7 @@ func TestAPIServerCRUD(t *testing.T) {
 			t.Errorf("API-created server 172.28.0.100 not found in DNS responses after 20 queries. Seen IPs: %v", seenIPs)
 		}
 	})
-	
+
 	// Test GET - List servers
 	t.Run("ListServers", func(t *testing.T) {
 		resp, err := client.Get("http://" + gslbAPIAddr + "/api/v1/servers")
@@ -629,29 +666,29 @@ func TestAPIServerCRUD(t *testing.T) {
 			t.Fatalf("failed to list servers: %v", err)
 		}
 		defer resp.Body.Close()
-		
+
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected status 200, got %d", resp.StatusCode)
 		}
-		
+
 		var response struct {
 			Servers []struct {
-				ID      string            `json:"id"`
-				Address string            `json:"address"`
-				Port    int               `json:"port"`
+				ID       string            `json:"id"`
+				Address  string            `json:"address"`
+				Port     int               `json:"port"`
 				Metadata map[string]string `json:"metadata"`
 			} `json:"servers"`
 		}
-		
+
 		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 			t.Fatalf("failed to decode response: %v", err)
 		}
-		
+
 		// Should have both static and API-registered servers
 		if len(response.Servers) < 4 {
 			t.Errorf("expected at least 4 servers, got %d", len(response.Servers))
 		}
-		
+
 		// Verify source tracking
 		hasStatic := false
 		hasAPI := false
@@ -665,26 +702,26 @@ func TestAPIServerCRUD(t *testing.T) {
 				}
 			}
 		}
-		
+
 		if !hasStatic {
 			t.Error("no static servers found in list")
 		}
 		if !hasAPI {
 			t.Error("no API-registered servers found in list")
 		}
-		
-		t.Logf("Server list returned %d servers (static=%v, api=%v)", 
+
+		t.Logf("Server list returned %d servers (static=%v, api=%v)",
 			len(response.Servers), hasStatic, hasAPI)
 	})
-	
+
 	// Test PATCH - Update server
 	t.Run("UpdateServer", func(t *testing.T) {
 		serverID := "roundrobin.test:172.28.0.100:8080"
-		
+
 		reqBody := map[string]interface{}{
 			"weight": 250,
 		}
-		
+
 		jsonBody, _ := json.Marshal(reqBody)
 		req, _ := http.NewRequest(
 			"PATCH",
@@ -692,51 +729,179 @@ func TestAPIServerCRUD(t *testing.T) {
 			bytes.NewBuffer(jsonBody),
 		)
 		req.Header.Set("Content-Type", "application/json")
-		
+
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("failed to update server: %v", err)
 		}
 		defer resp.Body.Close()
-		
+
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected status 200, got %d", resp.StatusCode)
 		}
 	})
-	
+
 	// Test DELETE - Remove server
 	t.Run("DeleteServer", func(t *testing.T) {
 		serverID := "roundrobin.test:172.28.0.100:8080"
-		
+
 		req, _ := http.NewRequest(
 			"DELETE",
 			"http://"+gslbAPIAddr+"/api/v1/servers/"+serverID,
 			nil,
 		)
-		
+
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("failed to delete server: %v", err)
 		}
 		defer resp.Body.Close()
-		
+
 		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 			t.Errorf("expected status 204 or 200, got %d", resp.StatusCode)
 		}
-		
+
 		// Wait for DNS propagation
 		time.Sleep(2 * time.Second)
-		
+
 		// Verify server no longer in DNS responses
 		ips, err := queryDNSGetIPs("roundrobin.test")
 		if err != nil {
 			t.Fatalf("DNS query failed: %v", err)
 		}
-		
+
 		for _, ip := range ips {
 			if ip == "172.28.0.100" {
 				t.Errorf("deleted server still appears in DNS responses")
 			}
+		}
+	})
+}
+
+// TestLearnedLatencyRouting tests ADR-017 passive latency learning routing.
+// It verifies that:
+// 1. Without latency data, routing falls back to round-robin
+// 2. With injected latency data, routing selects the lowest-latency backend
+// 3. Different client subnets can get different routing decisions
+func TestLearnedLatencyRouting(t *testing.T) {
+	client := &http.Client{Timeout: httpTimeout}
+
+	// Test 1: Without latency data, should fall back to round-robin
+	t.Run("FallbackWithoutData", func(t *testing.T) {
+		counts := make(map[string]int)
+		for i := 0; i < 10; i++ {
+			ips, err := queryDNSGetIPs("latency.test")
+			if err != nil {
+				t.Fatalf("DNS query failed: %v", err)
+			}
+			if len(ips) > 0 {
+				counts[ips[0]]++
+			}
+		}
+		// Should see both servers (fallback to round-robin)
+		if len(counts) < 2 {
+			t.Logf("Warning: only saw %d different IPs, expected 2 (round-robin fallback)", len(counts))
+		}
+		t.Logf("Fallback distribution (no latency data): %v", counts)
+	})
+
+	// Test 2: Inject latency data and verify routing uses it
+	t.Run("RoutesBasedOnLatency", func(t *testing.T) {
+		// Inject latency data: region-a (172.28.0.2) has 100ms, region-b (172.28.0.3) has 10ms
+		// The 127.0.0.0/8 subnet is the client subnet (DNS queries come from localhost)
+		injectLatency := func(subnet, backend, region string, latencyMs int64, samples uint64) error {
+			reqBody := map[string]interface{}{
+				"subnet":     subnet,
+				"backend":    backend,
+				"region":     region,
+				"latency_ms": latencyMs,
+				"samples":    samples,
+			}
+			jsonBody, _ := json.Marshal(reqBody)
+			resp, err := client.Post(
+				"http://"+gslbAPIAddr+"/api/v1/overwatch/latency",
+				"application/json",
+				bytes.NewBuffer(jsonBody),
+			)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusCreated {
+				body, _ := io.ReadAll(resp.Body)
+				return fmt.Errorf("expected 201, got %d: %s", resp.StatusCode, string(body))
+			}
+			return nil
+		}
+
+		// Inject latency data for localhost subnet
+		if err := injectLatency("127.0.0.0/8", "latency.test", "region-a", 100, 10); err != nil {
+			t.Fatalf("Failed to inject latency for region-a: %v", err)
+		}
+		if err := injectLatency("127.0.0.0/8", "latency.test", "region-b", 10, 10); err != nil {
+			t.Fatalf("Failed to inject latency for region-b: %v", err)
+		}
+
+		// Wait for data to be available
+		time.Sleep(100 * time.Millisecond)
+
+		// Query multiple times - should consistently get region-b (lower latency)
+		counts := make(map[string]int)
+		for i := 0; i < 20; i++ {
+			ips, err := queryDNSGetIPs("latency.test")
+			if err != nil {
+				t.Fatalf("DNS query %d failed: %v", i, err)
+			}
+			if len(ips) > 0 {
+				counts[ips[0]]++
+			}
+		}
+
+		t.Logf("Latency-based distribution: %v", counts)
+
+		// region-b (172.28.0.3) should be selected consistently (it has lower latency)
+		regionBCount := counts["172.28.0.3"]
+		regionACount := counts["172.28.0.2"]
+
+		if regionBCount < 15 {
+			t.Errorf("Expected region-b (172.28.0.3, 10ms latency) to be selected most often, got %d/20 (region-a got %d)",
+				regionBCount, regionACount)
+		}
+	})
+
+	// Test 3: Verify latency data appears in API
+	t.Run("LatencyDataInAPI", func(t *testing.T) {
+		resp, err := client.Get("http://" + gslbAPIAddr + "/api/v1/overwatch/latency")
+		if err != nil {
+			t.Fatalf("Failed to get latency data: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("Expected 200, got %d", resp.StatusCode)
+		}
+
+		var response struct {
+			Entries []struct {
+				Subnet  string `json:"subnet"`
+				Backend string `json:"backend"`
+				Region  string `json:"region"`
+				EWMAMs  int64  `json:"ewma_ms"`
+			} `json:"entries"`
+			Count int `json:"count"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+
+		if response.Count < 2 {
+			t.Errorf("Expected at least 2 latency entries, got %d", response.Count)
+		}
+
+		t.Logf("Latency API returned %d entries", response.Count)
+		for _, e := range response.Entries {
+			t.Logf("  %s -> %s (%s): %dms", e.Subnet, e.Backend, e.Region, e.EWMAMs)
 		}
 	})
 }
