@@ -1,0 +1,11 @@
+# OpenGSLB Robots.txt
+# https://opengslb.org/
+
+User-agent: *
+Allow: /
+
+# Sitemap location
+Sitemap: https://opengslb.org/sitemap.xml
+
+# Crawl-delay for polite crawling (optional)
+Crawl-delay: 1
