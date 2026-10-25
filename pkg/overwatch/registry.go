@@ -629,7 +629,7 @@ func (r *Registry) UpdateValidationWithLatency(service, address string, port int
 }
 
 // applyValidationResult folds one probe result into the backend's validation
-// verdict, honouring the consecutive-result thresholds. With both thresholds
+// verdict, honoring the consecutive-result thresholds. With both thresholds
 // at 1 (the default) the latest probe is the verdict, so a backend leaves DNS
 // on the first failed probe and returns on the first passing one.
 func (r *Registry) applyValidationResult(backend *Backend, healthy bool) {
