@@ -1337,3 +1337,93 @@ func TestValidate_MixedIPv4IPv6(t *testing.T) {
 		t.Errorf("unexpected error for mixed IPv4/IPv6: %v", err)
 	}
 }
+
+// Overwatch validation threshold tests
+
+func TestParse_OverwatchValidationThresholdDefaults(t *testing.T) {
+	yaml := `
+mode: overwatch
+overwatch:
+  gossip:
+    encryption_key: "` + validEncryptionKey() + `"
+  validation:
+    enabled: true
+    check_interval: 5s
+    check_timeout: 2s
+regions:
+  - name: ch7
+    servers:
+      - address: 10.107.0.10
+        service: www.app.lab.internal
+domains:
+  - name: www.app.lab.internal
+    routing_algorithm: failover
+    regions:
+      - ch7
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Overwatch.Validation.FailureThreshold != DefaultValidationFailureThreshold {
+		t.Errorf("expected default failure_threshold %d, got %d", DefaultValidationFailureThreshold, cfg.Overwatch.Validation.FailureThreshold)
+	}
+	if cfg.Overwatch.Validation.SuccessThreshold != DefaultValidationSuccessThreshold {
+		t.Errorf("expected default success_threshold %d, got %d", DefaultValidationSuccessThreshold, cfg.Overwatch.Validation.SuccessThreshold)
+	}
+}
+
+func TestParse_OverwatchValidationThresholdsConfigured(t *testing.T) {
+	yaml := `
+mode: overwatch
+overwatch:
+  gossip:
+    encryption_key: "` + validEncryptionKey() + `"
+  validation:
+    enabled: true
+    failure_threshold: 2
+    success_threshold: 3
+regions:
+  - name: ch7
+    servers:
+      - address: 10.107.0.10
+        service: www.app.lab.internal
+domains:
+  - name: www.app.lab.internal
+    regions:
+      - ch7
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Overwatch.Validation.FailureThreshold != 2 {
+		t.Errorf("expected failure_threshold 2, got %d", cfg.Overwatch.Validation.FailureThreshold)
+	}
+	if cfg.Overwatch.Validation.SuccessThreshold != 3 {
+		t.Errorf("expected success_threshold 3, got %d", cfg.Overwatch.Validation.SuccessThreshold)
+	}
+}
+
+func TestValidate_OverwatchValidationThresholdNegative(t *testing.T) {
+	cfg := validOverwatchConfig()
+	cfg.Overwatch.Validation.FailureThreshold = -1
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative failure_threshold")
+	}
+	if !strings.Contains(err.Error(), "failure_threshold") {
+		t.Errorf("expected failure_threshold error, got: %v", err)
+	}
+
+	cfg = validOverwatchConfig()
+	cfg.Overwatch.Validation.SuccessThreshold = -1
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative success_threshold")
+	}
+	if !strings.Contains(err.Error(), "success_threshold") {
+		t.Errorf("expected success_threshold error, got: %v", err)
+	}
+}

@@ -438,13 +438,55 @@ Backends grouped by health authority source.
 
 | Label | Description |
 |-------|-------------|
-| `authority` | Source: `agent`, `override`, `stale` |
+| `authority` | Layer of the ADR-015 hierarchy that decided the effective status: `override`, `draining`, `validation`, `stale`, `agent`, `static` |
+
+`validation` is the normal value whenever external validation is enabled, including standalone deployments without agents. `agent` means no validation result exists and the agent's own claim is in force. `static` means a config or API defined backend has not been validated yet and is assumed healthy. Every label is published, so a count that drops to zero reads 0.
 
 **Example:**
 ```
-opengslb_overwatch_backends_by_authority{authority="agent"} 20
+opengslb_overwatch_backends_by_authority{authority="validation"} 20
 opengslb_overwatch_backends_by_authority{authority="override"} 1
 opengslb_overwatch_backends_by_authority{authority="stale"} 3
+opengslb_overwatch_backends_by_authority{authority="agent"} 0
+opengslb_overwatch_backends_by_authority{authority="static"} 0
+opengslb_overwatch_backends_by_authority{authority="draining"} 0
+```
+
+#### `opengslb_backend_healthy`
+**Type:** Gauge
+**Labels:** `service`, `region`, `address`
+
+Effective health of each backend known to Overwatch, exactly as the DNS handler sees it: 1 when the backend is in the DNS answer pool, 0 otherwise (unhealthy, stale, draining or overridden unhealthy). The series is removed when the backend is deregistered.
+
+| Label | Description |
+|-------|-------------|
+| `service` | Service (domain) name |
+| `region` | Region the backend belongs to |
+| `address` | Backend `ip:port` |
+
+**Example:**
+```
+opengslb_backend_healthy{service="www.app.lab.internal",region="ch7",address="10.107.0.10:80"} 1
+opengslb_backend_healthy{service="www.app.lab.internal",region="dc10",address="10.110.0.10:80"} 1
+```
+
+Region-level alerting:
+
+```yaml
+- alert: GslbRegionDown
+  expr: min by (service, region) (opengslb_backend_healthy) == 0
+  for: 15s
+  labels: { severity: page }
+  annotations:
+    summary: "OpenGSLB has no healthy backend for {{ $labels.service }} in {{ $labels.region }}"
+
+- alert: GslbServingFromStandby
+  # failover domains: the primary region is out while the standby still answers
+  expr: opengslb_backend_healthy{region="primary"} == 0 and on (service) opengslb_backend_healthy{region="standby"} == 1
+  for: 15s
+  labels: { severity: warning }
+  annotations:
+    summary: "{{ $labels.service }} is being answered from the standby region"
 ```
 
 ### Gossip Metrics

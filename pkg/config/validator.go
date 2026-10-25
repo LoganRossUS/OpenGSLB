@@ -180,6 +180,14 @@ func (c *Config) validateOverwatchMode() error {
 		}
 	}
 
+	// Validation thresholds (0 means "use the default", applied by Parse)
+	if c.Overwatch.Validation.FailureThreshold < 0 {
+		return fmt.Errorf("overwatch.validation.failure_threshold must be at least 1 (got %d)", c.Overwatch.Validation.FailureThreshold)
+	}
+	if c.Overwatch.Validation.SuccessThreshold < 0 {
+		return fmt.Errorf("overwatch.validation.success_threshold must be at least 1 (got %d)", c.Overwatch.Validation.SuccessThreshold)
+	}
+
 	// DNS validation
 	if err := c.validateDNS(); err != nil {
 		return fmt.Errorf("dns: %w", err)
