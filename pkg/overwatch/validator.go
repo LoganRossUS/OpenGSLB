@@ -254,17 +254,44 @@ func (v *Validator) validateSingleBackend(backend *Backend) {
 	RecordValidationResult(backend.Service, backend.Address, backend.Port, result.Healthy)
 	RecordValidationLatency(backend.Service, backend.Address, backend.Port, result.Latency)
 
-	// Log if validation disagrees with agent
-	if backend.AgentHealthy != result.Healthy {
-		v.config.Logger.Info("validation disagrees with agent",
-			"service", backend.Service,
-			"address", backend.Address,
-			"port", backend.Port,
-			"agent_healthy", backend.AgentHealthy,
-			"validation_healthy", result.Healthy,
-			"validation_error", validationErr,
-		)
+	// Report a disagreement with the agent, if the backend has one.
+	if after, ok := v.registry.GetBackend(backend.Service, backend.Address, backend.Port); ok {
+		v.reportDisagreement(backend, after, validationErr)
 	}
+}
+
+// reportDisagreement logs when the validation verdict contradicts an agent's
+// claim. Only agent-registered backends make a claim: static and API backends
+// never report, so in standalone mode there is nothing to disagree with and
+// nothing is logged. For agent backends the disagreement is logged once, when
+// the verdict changes, and at debug level on the following cycles while it
+// persists.
+func (v *Validator) reportDisagreement(before, after *Backend, validationErr string) {
+	if after.Source != SourceAgent || after.ValidationHealthy == nil {
+		return
+	}
+	verdict := *after.ValidationHealthy
+	if after.AgentHealthy == verdict {
+		return
+	}
+
+	attrs := []any{
+		"service", after.Service,
+		"address", after.Address,
+		"port", after.Port,
+		"agent_id", after.AgentID,
+		"agent_healthy", after.AgentHealthy,
+		"validation_healthy", verdict,
+		"validation_error", validationErr,
+	}
+
+	verdictChanged := before.ValidationHealthy == nil || *before.ValidationHealthy != verdict
+	if verdictChanged {
+		v.config.Logger.Info("validation disagrees with agent", attrs...)
+		RecordValidationDisagreement(after.Service, after.AgentHealthy, verdict)
+		return
+	}
+	v.config.Logger.Debug("validation still disagrees with agent", attrs...)
 }
 
 // GetValidationStats returns validation statistics.
@@ -284,8 +311,8 @@ func (v *Validator) GetValidationStats() ValidationStats {
 				stats.UnhealthyBackends++
 			}
 
-			// Check for disagreement
-			if backend.AgentHealthy != *backend.ValidationHealthy {
+			// Check for disagreement (only agents make a claim to disagree with)
+			if backend.Source == SourceAgent && backend.AgentHealthy != *backend.ValidationHealthy {
 				stats.DisagreementCount++
 			}
 		}

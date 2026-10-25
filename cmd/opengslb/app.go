@@ -371,9 +371,11 @@ func (a *Application) initializeBackendRegistry() error {
 	}
 
 	registryCfg := overwatch.RegistryConfig{
-		StaleThreshold: staleThreshold,
-		RemoveAfter:    removeAfter,
-		Logger:         a.logger,
+		StaleThreshold:             staleThreshold,
+		RemoveAfter:                removeAfter,
+		ValidationFailureThreshold: a.config.Overwatch.Validation.FailureThreshold,
+		ValidationSuccessThreshold: a.config.Overwatch.Validation.SuccessThreshold,
+		Logger:                     a.logger,
 	}
 
 	a.backendRegistry = overwatch.NewRegistry(registryCfg, a.overwatchStore)
@@ -424,6 +426,8 @@ func (a *Application) initializeBackendRegistry() error {
 	a.logger.Info("backend registry initialized",
 		"stale_threshold", staleThreshold,
 		"remove_after", removeAfter,
+		"validation_failure_threshold", registryCfg.ValidationFailureThreshold,
+		"validation_success_threshold", registryCfg.ValidationSuccessThreshold,
 		"persistence", a.overwatchStore != nil,
 	)
 

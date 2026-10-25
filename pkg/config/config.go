@@ -54,6 +54,8 @@ const (
 	DefaultOverwatchGossipInterval    = 200 * time.Millisecond
 	DefaultValidationCheckInterval    = 30 * time.Second
 	DefaultValidationCheckTimeout     = 5 * time.Second
+	DefaultValidationFailureThreshold = 1
+	DefaultValidationSuccessThreshold = 1
 	DefaultStaleThreshold             = 30 * time.Second
 	DefaultStaleRemoveAfter           = 5 * time.Minute
 	DefaultDNSSECAlgorithm            = "ECDSAP256SHA256"
@@ -188,6 +190,12 @@ func applyOverwatchDefaults(cfg *Config) {
 	}
 	if cfg.Overwatch.Validation.CheckTimeout == 0 {
 		cfg.Overwatch.Validation.CheckTimeout = DefaultValidationCheckTimeout
+	}
+	if cfg.Overwatch.Validation.FailureThreshold == 0 {
+		cfg.Overwatch.Validation.FailureThreshold = DefaultValidationFailureThreshold
+	}
+	if cfg.Overwatch.Validation.SuccessThreshold == 0 {
+		cfg.Overwatch.Validation.SuccessThreshold = DefaultValidationSuccessThreshold
 	}
 
 	// Stale defaults

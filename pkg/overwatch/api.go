@@ -76,15 +76,20 @@ type BackendResponse struct {
 	AgentID           string     `json:"agent_id"`
 	Region            string     `json:"region"`
 	EffectiveStatus   string     `json:"effective_status"`
+	Authority         string     `json:"authority"`
 	AgentHealthy      bool       `json:"agent_healthy"`
 	AgentLastSeen     time.Time  `json:"agent_last_seen"`
 	ValidationHealthy *bool      `json:"validation_healthy,omitempty"`
 	ValidationCheck   *time.Time `json:"validation_last_check,omitempty"`
 	ValidationError   string     `json:"validation_error,omitempty"`
-	OverrideStatus    *bool      `json:"override_status,omitempty"`
-	OverrideReason    string     `json:"override_reason,omitempty"`
-	OverrideBy        string     `json:"override_by,omitempty"`
-	OverrideAt        *time.Time `json:"override_at,omitempty"`
+	// Consecutive probe results since the last change of direction, so an
+	// operator can watch a threshold being approached.
+	ValidationConsecutivePasses int        `json:"validation_consecutive_passes"`
+	ValidationConsecutiveFails  int        `json:"validation_consecutive_fails"`
+	OverrideStatus              *bool      `json:"override_status,omitempty"`
+	OverrideReason              string     `json:"override_reason,omitempty"`
+	OverrideBy                  string     `json:"override_by,omitempty"`
+	OverrideAt                  *time.Time `json:"override_at,omitempty"`
 }
 
 // BackendsResponse is the response for GET /api/v1/overwatch/backends.
@@ -228,8 +233,12 @@ func (h *APIHandlers) HandleBackends(w http.ResponseWriter, r *http.Request) {
 			AgentID:         b.AgentID,
 			Region:          b.Region,
 			EffectiveStatus: string(b.EffectiveStatus),
+			Authority:       string(b.Authority),
 			AgentHealthy:    b.AgentHealthy,
 			AgentLastSeen:   b.AgentLastSeen,
+
+			ValidationConsecutivePasses: b.ValidationConsecutivePasses,
+			ValidationConsecutiveFails:  b.ValidationConsecutiveFails,
 		}
 
 		if b.ValidationHealthy != nil {
@@ -368,7 +377,7 @@ func (h *APIHandlers) HandleStats(w http.ResponseWriter, r *http.Request) {
 		if b.ValidationHealthy != nil {
 			stats.ValidatedBackends++
 			// Check for disagreement
-			if b.AgentHealthy != *b.ValidationHealthy {
+			if b.Source == SourceAgent && b.AgentHealthy != *b.ValidationHealthy {
 				stats.DisagreementCount++
 			}
 		}

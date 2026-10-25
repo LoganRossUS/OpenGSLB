@@ -142,11 +142,12 @@ func RecordOverrideOperation(operation string) {
 func UpdateRegistryMetrics(registry *Registry) {
 	backends := registry.GetAllBackends()
 
-	// Count by status
+	// Count by status and by the authority that decided it
 	staleCount := 0
 	overrideCount := 0
 	healthyCount := 0
 	agentIDs := make(map[string]bool)
+	byAuthority := make(map[Authority]int, len(Authorities))
 
 	for _, backend := range backends {
 		if backend.EffectiveStatus == StatusStale {
@@ -157,7 +158,11 @@ func UpdateRegistryMetrics(registry *Registry) {
 		if backend.OverrideStatus != nil {
 			overrideCount++
 		}
-		agentIDs[backend.AgentID] = true
+		// Static and API backends have no agent; do not count the empty ID as one
+		if backend.AgentID != "" {
+			agentIDs[backend.AgentID] = true
+		}
+		byAuthority[backend.Authority]++
 	}
 
 	// Update metrics using existing metrics package functions
@@ -166,8 +171,9 @@ func UpdateRegistryMetrics(registry *Registry) {
 	metrics.SetOverwatchStaleAgents(staleCount)
 	metrics.SetOverwatchOverridesActive(overrideCount)
 
-	// Update backends by authority
-	metrics.SetOverwatchBackendsByAuthority("agent", len(backends)-overrideCount-staleCount)
-	metrics.SetOverwatchBackendsByAuthority("override", overrideCount)
-	metrics.SetOverwatchBackendsByAuthority("stale", staleCount)
+	// Update backends by authority. Every label is published so a series that
+	// drops to zero is not left at its last value.
+	for _, authority := range Authorities {
+		metrics.SetOverwatchBackendsByAuthority(string(authority), byAuthority[authority])
+	}
 }

@@ -7,6 +7,8 @@
 package metrics
 
 import (
+	"fmt"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -130,6 +132,18 @@ var (
 			Help:      "Backends grouped by health authority source",
 		},
 		[]string{"authority"},
+	)
+
+	// BackendHealthy reports the effective health of every backend known to this
+	// Overwatch, as decided by the ADR-015 hierarchy (override, draining,
+	// validation, staleness, agent claim, static default).
+	BackendHealthy = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "backend_healthy",
+			Help:      "Effective health of a backend as decided by Overwatch (1 healthy, 0 otherwise)",
+		},
+		[]string{"service", "region", "address"},
 	)
 
 	// OverwatchValidationChecksTotal counts external validation checks.
@@ -602,6 +616,25 @@ func SetOverwatchBackends(total, healthy int) {
 // SetOverwatchBackendsByAuthority sets backend counts per authority level.
 func SetOverwatchBackendsByAuthority(authority string, count int) {
 	OverwatchBackendsByAuthority.WithLabelValues(authority).Set(float64(count))
+}
+
+// SetBackendHealthy sets the per-backend health gauge (1 healthy, 0 otherwise).
+// The address label is "ip:port".
+func SetBackendHealthy(service, region, address string, port int, healthy bool) {
+	value := 0.0
+	if healthy {
+		value = 1
+	}
+	BackendHealthy.WithLabelValues(service, region, backendAddress(address, port)).Set(value)
+}
+
+// DeleteBackendHealthy removes the per-backend series once a backend leaves the registry.
+func DeleteBackendHealthy(service, region, address string, port int) {
+	BackendHealthy.DeleteLabelValues(service, region, backendAddress(address, port))
+}
+
+func backendAddress(address string, port int) string {
+	return fmt.Sprintf("%s:%d", address, port)
 }
 
 // RecordOverwatchValidation records an external validation check result.

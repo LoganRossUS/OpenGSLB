@@ -250,6 +250,16 @@ type ValidationConfig struct {
 	// CheckTimeout is the timeout for validation checks
 	// Default: 5s
 	CheckTimeout time.Duration `yaml:"check_timeout"`
+
+	// FailureThreshold is the number of consecutive failed validations before
+	// a backend is taken out of DNS.
+	// Default: 1 (a single failed probe)
+	FailureThreshold int `yaml:"failure_threshold"`
+
+	// SuccessThreshold is the number of consecutive passing validations before
+	// a backend returns to DNS.
+	// Default: 1 (a single passing probe)
+	SuccessThreshold int `yaml:"success_threshold"`
 }
 
 // StaleConfig defines settings for detecting stale backends.

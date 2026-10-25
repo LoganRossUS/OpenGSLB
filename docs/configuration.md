@@ -204,6 +204,8 @@ overwatch:
     enabled: true
     check_interval: 30s
     check_timeout: 5s
+    failure_threshold: 1
+    success_threshold: 1
 
   stale:
     threshold: 30s
@@ -253,8 +255,14 @@ External validation allows Overwatch to independently verify agent health claims
 | `enabled` | boolean | `true` | Enable external health validation |
 | `check_interval` | duration | `30s` | Frequency of validation checks |
 | `check_timeout` | duration | `5s` | Timeout for validation checks |
+| `failure_threshold` | integer | `1` | Consecutive failed validations before a backend leaves DNS |
+| `success_threshold` | integer | `1` | Consecutive passing validations before a backend returns to DNS |
 
 **Important:** Per ADR-015, Overwatch validation ALWAYS wins over agent claims. This prevents agents from falsely claiming healthy status.
+
+**Standalone overwatch (no agents):** when validation is enabled, it is the sole health authority for backends defined in `regions` or created through the API. Each validation cycle probes every backend once (`GET /` for `http`, a connect for `tcp`) and the result is applied immediately: with the default thresholds a backend leaves the DNS answer on the first failed probe and returns on the first passing probe, so failover and failback both complete within one `check_interval` plus the domain TTL. There is no dwell time. Raise `failure_threshold` or `success_threshold` to require consecutive results before a transition; both apply per backend and reset when a probe goes the other way.
+
+The `health_check` block of a region (`path`, `failure_threshold`, `success_threshold`) drives the health manager behind `GET /api/v1/health/regions` and the `health status changed` log lines. In overwatch mode the DNS answer follows the validation verdict, not the health manager, so the two can report different states for a few seconds.
 
 ### Overwatch Stale Settings
 

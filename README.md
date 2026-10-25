@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml/badge.svg)](https://github.com/loganrossus/OpenGSLB/actions/workflows/ci.yml) [![Docker Build](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml/badge.svg)](https://github.com/loganrossus/opengslb/actions/workflows/docker-build.yml) [![Release](https://img.shields.io/github/v/release/loganrossus/OpenGSLB?label=stable)](https://github.com/loganrossus/OpenGSLB/releases)
 
-**v1.1.9 Stable Release** - Production-ready DNS-first global load balancing.
+**v1.1.10 Stable Release** - Production-ready DNS-first global load balancing.
 
 [Website](https://opengslb.org) | [Documentation](https://docs.opengslb.org) | [Discord](https://discord.gg/H4s8RG6Az) | [Reddit](https://www.reddit.com/r/OpenGSLB)
 
@@ -189,7 +189,7 @@ Full documentation is available at **[docs.opengslb.org](https://docs.opengslb.o
 
 ## Roadmap
 
-### v1.1.9 Stable (Current)
+### v1.1.10 Stable (Current)
 - ✅ DNS server with A and AAAA record support
 - ✅ Round-robin, weighted, and failover routing
 - ✅ Geolocation-based routing (GeoIP + custom CIDR mappings)
