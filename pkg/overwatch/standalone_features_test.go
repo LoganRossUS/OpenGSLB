@@ -15,7 +15,7 @@ import (
 )
 
 // TestRegistry_ValidationThresholds covers the optional consecutive-result
-// thresholds. The default of 1 keeps today's behaviour (first result wins).
+// thresholds. The default of 1 keeps today's behavior (first result wins).
 func TestRegistry_ValidationThresholds(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 	registry := newStandaloneRegistry(t, logger, RegistryConfig{
