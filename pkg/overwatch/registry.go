@@ -37,6 +37,36 @@ const (
 	StatusDraining BackendStatus = "draining"
 )
 
+// Authority names the layer of the ADR-015 health hierarchy that decided a
+// backend's effective status.
+type Authority string
+
+const (
+	// AuthorityOverride: a manual override is set.
+	AuthorityOverride Authority = "override"
+	// AuthorityDraining: the agent reported predictive-health draining.
+	AuthorityDraining Authority = "draining"
+	// AuthorityValidation: Overwatch external validation produced the verdict.
+	AuthorityValidation Authority = "validation"
+	// AuthorityStale: no validation result and the agent heartbeat is stale.
+	AuthorityStale Authority = "stale"
+	// AuthorityAgent: no validation result, the agent's own claim is used.
+	AuthorityAgent Authority = "agent"
+	// AuthorityStatic: no validation result for a config or API defined backend,
+	// which is assumed healthy until validated.
+	AuthorityStatic Authority = "static"
+)
+
+// Authorities lists every authority value so metrics can publish all series.
+var Authorities = []Authority{
+	AuthorityOverride,
+	AuthorityDraining,
+	AuthorityValidation,
+	AuthorityStale,
+	AuthorityAgent,
+	AuthorityStatic,
+}
+
 // RegistrationSource indicates how a backend was registered.
 // v1.1.0: Added to support unified server registration architecture.
 type RegistrationSource string
@@ -87,6 +117,10 @@ type Backend struct {
 	ValidationLastCheck time.Time `json:"validation_last_check,omitempty"`
 	// ValidationError is the last validation error, if any.
 	ValidationError string `json:"validation_error,omitempty"`
+	// ValidationConsecutivePasses counts passing validations since the last failure.
+	ValidationConsecutivePasses int `json:"validation_consecutive_passes,omitempty"`
+	// ValidationConsecutiveFails counts failing validations since the last pass.
+	ValidationConsecutiveFails int `json:"validation_consecutive_fails,omitempty"`
 
 	// OverrideStatus is a manual override status, if set.
 	OverrideStatus *bool `json:"override_status,omitempty"`
@@ -112,6 +146,8 @@ type Backend struct {
 
 	// EffectiveStatus is the computed effective status based on the hierarchy.
 	EffectiveStatus BackendStatus `json:"effective_status"`
+	// Authority is the layer of the hierarchy that produced EffectiveStatus.
+	Authority Authority `json:"authority"`
 
 	// Latency tracking for latency-based routing (Sprint 6)
 	// SmoothedLatency is the EMA of validation latency measurements
@@ -140,6 +176,16 @@ type RegistryConfig struct {
 	// Default: 0.3
 	LatencySmoothingFactor float64
 
+	// ValidationFailureThreshold is the number of consecutive failed
+	// validations before a backend's validation verdict turns unhealthy.
+	// Default: 1 (the latest probe is the verdict).
+	ValidationFailureThreshold int
+
+	// ValidationSuccessThreshold is the number of consecutive passing
+	// validations before a backend's validation verdict turns healthy.
+	// Default: 1 (the latest probe is the verdict).
+	ValidationSuccessThreshold int
+
 	// Logger for registry operations.
 	Logger *slog.Logger
 }
@@ -147,10 +193,12 @@ type RegistryConfig struct {
 // DefaultRegistryConfig returns sensible defaults.
 func DefaultRegistryConfig() RegistryConfig {
 	return RegistryConfig{
-		StaleThreshold:         30 * time.Second,
-		RemoveAfter:            5 * time.Minute,
-		LatencySmoothingFactor: 0.3, // EMA alpha default
-		Logger:                 slog.Default(),
+		StaleThreshold:             30 * time.Second,
+		RemoveAfter:                5 * time.Minute,
+		LatencySmoothingFactor:     0.3, // EMA alpha default
+		ValidationFailureThreshold: 1,
+		ValidationSuccessThreshold: 1,
+		Logger:                     slog.Default(),
 	}
 }
 
@@ -174,6 +222,12 @@ type Registry struct {
 func NewRegistry(cfg RegistryConfig, st store.Store) *Registry {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.ValidationFailureThreshold < 1 {
+		cfg.ValidationFailureThreshold = 1
+	}
+	if cfg.ValidationSuccessThreshold < 1 {
+		cfg.ValidationSuccessThreshold = 1
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Registry{
@@ -495,6 +549,7 @@ func (r *Registry) Deregister(service, address string, port int) error {
 	oldStatus := backend.EffectiveStatus
 
 	delete(r.backends, key)
+	metrics.DeleteBackendHealthy(backend.Service, backend.Region, backend.Address, backend.Port)
 
 	r.config.Logger.Info("backend deregistered",
 		"service", service,
@@ -538,9 +593,9 @@ func (r *Registry) UpdateValidationWithLatency(service, address string, port int
 	}
 
 	oldStatus := backend.EffectiveStatus
-	backend.ValidationHealthy = &healthy
 	backend.ValidationLastCheck = time.Now()
 	backend.ValidationError = validationErr
+	r.applyValidationResult(backend, healthy)
 
 	// Update latency with EMA smoothing (only for successful healthy checks)
 	if healthy && latency > 0 {
@@ -571,6 +626,33 @@ func (r *Registry) UpdateValidationWithLatency(service, address string, port int
 	}
 
 	return nil
+}
+
+// applyValidationResult folds one probe result into the backend's validation
+// verdict, honouring the consecutive-result thresholds. With both thresholds
+// at 1 (the default) the latest probe is the verdict, so a backend leaves DNS
+// on the first failed probe and returns on the first passing one.
+func (r *Registry) applyValidationResult(backend *Backend, healthy bool) {
+	if healthy {
+		backend.ValidationConsecutiveFails = 0
+		if backend.ValidationConsecutivePasses < r.config.ValidationSuccessThreshold {
+			backend.ValidationConsecutivePasses++
+		}
+		if backend.ValidationConsecutivePasses >= r.config.ValidationSuccessThreshold {
+			verdict := true
+			backend.ValidationHealthy = &verdict
+		}
+		return
+	}
+
+	backend.ValidationConsecutivePasses = 0
+	if backend.ValidationConsecutiveFails < r.config.ValidationFailureThreshold {
+		backend.ValidationConsecutiveFails++
+	}
+	if backend.ValidationConsecutiveFails >= r.config.ValidationFailureThreshold {
+		verdict := false
+		backend.ValidationHealthy = &verdict
+	}
 }
 
 // updateLatencyEMA updates the backend's smoothed latency using exponential moving average.
@@ -864,25 +946,35 @@ func (r *Registry) BackendCount() int {
 //
 // Note: Validation is checked BEFORE staleness to allow Overwatch external checks
 // to recover backends when agents are unavailable but the backend service is still running.
+//
+// The decision is applied immediately: there is no dwell time, debounce or
+// agreement requirement between layers. The authority that produced the status
+// is recorded on the backend and the per-backend health gauge is updated.
 func (r *Registry) computeEffectiveStatus(backend *Backend) {
+	status, authority := r.decideStatus(backend)
+	backend.EffectiveStatus = status
+	backend.Authority = authority
+	metrics.SetBackendHealthy(backend.Service, backend.Region, backend.Address, backend.Port, status == StatusHealthy)
+}
+
+// decideStatus walks the hierarchy and returns the status together with the
+// authority that decided it.
+func (r *Registry) decideStatus(backend *Backend) (BackendStatus, Authority) {
 	now := time.Now()
 	isStale := now.Sub(backend.AgentLastSeen) > r.config.StaleThreshold
 
 	// Manual override takes highest precedence
 	if backend.OverrideStatus != nil {
 		if *backend.OverrideStatus {
-			backend.EffectiveStatus = StatusHealthy
-		} else {
-			backend.EffectiveStatus = StatusUnhealthy
+			return StatusHealthy, AuthorityOverride
 		}
-		return
+		return StatusUnhealthy, AuthorityOverride
 	}
 
 	// Predictive health draining - agent is bleeding traffic due to resource pressure
 	// This takes precedence over validation because the agent knows its own state best
 	if backend.Draining {
-		backend.EffectiveStatus = StatusDraining
-		return
+		return StatusDraining, AuthorityDraining
 	}
 
 	// External validation ALWAYS wins over agent claims (ADR-015 hierarchy)
@@ -890,31 +982,27 @@ func (r *Registry) computeEffectiveStatus(backend *Backend) {
 	// unavailable but the backend service is still healthy
 	if backend.ValidationHealthy != nil {
 		if *backend.ValidationHealthy {
-			backend.EffectiveStatus = StatusHealthy
-		} else {
-			backend.EffectiveStatus = StatusUnhealthy
+			return StatusHealthy, AuthorityValidation
 		}
-		return
+		return StatusUnhealthy, AuthorityValidation
 	}
 
 	// No validation result - check staleness (only for agent-registered backends)
 	// Static and API backends don't send heartbeats, so staleness doesn't apply
 	if backend.Source == SourceAgent && isStale {
-		backend.EffectiveStatus = StatusStale
-		return
+		return StatusStale, AuthorityStale
 	}
 
 	// Fall back to agent claim for agent backends, assume healthy for static/API
 	if backend.Source == SourceAgent {
 		if backend.AgentHealthy {
-			backend.EffectiveStatus = StatusHealthy
-		} else {
-			backend.EffectiveStatus = StatusUnhealthy
+			return StatusHealthy, AuthorityAgent
 		}
-	} else {
-		// Static and API backends are healthy by default (unless validation says otherwise)
-		backend.EffectiveStatus = StatusHealthy
+		return StatusUnhealthy, AuthorityAgent
 	}
+
+	// Static and API backends are healthy by default (unless validation says otherwise)
+	return StatusHealthy, AuthorityStatic
 }
 
 // staleDetectionLoop periodically checks for and removes stale backends.
@@ -995,6 +1083,7 @@ func (r *Registry) checkStaleBackends() {
 	for _, key := range toRemove {
 		backend := r.backends[key]
 		delete(r.backends, key)
+		metrics.DeleteBackendHealthy(backend.Service, backend.Region, backend.Address, backend.Port)
 
 		r.config.Logger.Info("stale backend removed",
 			"service", backend.Service,

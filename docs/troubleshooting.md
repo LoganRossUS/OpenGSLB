@@ -388,6 +388,34 @@ journalctl -u opengslb | grep -i "disagrees with agent"
 2. **Different health check configuration** - Agent and Overwatch using different paths/ports
 3. **Intermittent failures** - Backend flapping, caught at different times
 
+The log line is written once, when the validation verdict changes, and repeats at debug level while the disagreement persists. It is never written for backends defined in `regions` or created through the API, because no agent makes a claim for them.
+
+### Slow Return to Primary in Standalone Overwatch
+
+**Symptoms:**
+- `routing_algorithm: failover`, validation enabled, no agents
+- After the primary recovers, `/api/v1/health/regions` shows it healthy within one health check interval but the DNS answer stays on the standby for longer
+
+**How the decision is made:** in overwatch mode the DNS handler reads the backend registry, whose status for a config-defined backend is the external validation verdict alone. The verdict changes on the first probe result that crosses `overwatch.validation.failure_threshold` or `success_threshold` (both default to 1), so the DNS answer moves within one `check_interval` plus the domain TTL, with no dwell time. `/api/v1/health/regions` and the `health status changed` log lines come from the health manager, which probes the region's `health_check.path` with the region's thresholds and does not feed the DNS answer in overwatch mode. The two layers probe different URLs: the validator fetches `/` (or makes a TCP connect for `tcp` checks) with `check_timeout`; the health manager fetches `health_check.path`.
+
+A return to primary slower than `check_interval` + TTL therefore means the validator's probe of the primary kept failing after the health manager's probe passed. Confirm it:
+
+```bash
+# The verdict, the last error and the consecutive counts, per backend
+curl -s http://localhost:8080/api/v1/overwatch/backends | jq '.backends[] | {address, effective_status, authority, validation_healthy, validation_error, validation_consecutive_passes, validation_consecutive_fails}'
+
+# The moment the verdict changed
+journalctl -u opengslb | grep "backend validation status changed"
+
+# Every probe result (debug level)
+journalctl -u opengslb | grep "validation check completed"
+
+# Per-backend health as the DNS handler sees it
+curl -s http://localhost:9090/metrics | grep opengslb_backend_healthy
+```
+
+On the backend, filter its access log for the validator's requests only: they carry `User-Agent: OpenGSLB-HealthCheck/1.0` and request `/`. Requests to `/health` are the health manager; other clients that fetch `/` (service discovery checks, traffic generators) are not the validator. Typical causes of a validator probe failing while `/health` passes: `/` depends on upstreams that are not ready yet, a firewall or NAT state on the path from the Overwatch node that the health check path does not share, or the response taking longer than `check_timeout`.
+
 ### Backends Going Stale
 
 **Symptoms:**

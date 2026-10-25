@@ -5,6 +5,27 @@ All notable changes to OpenGSLB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.10] - 2026-10-25
+
+### Added
+
+#### Per-backend health gauge
+- **`opengslb_backend_healthy{service,region,address}`**: 1 when a backend is in the DNS answer pool, 0 otherwise. Enables region-level alerting such as `min by (service, region) (opengslb_backend_healthy) == 0`. The series is removed when the backend is deregistered.
+
+#### Validation thresholds
+- **`overwatch.validation.failure_threshold`** and **`overwatch.validation.success_threshold`**: consecutive validation results required before a backend leaves or re-enters DNS. Both default to `1`, which is the existing behaviour (the latest probe is the verdict, so failover and failback complete within one `check_interval` plus TTL). Negative values are rejected at config load.
+- `GET /api/v1/overwatch/backends` now reports `authority` (which layer of the ADR-015 hierarchy decided `effective_status`) and `validation_consecutive_passes` / `validation_consecutive_fails`.
+
+### Changed
+- **Standalone overwatch logging**: `validation disagrees with agent` is no longer written for backends defined in `regions` or created through the API; they have no agent to disagree with. For agent-registered backends it is written once when the validation verdict changes and at debug level while the disagreement persists. Disagreement counts in `/api/v1/overwatch/stats` follow the same rule.
+- **`opengslb_overwatch_backends_by_authority`**: the `authority` label now reports the layer that produced the status (`override`, `draining`, `validation`, `stale`, `agent`, `static`). Previously every backend that was not overridden or stale was counted as `agent`, including config-defined backends in standalone deployments. All six series are always published.
+- **`opengslb_overwatch_agents_registered`** no longer counts the empty agent ID of static and API backends as an agent.
+
+### Documentation
+- Configuration, metrics and troubleshooting guides describe how the DNS answer is decided in standalone overwatch mode, why `/api/v1/health/regions` can differ from it, and how to diagnose a slow return to the primary.
+
+---
+
 ## [1.1.2] - 2025-12-18
 
 ### Added
