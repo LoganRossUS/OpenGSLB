@@ -28,30 +28,33 @@ Total number of DNS queries received.
 
 | Label | Description |
 |-------|-------------|
-| `domain` | The queried domain name |
+| `domain` | The queried name in canonical form: lower case with a trailing dot, whatever case the query used. Empty for a request without a question. |
 | `type` | DNS query type (A, AAAA, etc.) |
-| `status` | Response status: `success`, `nxdomain`, `servfail` |
+| `status` | The DNS response code of the answer: `NOERROR`, `NXDOMAIN`, `SERVFAIL`, `REFUSED`, `FORMERR`, `NOTIMP` or `BADVERS` |
+
+`NOERROR` covers answers with a record and empty answers (a name that exists but has no record of the queried type). `REFUSED` counts queries for names outside the served zones, which usually means a client is using the Overwatch as a recursive resolver. `SERVFAIL` counts queries for which every server of the queried address family was unhealthy.
 
 **Example:**
 ```
-opengslb_dns_queries_total{domain="app.example.com",type="A",status="success"} 1542
-opengslb_dns_queries_total{domain="app.example.com",type="AAAA",status="success"} 523
-opengslb_dns_queries_total{domain="unknown.com",type="A",status="nxdomain"} 12
+opengslb_dns_queries_total{domain="app.example.com.",type="A",status="NOERROR"} 1542
+opengslb_dns_queries_total{domain="app.example.com.",type="AAAA",status="NOERROR"} 523
+opengslb_dns_queries_total{domain="missing.example.com.",type="A",status="NXDOMAIN"} 12
+opengslb_dns_queries_total{domain="www.google.com.",type="A",status="REFUSED"} 3
 ```
 
 #### `opengslb_dns_query_duration_seconds`
 **Type:** Histogram  
 **Labels:** `domain`, `status`
 
-DNS query processing duration in seconds.
+DNS query processing duration in seconds. The labels have the same values as in `opengslb_dns_queries_total`.
 
 **Buckets:** 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1
 
 **Example:**
 ```
-opengslb_dns_query_duration_seconds_bucket{domain="app.example.com",status="success",le="0.001"} 1200
-opengslb_dns_query_duration_seconds_sum{domain="app.example.com",status="success"} 0.892
-opengslb_dns_query_duration_seconds_count{domain="app.example.com",status="success"} 1542
+opengslb_dns_query_duration_seconds_bucket{domain="app.example.com.",status="NOERROR",le="0.001"} 1200
+opengslb_dns_query_duration_seconds_sum{domain="app.example.com.",status="NOERROR"} 0.892
+opengslb_dns_query_duration_seconds_count{domain="app.example.com.",status="NOERROR"} 1542
 ```
 
 #### `opengslb_dns_last_healthy_answers_total`
@@ -256,8 +259,11 @@ histogram_quantile(0.99, rate(opengslb_dns_query_duration_seconds_bucket[5m]))
 ```
 
 ### Error Rate
+
+The `status` label holds the DNS response code. `SERVFAIL` is the server-side failure (every server of a domain down). `NXDOMAIN` and `REFUSED` are correct answers to queries for names that do not exist or are not served here, so they are not counted as errors.
+
 ```promql
-sum(rate(opengslb_dns_queries_total{status!="success"}[5m])) 
+sum(rate(opengslb_dns_queries_total{status="SERVFAIL"}[5m])) 
 / 
 sum(rate(opengslb_dns_queries_total[5m]))
 ```
@@ -301,7 +307,7 @@ rate(opengslb_routing_decisions_total{algorithm="failover"}[5m])
 ```yaml
 - alert: OpenGSLBHighErrorRate
   expr: |
-    sum(rate(opengslb_dns_queries_total{status!="success"}[5m])) 
+    sum(rate(opengslb_dns_queries_total{status="SERVFAIL"}[5m])) 
     / 
     sum(rate(opengslb_dns_queries_total[5m])) > 0.05
   for: 5m

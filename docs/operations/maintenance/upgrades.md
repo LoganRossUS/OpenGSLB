@@ -294,7 +294,7 @@ After upgrade, verify:
 ```promql
 # Check for anomalies
 rate(opengslb_dns_queries_total[5m])
-rate(opengslb_dns_queries_total{status!="success"}[5m])
+rate(opengslb_dns_queries_total{status="SERVFAIL"}[5m])
 opengslb_overwatch_backends_healthy
 ```
 

@@ -298,18 +298,106 @@ dns:
   listen_address: ":53"
   default_ttl: 60
   return_last_healthy: false
+  max_udp_size: 1232
+  zones:
+    - gslb.example.com
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `listen_address` | string | `:53` | Address and port to listen on. Format: `ip:port` or `:port` for all interfaces. |
 | `default_ttl` | integer | `60` | Default TTL (seconds) for DNS responses. Clients cache responses for this duration. |
-| `return_last_healthy` | boolean | `false` | When all servers are unhealthy: `false` returns SERVFAIL, `true` returns the last known healthy IP. |
+| `return_last_healthy` | boolean | `false` | What to answer when servers of the queried address family are configured for a name and every one of them is unhealthy. `false`: SERVFAIL. `true`: answer as if all of them were healthy, so the domain's routing algorithm picks among the configured servers. |
+| `max_udp_size` | integer | `1232` | Largest DNS response sent over UDP, in bytes, and the UDP payload size advertised in EDNS responses. Allowed: `512` to `4096`. |
+| `zones` | list | (empty) | Zones this Overwatch is authoritative for. Each entry is a zone name or a mapping with SOA and NS settings. See [Zones](#zones). |
 
 **Notes:**
 - Lower TTL = faster failover but higher DNS query volume
 - Port 53 requires root privileges. Use a high port (e.g., `:5353`) for non-root operation
-- `return_last_healthy: true` enables "limp mode" - degraded service instead of complete failure
+- `return_last_healthy: true` trades correctness for availability: clients get an address that failed its health check instead of no address. No history of earlier answers is kept; the choice is made among all configured servers of the queried family. Each such answer is counted in the metric `opengslb_dns_last_healthy_answers_total`. A name with no configured server of the queried family is an empty answer either way.
+- `max_udp_size`: a client that advertises a smaller EDNS size gets the smaller size, and a query without EDNS is always limited to 512 bytes. A response that does not fit is cut down to whole records and sent with the TC bit, and the client retries over TCP. TCP responses are never truncated. The default of 1232 bytes avoids IP fragmentation on almost every path (DNS Flag Day 2020); raise it only when you know the path MTU between your resolvers and the Overwatch.
+- `return_last_healthy`, `max_udp_size` and `zones` are applied on configuration reload (SIGHUP).
+
+#### Zones
+
+`dns.zones` lists the zones the Overwatch is authoritative for. It decides three things:
+
+- which names get an authoritative negative answer (NXDOMAIN or an empty answer) and which are REFUSED,
+- the SOA record in the authority section of negative answers, which tells resolvers how long to cache them,
+- the SOA and NS records answered at the zone apex.
+
+An entry is either a zone name, which leaves every setting at its default, or a mapping. Both forms can be mixed:
+
+```yaml
+dns:
+  zones:
+    # Plain form: every SOA and NS value is defaulted.
+    - gslb.example.com
+
+    # Object form.
+    - name: internal.corp
+      ttl: 3600                       # TTL of the apex SOA and NS records
+      soa:
+        primary_ns: ns1.internal.corp # SOA MNAME
+        contact: dns-admin@internal.corp
+        serial: 2026112001
+        refresh: 3600
+        retry: 600
+        expire: 604800
+        negative_ttl: 60              # SOA MINIMUM
+      nameservers:
+        - ns1.internal.corp
+        - ns2.internal.corp
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | (required) | Zone apex, for example `gslb.example.com`. Case is ignored and a trailing dot is optional. |
+| `ttl` | integer | `3600` | TTL (seconds) of the SOA and NS records at the apex. |
+| `soa.primary_ns` | string | first entry of `nameservers`, else derived from the node identity | SOA MNAME: the primary nameserver of the zone. |
+| `soa.contact` | string | `hostmaster.<zone>` | SOA RNAME: the mailbox of the person responsible for the zone. Accepts `user@example.com` or the DNS form `user.example.com`. |
+| `soa.serial` | integer | `1` | SOA serial number. |
+| `soa.refresh` | integer | `3600` | SOA REFRESH (seconds). |
+| `soa.retry` | integer | `600` | SOA RETRY (seconds). |
+| `soa.expire` | integer | `604800` | SOA EXPIRE (seconds). |
+| `soa.negative_ttl` | integer | `60` | SOA MINIMUM (seconds): how long resolvers may cache NXDOMAIN and empty answers (RFC 2308). |
+| `nameservers` | list | the SOA primary nameserver | NS record set at the apex, as host names. It should list the same names as the delegation (NS records) in the parent zone. |
+
+**Defaults from the node identity.** When a zone has neither `soa.primary_ns` nor `nameservers`, the primary nameserver (and the single NS record) is derived from `overwatch.identity.node_id`, or from the host name when no node ID is set:
+
+- a node ID that is a host name with at least two labels, such as `overwatch-1.dc1.example.net`, is used as it is;
+- any other node ID is reduced to one DNS label and placed under the zone: node `overwatch-1` in zone `gslb.example.com` gives `overwatch-1.gslb.example.com`;
+- with no usable node ID the name is `ns.<zone>`.
+
+These defaults differ from node to node. When more than one Overwatch serves a zone, set `nameservers` (and usually `soa.contact`) to the same values on all of them so that every node answers the same SOA and NS records. OpenGSLB does not answer A or AAAA queries for the nameserver names themselves: they must resolve somewhere else (glue in the parent zone, or names in another zone).
+
+**Serial.** OpenGSLB has no zone transfers, so nothing compares serial numbers and the serial does not change when domains or servers change. It stays at the configured value (default `1`). Give every Overwatch that serves the zone the same value. A date-based value such as `2026112001` is conventional but not required.
+
+**Negative caching.** NXDOMAIN and empty answers carry the zone SOA with a TTL of `min(ttl, soa.negative_ttl)`. Resolvers cache the negative answer for that long, so a domain created through the API or by an agent can stay invisible to a resolver for up to `negative_ttl` seconds if it was queried just before it existed. The default is 60 seconds for that reason.
+
+**Domains outside every listed zone.** A GSLB domain that is not inside any zone of `dns.zones`, which includes every domain when `dns.zones` is empty, is served as its own zone with all defaults: the domain name is the apex, and names beneath it get authoritative negative answers. Existing configurations without `dns.zones` therefore keep resolving. Listing the zone is still recommended: without it, a query for a sibling of the domain (another name under the same parent) is REFUSED instead of NXDOMAIN, because the server cannot know it is authoritative for the parent.
+
+Validation rejects an invalid or duplicate zone name, the root zone, timers outside 0 to 2147483647, an invalid `primary_ns` or `contact`, and empty, invalid or duplicate `nameservers` entries.
+
+#### DNS Responses
+
+What the DNS server answers, for reference when reading `dig` output or resolver logs:
+
+| Query | Response |
+|-------|----------|
+| A or AAAA for a domain with a healthy server of that address family | NOERROR with one record. Names are matched without regard to case and the response repeats the name exactly as it was asked. |
+| A or AAAA for a domain with no configured server of that family (for example AAAA for an IPv4-only domain) | NOERROR with an empty answer and the zone SOA in the authority section |
+| A or AAAA for a domain whose servers of that family are all unhealthy | SERVFAIL, or an answer when `return_last_healthy` is `true` |
+| Any other record type for a name that exists (TXT, MX, CNAME, HTTPS, ANY, ...) | NOERROR with an empty answer and the zone SOA in the authority section |
+| SOA or NS at a zone apex | NOERROR with the zone's SOA record or NS record set |
+| Any type for a name that does not exist inside a served zone | NXDOMAIN with the zone SOA in the authority section |
+| Any type for a name outside every served zone | REFUSED, not authoritative |
+| AXFR or IXFR | REFUSED (zone transfers are not supported) |
+| A query with an EDNS version other than 0 | BADVERS |
+| A class other than IN | REFUSED |
+| An opcode other than QUERY (NOTIFY, UPDATE, ...) | NOTIMP |
+
+A response carries an EDNS OPT record exactly when the query did. With `overwatch.geolocation.ecs_enabled: true`, a query that carries an EDNS Client Subnet option gets the option back; its scope prefix length equals the source prefix length when the client subnet decided the answer (geolocation and learned latency routing) and is 0 otherwise.
 
 ### Logging Configuration
 

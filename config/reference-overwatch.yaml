@@ -196,17 +196,65 @@ dns:
   # Default: 60
   default_ttl: 60
 
-  # When all backends for a domain are unhealthy:
-  # - true: Return the last known healthy backend (risky but available)
+  # When servers of the queried address family (A: IPv4, AAAA: IPv6) are
+  # configured for a domain and all of them are unhealthy:
   # - false: Return SERVFAIL (safe but unavailable)
+  # - true: Answer as if all of them were healthy; the domain's routing
+  #   algorithm picks among the configured servers (available but the
+  #   address may be dead). Counted in the metric
+  #   opengslb_dns_last_healthy_answers_total.
   # Default: false
   return_last_healthy: false
 
-  # Authoritative zones this Overwatch serves
-  # Queries outside these zones return REFUSED
+  # Largest DNS response sent over UDP, in bytes. It is also the UDP payload
+  # size advertised in EDNS responses. A client that advertises less gets
+  # less, and a query without EDNS is limited to 512 bytes. Larger responses
+  # are truncated (TC bit) and the client retries over TCP.
+  # Allowed: 512 to 4096
+  # Default: 1232 (avoids IP fragmentation, DNS Flag Day 2020)
+  max_udp_size: 1232
+
+  # Authoritative zones this Overwatch serves.
+  # - Names inside a zone that do not exist return NXDOMAIN with the zone SOA.
+  # - Queries outside every zone return REFUSED.
+  # - SOA and NS queries at the zone apex are answered from these settings.
+  # A GSLB domain outside every listed zone (every domain when this list is
+  # empty) is served as its own zone with default SOA and NS values.
+  #
+  # An entry is a zone name (all defaults) or a mapping:
   # zones:
-  #   - "example.com."
-  #   - "internal.corp."
+  #   # Plain form
+  #   - "example.com"
+  #
+  #   # Object form. Every field except name is optional.
+  #   - name: "internal.corp"
+  #     # TTL of the apex SOA and NS records (seconds). Default: 3600
+  #     ttl: 3600
+  #     soa:
+  #       # Primary nameserver (SOA MNAME).
+  #       # Default: the first entry of nameservers; without nameservers, a
+  #       # name derived from overwatch.identity.node_id (for example
+  #       # "overwatch-1.internal.corp").
+  #       primary_ns: "ns1.internal.corp"
+  #       # Responsible mailbox (SOA RNAME), as user@domain or in DNS form.
+  #       # Default: hostmaster.<zone>
+  #       contact: "dns-admin@internal.corp"
+  #       # Serial number. It never changes on its own: OpenGSLB has no zone
+  #       # transfers. Use the same value on every Overwatch. Default: 1
+  #       serial: 2026112001
+  #       # Timers in seconds. Defaults: 3600, 600, 604800
+  #       refresh: 3600
+  #       retry: 600
+  #       expire: 604800
+  #       # How long resolvers may cache NXDOMAIN and empty answers (SOA
+  #       # MINIMUM, seconds). Default: 60
+  #       negative_ttl: 60
+  #     # NS records at the apex. Should match the delegation in the parent
+  #     # zone. Use the same list on every Overwatch.
+  #     # Default: the SOA primary nameserver
+  #     nameservers:
+  #       - "ns1.internal.corp"
+  #       - "ns2.internal.corp"
 
 # =============================================================================
 # API SERVER CONFIGURATION
