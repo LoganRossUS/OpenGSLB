@@ -214,7 +214,7 @@ overwatch:
   data_dir: /var/lib/opengslb
 
   dnssec:
-    enabled: true
+    enabled: false   # signing is not active in this release
     algorithm: ECDSAP256SHA256
 ```
 
@@ -294,11 +294,14 @@ The container image creates `/var/lib/opengslb` for its runtime user and declare
 
 ### Overwatch DNSSEC Settings
 
+> **DNSSEC status: in development, not active.** The signing code (`pkg/dnssec`) is not connected to the DNS server in this release. With `enabled: true` the overwatch logs a warning at startup and serves unsigned responses: no RRSIG or DNSKEY records, no keys are generated, and the `/api/v1/dnssec/*` endpoints answer 404. Do not publish DS records for a zone served by OpenGSLB.
+
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `true` | Enable DNSSEC signing |
-| `security_acknowledgment` | string | (empty) | Required if disabling DNSSEC |
-| `algorithm` | string | `ECDSAP256SHA256` | DNSSEC signing algorithm |
+| `enabled` | boolean | `false` | Asks for DNSSEC signing. Not active in this release: `true` only logs a warning at startup, and responses stay unsigned |
+| `security_acknowledgment` | string | (empty) | No longer required. Earlier releases needed it to set `enabled: false`; it is still accepted, so existing files load, and is ignored |
+| `algorithm` | string | `ECDSAP256SHA256` | Signing algorithm the signer will use once it is active |
 
 ## Configuration Sections
 

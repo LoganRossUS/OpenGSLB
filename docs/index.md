@@ -12,7 +12,7 @@ OpenGSLB is an enterprise-grade DNS-based load balancer that provides intelligen
 - **Latency-Based Routing**: Route to lowest-latency servers with exponential moving average (EMA) smoothing
 - **Health Checking**: HTTP, HTTPS, and TCP health checks with configurable thresholds
 - **Agent-Overwatch Architecture**: Distributed health monitoring with centralized DNS serving
-- **DNSSEC Support**: Cryptographic authentication of DNS responses
+- **DNSSEC** (in development, not active): responses are not signed in this release
 - **Predictive Health**: CPU, memory, and error rate monitoring for proactive failover
 - **External Overrides**: API for CloudWatch, Watcher, or custom tool integration
 - **Multi-File Configuration**: Split configuration across multiple files with glob pattern support

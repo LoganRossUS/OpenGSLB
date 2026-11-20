@@ -28,7 +28,7 @@ See [LICENSE](LICENSE) for full terms.
 - **Authoritative Responses**: Case-insensitive lookups that echo the querier's spelling (0x20-safe), NXDOMAIN and empty NOERROR answers with the zone SOA for negative caching (RFC 2308), REFUSED for names outside the served zones, SERVFAIL only when every server of the queried address family is down
 - **Zone Apex Records**: SOA and NS at each zone apex, configurable per zone in `dns.zones` with defaults derived from the node identity
 - **EDNS(0)**: OPT record in the response when the query has one, UDP responses limited to the requester's size and capped at 1232 bytes by default, truncation with the TC bit and full answers over TCP
-- **DNSSEC**: Automatic key management with zone signing and DS record generation
+- **DNSSEC** (in development, not active): the signing code exists but is not connected to the DNS server yet. Responses are unsigned; see [docs/configuration.md](docs/configuration.md#overwatch-dnssec-settings)
 
 ### Routing Algorithms
 - **Round-Robin**: Even distribution across healthy servers with per-domain rotation
@@ -205,7 +205,6 @@ Full documentation is available at **[docs.opengslb.org](https://docs.opengslb.o
 - ✅ HTTP and TCP health checks
 - ✅ Predictive health monitoring (CPU, memory, error rate)
 - ✅ Agent-Overwatch distributed architecture
-- ✅ DNSSEC support with automatic key management
 - ✅ Server management CRUD API
 - ✅ Multi-file configuration with includes
 - ✅ Prometheus metrics and structured logging

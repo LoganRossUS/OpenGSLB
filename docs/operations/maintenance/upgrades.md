@@ -1,5 +1,7 @@
 # Upgrade Procedures
 
+> **DNSSEC status: in development, not active.** Responses are unsigned in this release and the `/api/v1/dnssec/*` endpoints answer 404. The DNSSEC steps, commands, metrics and figures on this page describe the intended behavior and do not apply yet. See [Overwatch DNSSEC Settings](../../configuration.md#overwatch-dnssec-settings).
+
 This document describes procedures for upgrading OpenGSLB components with minimal service disruption.
 
 ## Upgrade Strategy Overview

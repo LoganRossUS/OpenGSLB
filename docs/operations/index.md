@@ -51,7 +51,7 @@ Troubleshooting and incident management:
 Security configuration and procedures:
 
 - **[Security Hardening](security/hardening.md)** - Comprehensive security checklist
-- **[DNSSEC Key Rotation](security/key-rotation.md)** - Rotating DNSSEC keys
+- **[DNSSEC Key Rotation](security/key-rotation.md)** - Rotating DNSSEC keys (DNSSEC signing is in development and not active)
 - **[Certificate Rotation](security/certificate-rotation.md)** - Agent certificate management
 
 ### Capacity Planning

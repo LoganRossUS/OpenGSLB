@@ -1,5 +1,7 @@
 # Capacity Planning Guide
 
+> **DNSSEC status: in development, not active.** Responses are unsigned in this release and the `/api/v1/dnssec/*` endpoints answer 404. The DNSSEC steps, commands, metrics and figures on this page describe the intended behavior and do not apply yet. See [Overwatch DNSSEC Settings](../../configuration.md#overwatch-dnssec-settings).
+
 This document provides guidance for sizing OpenGSLB deployments based on workload requirements.
 
 ## Overview

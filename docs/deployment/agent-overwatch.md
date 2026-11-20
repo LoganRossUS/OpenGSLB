@@ -13,7 +13,7 @@ The agent-overwatch model consists of two components:
 
 - **No VIPs required**: DNS clients retry automatically (resolv.conf with multiple nameservers)
 - **No cluster coordination**: Each Overwatch operates independently
-- **Security by default**: Mandatory gossip encryption, TOFU authentication, DNSSEC enabled
+- **Security by default**: Mandatory gossip encryption and TOFU authentication (DNSSEC signing is in development and not active)
 - **Overwatch always wins**: External validation overrides agent health claims
 
 ## Prerequisites
@@ -100,7 +100,7 @@ dns:
   default_ttl: 30
 
 dnssec:
-  enabled: true
+  enabled: false   # signing is in development and not active in this release
   key_sync:
     peers:
       - "https://overwatch-2.internal:9090"
@@ -326,7 +326,9 @@ curl http://overwatch:8080/api/v1/overrides
 
 ## DNSSEC Configuration
 
-DNSSEC is enabled by default. To get DS records for parent zone delegation:
+> **DNSSEC status: in development, not active.** The signing code (`pkg/dnssec`) is not connected to the DNS server in this release. With `overwatch.dnssec.enabled: true` the overwatch logs a warning at startup and serves unsigned responses: no RRSIG or DNSKEY records, no keys are generated, and the `/api/v1/dnssec/*` endpoints answer 404. Do not publish DS records for a zone served by OpenGSLB. The DNSSEC material on this page describes the intended behavior and does not apply yet.
+
+Once signing is active, DS records for parent zone delegation will be available from:
 
 ```bash
 curl http://overwatch:8080/api/v1/dnssec/ds
@@ -348,13 +350,7 @@ Response:
 }
 ```
 
-To disable DNSSEC (not recommended):
-
-```yaml
-dnssec:
-  enabled: false
-  security_acknowledgment: "I understand that disabling DNSSEC allows DNS spoofing attacks"
-```
+DNSSEC is off unless `enabled: true` is set, and no acknowledgment is needed to leave it off. Configuration files that still carry `security_acknowledgment` keep loading; the value is ignored.
 
 ## Monitoring
 
@@ -442,6 +438,8 @@ groups:
 
 ### DNSSEC validation failing
 
+DNSSEC signing is not active in this release, so a validating resolver fails only if DS records were published in the parent zone. Remove them. The steps below apply once signing is active.
+
 1. Verify DS records are published in parent zone
 2. Check key sync between Overwatches:
    ```bash
@@ -453,7 +451,7 @@ groups:
 - [ ] Gossip encryption key is securely stored and rotated periodically
 - [ ] Service tokens are unique per application
 - [ ] API endpoints are IP-restricted
-- [ ] DNSSEC is enabled
+- [ ] No DS records are published for the GSLB zones (DNSSEC signing is not active yet)
 - [ ] Agent certificates are stored with appropriate permissions
 - [ ] Overwatch nodes are in private network
 - [ ] Metrics endpoints are not publicly exposed

@@ -116,12 +116,16 @@ overwatch:
   # DNSSEC Configuration
   # ---------------------------------------------------------------------------
   dnssec:
-    # Enable DNSSEC signing (strongly recommended)
-    # Default: true
-    enabled: true
+    # DNSSEC signing is IN DEVELOPMENT AND NOT ACTIVE in this release.
+    # With enabled: true the overwatch logs a warning at startup and serves
+    # unsigned responses (no RRSIG or DNSKEY records, no keys generated).
+    # Do not publish DS records for zones served by OpenGSLB.
+    # Default: false
+    enabled: false
 
-    # If disabling DNSSEC, you MUST acknowledge the security implications
-    # Required text: "I understand that disabling DNSSEC reduces security"
+    # No longer required. Earlier releases needed this text to set
+    # enabled: false. It is still accepted, so existing files load, and is
+    # ignored.
     # security_acknowledgment: ""
 
     # Signing algorithm

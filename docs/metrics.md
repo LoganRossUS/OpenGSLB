@@ -776,6 +776,9 @@ opengslb_overrides_changes_total{service="myapp",action="clear"} 3
 
 ### Enhanced DNSSEC Metrics (Sprint 6)
 
+> **DNSSEC status: in development, not active.** Responses are unsigned in this release and the `/api/v1/dnssec/*` endpoints answer 404. The DNSSEC steps, commands, metrics and figures on this page describe the intended behavior and do not apply yet. See [Overwatch DNSSEC Settings](configuration.md#overwatch-dnssec-settings).
+
+
 #### `opengslb_dnssec_signatures_total`
 **Type:** Counter
 **Labels:** `zone`

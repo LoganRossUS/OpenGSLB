@@ -55,7 +55,7 @@ OpenGSLB Overwatch Status: Healthy
   Agents:    5 connected
   Backends:  12 total, 11 healthy, 0 unhealthy, 1 stale
   Domains:   5 configured
-  DNSSEC:    Enabled (zones: [gslb.example.com])
+  DNSSEC:    Not active
 ```
 
 **JSON Output:**
@@ -289,6 +289,9 @@ Error: configuration invalid
 ```
 
 ### dnssec
+
+> **DNSSEC status: in development, not active.** Responses are unsigned in this release and the `/api/v1/dnssec/*` endpoints answer 404. The DNSSEC steps, commands, metrics and figures on this page describe the intended behavior and do not apply yet. See [Overwatch DNSSEC Settings](configuration.md#overwatch-dnssec-settings).
+
 
 DNSSEC management commands.
 
