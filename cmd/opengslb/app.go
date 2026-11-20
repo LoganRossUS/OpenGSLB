@@ -855,6 +855,12 @@ func (a *Application) startOverwatchMode(ctx context.Context) error {
 			return fmt.Errorf("failed to start backend registry: %w", err)
 		}
 		a.logger.Info("backend registry started")
+
+		// Starting the registry loaded the persisted backends, which can
+		// include static servers of an earlier configuration file. The file
+		// is their only source, so drop the ones it no longer defines. A
+		// reload does the same (reloadDNSRegistry).
+		a.pruneStaticBackends(a.config)
 	}
 
 	// Start external validator (Story 3)

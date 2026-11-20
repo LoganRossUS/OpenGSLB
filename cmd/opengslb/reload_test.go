@@ -787,3 +787,31 @@ func TestReload_ConcurrentWithAPIChanges(t *testing.T) {
 		t.Errorf("DNS state after concurrent reloads:\n got %v\nwant %v", got, want)
 	}
 }
+
+// TestRestart_StaticServerRemovedFromConfig: the configuration file is the
+// source of truth for static servers. One that was removed from the file must
+// not be loaded back from the store by the next start.
+func TestRestart_StaticServerRemovedFromConfig(t *testing.T) {
+	keptPort := liveBackend(t, "127.0.0.1")
+	removedPort := liveBackend(t, "127.0.0.3")
+
+	e := startReloadOverwatch(t,
+		[]reloadDomain{{name: reloadStaticDomain}},
+		[]reloadServer{
+			{address: "127.0.0.1", port: keptPort, service: reloadStaticDomain},
+			{address: "127.0.0.3", port: removedPort, service: reloadStaticDomain},
+		})
+	e.requireResolves(reloadStaticDomain, "127.0.0.1", "127.0.0.3")
+	e.stop()
+
+	r := newReloadEnv(t, e.dataDir)
+	r.writeConfig(
+		[]reloadDomain{{name: reloadStaticDomain}},
+		[]reloadServer{{address: "127.0.0.1", port: keptPort, service: reloadStaticDomain}})
+	r.start()
+
+	r.requireResolves(reloadStaticDomain, "127.0.0.1")
+	if _, ok := r.app.backendRegistry.GetBackend(reloadStaticDomain, "127.0.0.3", removedPort); ok {
+		t.Errorf("backend registry holds a static server that is no longer in the configuration file")
+	}
+}
