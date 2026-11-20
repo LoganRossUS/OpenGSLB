@@ -18,7 +18,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /opengslb ./cmd/opengslb
 
 # Runtime stage
-FROM alpine:latest
+FROM alpine:3.24.4
 
 # Install runtime dependencies
 RUN apk --no-cache add ca-certificates tzdata
