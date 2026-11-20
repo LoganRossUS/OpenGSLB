@@ -74,8 +74,13 @@ jobs:
       contents: read
 
     steps:
+      # persist-credentials: false keeps this repository's GITHUB_TOKEN out of
+      # the git config, where it would otherwise be sent to (and rejected by)
+      # the Overlord repository in the next steps.
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Build overwatch image from this pull request
         run: docker build -t opengslb:pr .
@@ -93,12 +98,20 @@ jobs:
             exit 1
           fi
           remote="https://x-access-token:${OVERLORD_REPO_TOKEN}@github.com/LoganRossUS/Overlord.git"
-          if git ls-remote --exit-code --heads "$remote" "refs/heads/${HEAD_REF}" > /dev/null 2>&1; then
+          # ls-remote exits 0 when the branch exists, 2 when it does not, and
+          # anything else when the lookup itself failed (bad token, network).
+          # Only "does not exist" may fall back to the default branch.
+          status=0
+          git ls-remote --exit-code --heads "$remote" "refs/heads/${HEAD_REF}" > /dev/null || status=$?
+          if [ "$status" -eq 0 ]; then
             echo "ref=${HEAD_REF}" >> "$GITHUB_OUTPUT"
             echo "Using paired Overlord branch: ${HEAD_REF}"
-          else
+          elif [ "$status" -eq 2 ]; then
             echo "ref=" >> "$GITHUB_OUTPUT"
             echo "No Overlord branch named ${HEAD_REF}; using Overlord's default branch"
+          else
+            echo "::error::Could not list branches of LoganRossUS/Overlord (git ls-remote exit ${status}). Check OVERLORD_REPO_TOKEN."
+            exit 1
           fi
 
       - name: Checkout Overlord
