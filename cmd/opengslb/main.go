@@ -267,8 +267,18 @@ func handleReload(app *Application, logger *slog.Logger) error {
 		return fmt.Errorf("mode change requires restart")
 	}
 
-	if err := app.Reload(newCfg); err != nil {
+	restartRequired, err := app.Reload(newCfg)
+	if err != nil {
 		return fmt.Errorf("failed to apply configuration: %w", err)
+	}
+
+	if len(restartRequired) > 0 {
+		// The reloadable settings were applied. Say which changes were not,
+		// instead of reporting a plain success.
+		logger.Warn("configuration reloaded, restart required for settings that cannot change at runtime",
+			"restart_required", restartRequired,
+		)
+		return nil
 	}
 
 	logger.Info("configuration reloaded successfully")

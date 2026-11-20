@@ -37,6 +37,11 @@ type Application struct {
 	configMu sync.RWMutex
 	logger   *slog.Logger
 
+	// startupConfig is the configuration the process started with. Settings
+	// that a reload does not apply are compared against it, so that they keep
+	// being reported until the process is restarted.
+	startupConfig *config.Config
+
 	// Overwatch mode components
 	dnsServer     *dns.Server
 	dnsHandler    *dns.Handler
@@ -73,10 +78,11 @@ func NewApplication(cfg *config.Config, logger *slog.Logger) *Application {
 		logger = slog.Default()
 	}
 	return &Application{
-		config:     cfg,
-		logger:     logger,
-		startTime:  time.Now(),
-		shutdownCh: make(chan struct{}),
+		config:        cfg,
+		startupConfig: cfg,
+		logger:        logger,
+		startTime:     time.Now(),
+		shutdownCh:    make(chan struct{}),
 	}
 }
 
@@ -1054,131 +1060,63 @@ func (a *Application) shutdownOverwatchMode(ctx context.Context) error {
 }
 
 // Reload applies a new configuration without restarting.
-func (a *Application) Reload(newCfg *config.Config) error {
+//
+// Only part of the configuration can change at runtime (see
+// reloadableSettings). Reload applies that part and returns the settings that
+// differ from the ones the process started with and need a restart to take
+// effect. A non-nil error means the reload failed and the previous
+// configuration stays in effect.
+func (a *Application) Reload(newCfg *config.Config) (restartRequired []string, err error) {
 	a.configMu.Lock()
 	defer a.configMu.Unlock()
 
-	oldCfg := a.config
-
-	a.logger.Info("reloading configuration",
-		"old_domains", len(oldCfg.Domains),
-		"new_domains", len(newCfg.Domains),
-	)
-
-	// Check for changes that require restart
-	if oldCfg.DNS.ListenAddress != newCfg.DNS.ListenAddress {
-		a.logger.Warn("DNS listen address change requires restart")
-	}
+	a.logger.Info("reloading configuration", "mode", a.config.GetEffectiveMode())
 
 	// Mode-specific reload
 	switch a.config.GetEffectiveMode() {
 	case config.ModeAgent:
 		if err := a.reloadAgentMode(newCfg); err != nil {
 			metrics.RecordReload(false)
-			return err
+			return nil, err
 		}
 	case config.ModeOverwatch:
 		if err := a.reloadOverwatchMode(newCfg); err != nil {
 			metrics.RecordReload(false)
-			return err
+			return nil, err
 		}
 	}
 
 	a.config = newCfg
 	metrics.RecordReload(true)
-	return nil
+	return restartRequiredSettings(a.startupConfig, newCfg), nil
 }
 
-// reloadAgentMode reloads agent-specific configuration.
+// reloadAgentMode applies the agent.backends section of newCfg: the agent
+// starts checking added backends, stops checking removed ones, applies
+// changed weights and health check settings, and tells the Overwatch nodes.
 func (a *Application) reloadAgentMode(newCfg *config.Config) error {
 	if a.agentInstance == nil {
 		return nil
 	}
 
-	// Compare backend configurations
-	oldBackends := a.config.Agent.Backends
-	newBackends := newCfg.Agent.Backends
+	result, err := a.agentInstance.Reconfigure(newCfg)
+	if err != nil {
+		return fmt.Errorf("failed to reconfigure agent backends: %w", err)
+	}
 
-	a.logger.Info("reloading agent configuration",
-		"old_backends", len(oldBackends),
-		"new_backends", len(newBackends),
+	if !result.Changed() {
+		a.logger.Info("agent backends unchanged",
+			"backends", a.agentInstance.GetBackendManager().BackendCount(),
+		)
+		return nil
+	}
+
+	a.logger.Info("agent backends reconfigured",
+		"added", len(result.Added),
+		"removed", len(result.Removed),
+		"updated", len(result.Updated),
+		"backends", a.agentInstance.GetBackendManager().BackendCount(),
 	)
-
-	// For now, log what would change
-	// Full reload implementation would:
-	// 1. Stop health checks for removed backends
-	// 2. Start health checks for new backends
-	// 3. Update configuration for modified backends
-
-	// backendKey generates a unique key for a backend
-	backendKey := func(service, address string, port int) string {
-		return fmt.Sprintf("%s:%s:%d", service, address, port)
-	}
-
-	// Build maps for comparison using interface{} to avoid type dependency
-	type backendInfo struct {
-		Service string
-		Address string
-		Port    int
-		Weight  int
-	}
-
-	oldMap := make(map[string]backendInfo)
-	for _, b := range oldBackends {
-		key := backendKey(b.Service, b.Address, b.Port)
-		oldMap[key] = backendInfo{
-			Service: b.Service,
-			Address: b.Address,
-			Port:    b.Port,
-			Weight:  b.Weight,
-		}
-	}
-
-	newMap := make(map[string]backendInfo)
-	for _, b := range newBackends {
-		key := backendKey(b.Service, b.Address, b.Port)
-		newMap[key] = backendInfo{
-			Service: b.Service,
-			Address: b.Address,
-			Port:    b.Port,
-			Weight:  b.Weight,
-		}
-	}
-
-	// Find added backends
-	var added, removed, modified int
-	for key := range newMap {
-		if _, exists := oldMap[key]; !exists {
-			added++
-			a.logger.Info("backend added", "backend", key)
-		}
-	}
-
-	// Find removed backends
-	for key := range oldMap {
-		if _, exists := newMap[key]; !exists {
-			removed++
-			a.logger.Info("backend removed", "backend", key)
-		}
-	}
-
-	// Find modified backends (same key but different config)
-	for key, newB := range newMap {
-		if oldB, exists := oldMap[key]; exists {
-			if newB.Weight != oldB.Weight {
-				modified++
-				a.logger.Info("backend modified", "backend", key,
-					"old_weight", oldB.Weight, "new_weight", newB.Weight)
-			}
-		}
-	}
-
-	a.logger.Info("agent configuration reload complete",
-		"added", added, "removed", removed, "modified", modified)
-
-	// TODO: Implement actual backend manager reconfiguration
-	// This would call a.agentInstance.GetBackendManager().Reconfigure(newBackends)
-
 	return nil
 }
 

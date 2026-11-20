@@ -81,6 +81,11 @@ type reloadEnv struct {
 
 	gossipPort, dnsPort, apiPort int
 
+	// Settings of the generated file that individual tests change.
+	logLevel  string   // logging.level, default "info"
+	countries []string // regions[0].countries, default ["US"]
+	geoDB     string   // overwatch.geolocation.database_path, off when empty
+
 	stop func()
 }
 
@@ -110,6 +115,19 @@ func liveBackend(t *testing.T, ip string) int {
 // renderConfig renders an overwatch configuration file. Every static server
 // lives in region us-east and every domain routes to that region.
 func (e *reloadEnv) renderConfig(domains []reloadDomain, servers []reloadServer) string {
+	logLevel := e.logLevel
+	if logLevel == "" {
+		logLevel = "info"
+	}
+	countries := e.countries
+	if countries == nil {
+		countries = []string{"US"}
+	}
+	geolocation := ""
+	if e.geoDB != "" {
+		geolocation = fmt.Sprintf("  geolocation:\n    database_path: %q\n    default_region: us-east\n", e.geoDB)
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, `mode: overwatch
 overwatch:
@@ -127,7 +145,7 @@ overwatch:
   dnssec:
     enabled: false
     security_acknowledgment: "I understand that disabling DNSSEC removes cryptographic authentication of DNS responses"
-dns:
+%sdns:
   listen_address: "127.0.0.1:%d"
   default_ttl: 30
   zones:
@@ -136,13 +154,13 @@ api:
   enabled: true
   address: "127.0.0.1:%d"
 logging:
-  level: info
+  level: %s
   format: text
 metrics:
   enabled: false
 regions:
   - name: us-east
-    countries: ["US"]
+    countries: [%s]
     continents: ["NA"]
     health_check:
       type: http
@@ -152,7 +170,7 @@ regions:
       failure_threshold: 3
       success_threshold: 1
     servers:
-`, e.dataDir, e.gossipPort, e.dnsPort, e.apiPort)
+`, e.dataDir, e.gossipPort, geolocation, e.dnsPort, e.apiPort, logLevel, strings.Join(countries, ", "))
 	for _, s := range servers {
 		weight := s.weight
 		if weight == 0 {
@@ -814,4 +832,60 @@ func TestRestart_StaticServerRemovedFromConfig(t *testing.T) {
 	if _, ok := r.app.backendRegistry.GetBackend(reloadStaticDomain, "127.0.0.3", removedPort); ok {
 		t.Errorf("backend registry holds a static server that is no longer in the configuration file")
 	}
+}
+
+// TestReload_ReportsSettingsThatNeedARestart: a reload must not report plain
+// success when the file changed a setting that is only read at startup.
+func TestReload_ReportsSettingsThatNeedARestart(t *testing.T) {
+	port := liveBackend(t, "127.0.0.1")
+	domains := []reloadDomain{{name: reloadStaticDomain}}
+	servers := []reloadServer{{address: "127.0.0.1", port: port, service: reloadStaticDomain}}
+	e := startReloadOverwatch(t, domains, servers)
+
+	const success = "configuration reloaded successfully"
+	const partial = "restart required for settings that cannot change at runtime"
+
+	// Nothing changed: plain success.
+	e.reload()
+	if logs := e.logs.String(); !strings.Contains(logs, success) || strings.Contains(logs, partial) {
+		t.Fatalf("unchanged file: want only the success line, got:\n%s", lastLines(logs, 5))
+	}
+
+	// logging.level is read once, when the logger is built.
+	e.logLevel = "debug"
+	e.writeConfig(domains, servers)
+	before := len(e.logs.String())
+	e.reload()
+	logs := e.logs.String()[before:]
+	if !strings.Contains(logs, "level=WARN") || !strings.Contains(logs, partial) || !strings.Contains(logs, "logging.level") {
+		t.Errorf("changed logging.level: want a WARN naming it, got:\n%s", lastLines(logs, 5))
+	}
+	if strings.Contains(logs, success) {
+		t.Errorf("changed logging.level: reload reported plain success:\n%s", lastLines(logs, 5))
+	}
+
+	// The change stays pending, and reported, until the process restarts.
+	before = len(e.logs.String())
+	e.reload()
+	if logs := e.logs.String()[before:]; !strings.Contains(logs, "logging.level") {
+		t.Errorf("second reload no longer reports the pending change:\n%s", lastLines(logs, 5))
+	}
+
+	// Reverting the file clears it.
+	e.logLevel = "info"
+	e.writeConfig(domains, servers)
+	before = len(e.logs.String())
+	e.reload()
+	if logs := e.logs.String()[before:]; !strings.Contains(logs, success) || strings.Contains(logs, partial) {
+		t.Errorf("reverted file: want only the success line, got:\n%s", lastLines(logs, 5))
+	}
+}
+
+// lastLines returns the last n lines of s.
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }

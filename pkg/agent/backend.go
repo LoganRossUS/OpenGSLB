@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -145,7 +146,13 @@ func (m *BackendManager) AddBackend(cfg BackendConfig) error {
 		return fmt.Errorf("backend %s already registered", key)
 	}
 
-	// Apply defaults
+	m.addLocked(withBackendDefaults(cfg))
+	return nil
+}
+
+// withBackendDefaults returns cfg with the defaults applied for every setting
+// that was left at its zero value.
+func withBackendDefaults(cfg BackendConfig) BackendConfig {
 	if cfg.HealthCheck.Interval == 0 {
 		cfg.HealthCheck.Interval = 30 * time.Second
 	}
@@ -164,7 +171,12 @@ func (m *BackendManager) AddBackend(cfg BackendConfig) error {
 	if cfg.Weight == 0 {
 		cfg.Weight = 100
 	}
+	return cfg
+}
 
+// addLocked registers a backend whose defaults are already applied and starts
+// its check loop when the manager is running. The caller holds m.mu.
+func (m *BackendManager) addLocked(cfg BackendConfig) {
 	entry := &BackendEntry{
 		Config: cfg,
 		Health: &BackendHealth{
@@ -177,7 +189,7 @@ func (m *BackendManager) AddBackend(cfg BackendConfig) error {
 		},
 		stopCh: make(chan struct{}),
 	}
-	m.backends[key] = entry
+	m.backends[backendKey(cfg.Service, cfg.Address, cfg.Port)] = entry
 
 	// Start health check loop if manager is running
 	if m.running {
@@ -191,8 +203,131 @@ func (m *BackendManager) AddBackend(cfg BackendConfig) error {
 		"port", cfg.Port,
 		"check_type", cfg.HealthCheck.Type,
 	)
+}
 
-	return nil
+// ReconfigureResult lists what a Reconfigure call changed. Each entry is a
+// backend configuration; the slices are sorted by service, address and port.
+type ReconfigureResult struct {
+	Added   []BackendConfig
+	Removed []BackendConfig
+	Updated []BackendConfig
+}
+
+// Changed reports whether the call changed anything.
+func (r ReconfigureResult) Changed() bool {
+	return len(r.Added)+len(r.Removed)+len(r.Updated) > 0
+}
+
+// Reconfigure makes the set of monitored backends match cfgs.
+//
+// A backend is identified by service, address and port. Backends that are new
+// in cfgs are added and, if the manager is running, checked immediately.
+// Backends missing from cfgs stop being checked and are removed. A backend
+// whose weight or health check settings differ keeps its health state (a
+// healthy backend stays healthy across the change) and is checked with the
+// new settings from now on.
+//
+// cfgs is validated before anything changes: on error the manager is left as
+// it was.
+func (m *BackendManager) Reconfigure(cfgs []BackendConfig) (ReconfigureResult, error) {
+	var result ReconfigureResult
+
+	wanted := make(map[string]BackendConfig, len(cfgs))
+	for _, cfg := range cfgs {
+		key := backendKey(cfg.Service, cfg.Address, cfg.Port)
+		if _, duplicate := wanted[key]; duplicate {
+			return result, fmt.Errorf("backend %s is listed more than once", key)
+		}
+		wanted[key] = withBackendDefaults(cfg)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for key, entry := range m.backends {
+		if _, keep := wanted[key]; keep {
+			continue
+		}
+		close(entry.stopCh)
+		delete(m.backends, key)
+		result.Removed = append(result.Removed, entry.Config)
+		m.logger.Info("backend removed",
+			"service", entry.Config.Service,
+			"address", entry.Config.Address,
+			"port", entry.Config.Port,
+		)
+	}
+
+	for key, cfg := range wanted {
+		entry, exists := m.backends[key]
+		if !exists {
+			m.addLocked(cfg)
+			result.Added = append(result.Added, cfg)
+			continue
+		}
+		if entry.Config == cfg {
+			continue
+		}
+
+		// Replace the entry instead of editing it: the running check loop
+		// reads its entry's Config without a lock. The health state moves to
+		// the new entry.
+		entry.Health.reconfigure(cfg.Weight, cfg.HealthCheck.FailureThreshold, cfg.HealthCheck.SuccessThreshold)
+		replacement := &BackendEntry{
+			Config: cfg,
+			Health: entry.Health,
+			stopCh: make(chan struct{}),
+		}
+		close(entry.stopCh)
+		m.backends[key] = replacement
+		if m.running {
+			m.wg.Add(1)
+			go m.checkLoop(replacement)
+		}
+		result.Updated = append(result.Updated, cfg)
+		m.logger.Info("backend updated",
+			"service", cfg.Service,
+			"address", cfg.Address,
+			"port", cfg.Port,
+			"weight", cfg.Weight,
+			"check_type", cfg.HealthCheck.Type,
+		)
+	}
+
+	sortBackendConfigs(result.Added)
+	sortBackendConfigs(result.Removed)
+	sortBackendConfigs(result.Updated)
+	return result, nil
+}
+
+func sortBackendConfigs(cfgs []BackendConfig) {
+	sort.Slice(cfgs, func(i, j int) bool {
+		a, b := cfgs[i], cfgs[j]
+		if a.Service != b.Service {
+			return a.Service < b.Service
+		}
+		if a.Address != b.Address {
+			return a.Address < b.Address
+		}
+		return a.Port < b.Port
+	})
+}
+
+// Services returns the distinct service names of the monitored backends, sorted.
+func (m *BackendManager) Services() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	seen := make(map[string]bool, len(m.backends))
+	services := make([]string, 0, len(m.backends))
+	for _, entry := range m.backends {
+		if !seen[entry.Config.Service] {
+			seen[entry.Config.Service] = true
+			services = append(services, entry.Config.Service)
+		}
+	}
+	sort.Strings(services)
+	return services
 }
 
 // RemoveBackend unregisters a backend from health checking.
@@ -405,6 +540,15 @@ func (h *BackendHealth) RecordResult(result health.Result) bool {
 	}
 
 	return h.healthy != previousHealthy
+}
+
+// reconfigure applies new settings without touching the health state.
+func (h *BackendHealth) reconfigure(weight, failThreshold, passThreshold int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.weight = weight
+	h.failThreshold = failThreshold
+	h.passThreshold = passThreshold
 }
 
 // IsHealthy returns true if the backend is currently healthy.
