@@ -1275,6 +1275,170 @@ Operators are no longer told their zones are signed when they are not. A configu
 
 ---
 
+## ADR-025: GTM Parity Features (Phase 2): Configuration Schema and API Shape
+
+**Status**: Proposed (awaiting approval; nothing here is implemented yet)
+**Date**: 2026-11-20
+**Related**: ADR-015, ADR-016, ADR-021 (DNS response semantics), ADR-022 (one server model), ADR-023 (reload)
+
+### Context
+
+The target user is moving wide IPs off F5 BIG-IP DNS (GTM). Eight things they rely on there are missing: more than one answer per response, CNAME pool members, wildcard names, persistence, a last-resort answer, protection against the GSLB itself being isolated, manual resume after a failover, and a way to import an existing configuration.
+
+This note fixes the configuration schema and the API shape for all of them before any code is written. Every feature is per domain (the isolation guard is per node), optional, and off by default: a configuration or API client that does not use the new keys behaves exactly as today.
+
+### Decision
+
+#### Configuration schema
+
+```yaml
+overwatch:
+  # 6. Isolation guard (node level). Off by default.
+  isolation_guard:
+    enabled: false
+    window: 30s         # how far back transitions to unhealthy are counted
+    threshold: 0.8      # freeze when this share of the backends that were healthy
+                        # at the start of the window turned unhealthy within it
+    min_backends: 3     # the guard is inactive with fewer tracked backends
+    max_freeze: 0s      # 0: stay frozen until checks recover or an operator thaws
+
+regions:
+  - name: us-east
+    servers:
+      - address: 10.0.1.10          # an IP member, as today
+        port: 443
+        service: app.gslb.example.com
+      # 2. A CNAME member: a host name instead of an address.
+      - cname: app.cdn.example.net
+        service: www.gslb.example.com
+        weight: 100
+        health_target: "198.51.100.7:443"   # optional; without it the member is always healthy
+
+domains:
+  - name: app.gslb.example.com      # 3. or a wildcard: "*.apps.gslb.example.com"
+    routing_algorithm: failover
+    regions: [us-east, eu-west]
+    ttl: 30
+
+    max_answers: 1                  # 1. 1 to 16. Default 1.
+
+    persistence:                    # 4. Off unless enabled.
+      enabled: false
+      ipv4_prefix: 24               # 8 to 32. Default 24.
+      ipv6_prefix: 56               # 16 to 128. Default 56.
+
+    fallback:                       # 5. At most one of the two keys.
+      region: dr-site               # servers of this domain in that region are last-resort only
+      addresses: ["192.0.2.10", "2001:db8::10"]   # static, never health checked
+
+    failback: automatic             # 7. automatic (default) or manual. Failover algorithm only.
+```
+
+Validation rejects: `max_answers` outside 1 to 16; both `fallback.region` and `fallback.addresses`; a `fallback.region` that is also in `regions` or does not exist; `failback: manual` with an algorithm other than `failover`; a server with both or neither of `address` and `cname`; a CNAME member of a domain that is a zone apex; a wildcard that is not the leftmost label, or a wildcard domain outside every zone of `dns.zones`.
+
+#### Behavior
+
+1. **Multiple answers** (F5: pool "Maximum Answers Returned"). Routers gain an optional `Rank` method that returns the candidates in order; the handler takes the first `max_answers` healthy ones of the queried address family. A router without `Rank` keeps returning one server.
+
+   | Algorithm | Order |
+   |-----------|-------|
+   | round-robin | rotation starting at the next server |
+   | weighted | weighted random draw without replacement |
+   | failover | the servers of the active tier only, in configuration order |
+   | geolocation | the servers of the matched region only |
+   | latency, learned_latency | ascending latency |
+
+   A **tier** is the set of servers that share a priority. A server of the configuration file gets the position of its region in the domain's `regions` list as its priority; an API server uses its `priority` field. With `max_answers: 1` every algorithm answers as it does today.
+
+   Resolvers and clients choose among the returned records themselves. With latency routing and `max_answers` above 1 the slower servers in the answer will receive traffic; the documentation says so.
+
+2. **CNAME members** (F5: CNAME pools). When the selected member is a CNAME member, the answer is one CNAME record with the queried name as owner, for every query type, and `max_answers` does not apply. A domain may mix address and CNAME members. A CNAME cannot exist at a zone apex, and a domain outside every zone of `dns.zones` is the apex of its own implicit zone (ADR-021), so **a domain with CNAME members must lie inside a zone listed in `dns.zones`**. The server ID is `{service}:{cname}:{port}`, with port 0 when there is none.
+
+3. **Wildcards** (F5: wildcard wide IPs). Matching follows RFC 4592: an exact name wins; otherwise the wildcard directly below the closest existing ancestor of the query name is used. `*.apps.example.com` therefore does not match `a.b.apps.example.com` when `b.apps.example.com` exists. The answer's owner name is the queried name. Metrics use the wildcard name as the `domain` label, so the label stays bounded.
+
+4. **Persistence** (F5: wide IP persistence). The client key is the ECS subnet when the query carries one and ECS is enabled, otherwise the source address, cut to the configured prefix. The server is chosen by rendezvous hashing (highest random weight) over `(domain, client key, server)`, weighted by server weight. Removing a server moves only that server's clients, and every overwatch node computes the same choice from the same healthy set without shared state. The algorithm first narrows the candidates (failover: the active tier; geolocation: the matched region; the others: all healthy servers) and persistence then orders them, replacing the algorithm's own rotation, random draw or latency order. With `max_answers` above 1 the highest N scores are returned.
+
+   This differs from F5, which stores a persistence record per client with a TTL and synchronizes it. The hash needs no state and no synchronization; in exchange a client can move when the healthy set changes, and two nodes that briefly disagree about health can answer differently.
+
+5. **Fallback** (F5: wide IP "Last Resort Pool" and pool "Fallback IP"). Order of evaluation, per address family: healthy primary servers, then the fallback, then `dns.return_last_healthy`, then SERVFAIL. Servers of the domain in `fallback.region` are never primaries. A region fallback answers from its healthy servers; a static fallback always answers. New metric `opengslb_dns_fallback_answers_total{domain,type,source}` with `source` `region` or `static`.
+
+6. **Isolation guard** (no direct F5 equivalent). The guard watches the effective status of all backends on this node. When the share that turned unhealthy within `window` reaches `threshold`, the node concludes that it, not the backends, is cut off: it freezes the health state DNS answers use at the last state before the window, logs at WARN, and sets `opengslb_overwatch_isolation_frozen` to 1 (`opengslb_overwatch_isolation_freezes_total` counts freezes). Manual overrides still apply while frozen. It thaws when the share of frozen backends failing their checks falls below half the threshold, when `max_freeze` passes, or when an operator thaws it through the API.
+
+7. **Manual resume** (F5: pool "Manual Resume"). With `failback: manual`, once the failover algorithm has left a tier it does not return to it when that tier recovers. It stays on the tier it moved to until an operator resumes; if that tier fails too, it moves to the next healthy tier and stays there. The hold is kept per node, stored in the node's data directory so it survives a restart, and reported by `opengslb_failover_held{domain}`. Nodes do not share it: resume is sent to every node (Overlord does this).
+
+8. **Import** (`opengslb-cli import f5 <file>`). Reads a `bigip_gtm.conf` or `tmsh list gtm` output and writes OpenGSLB YAML for wide IPs, pools and members to stdout, and a list of everything it did not translate, with the line it came from, to stderr. It maps only what has an exact counterpart (round-robin, ratio, global-availability, static fallback IP, maximum answers, CNAME pools, wildcard names, manual resume, HTTP, HTTPS and TCP monitors) and never guesses: a wide IP with several pools under a pool-level method other than global-availability, topology records, iRules and other monitors are reported, not approximated. The exit status is non-zero when anything was left untranslated, unless `--allow-partial` is given.
+
+#### API shape (diff against `api/openapi.yaml`)
+
+```diff
+ components.schemas.Domain, DomainCreateRequest, DomainUpdateRequest:
++  max_answers:   integer, 1..16, default 1
++  persistence:   { enabled: boolean, ipv4_prefix: integer, ipv6_prefix: integer }
++  fallback:      { region: string } or { addresses: [string] }
++  failback:      "automatic" | "manual"
+   name:          now also accepts a wildcard ("*.apps.gslb.example.com")
+
+ components.schemas.BackendServer, ServerCreateRequest, DomainBackendCreateRequest, ServerUpdateRequest:
++  cname:         string  (host name; a member has either address or cname)
++  health_target: string  ("host:port"; CNAME members only)
+   address:       no longer required when cname is set
++  BackendServer.tier:     integer  (the tier the server is in; read-only)
++  BackendServer.fallback: boolean  (true for a server of the domain's fallback region; read-only)
+
++paths./api/v1/domains/{name}/failover:
++  get:   200 DomainFailoverResponse { mode, active_tier, preferred_tier, held, held_since }
++         404 unknown domain; 409 the domain does not use the failover algorithm
++paths./api/v1/domains/{name}/failover/resume:
++  post:  200 DomainFailoverResponse (hold cleared); 404; 409 as above or nothing is held
+
++paths./api/v1/overwatch/isolation:
++  get:   200 IsolationResponse { enabled, frozen, frozen_since, unhealthy_share, threshold, window, backends }
++paths./api/v1/overwatch/isolation/thaw:
++  post:  200 IsolationResponse; 409 not frozen
+
+ components.schemas.StatsResponse:
++  isolation_frozen: boolean
+```
+
+No existing field changes meaning and none is removed. Unknown values are refused with 400, as for the existing fields (ADR-022).
+
+CLI: `opengslb-cli failover status <domain>`, `opengslb-cli failover resume <domain>`, `opengslb-cli isolation status`, `opengslb-cli isolation thaw`, `opengslb-cli import f5 <file>`.
+
+#### Delivery order
+
+Each feature is delivered end to end before the next starts: spec, Go configuration and API, Go behavior, Overlord client, Overlord UI, contract test, conformance test case and documentation section naming the F5 equivalent. Order: 1 multiple answers (it introduces `Rank` and tiers, which 4, 5 and 7 build on), 5 fallback, 7 manual resume, 4 persistence, 3 wildcards, 2 CNAME members, 6 isolation guard, 8 import tool.
+
+### Alternatives Considered
+
+| Alternative | Reason not chosen |
+|-------------|-------------------|
+| A separate `pools` section, as in F5 | Regions already are the pools. A second grouping would have to be mapped onto regions everywhere (health checks, geolocation, the API). Tiers by region order give the same failover behavior. |
+| Stateful persistence records with a TTL, as in F5 | Needs state shared between overwatch nodes, which ADR-015 rules out. |
+| Ring-based consistent hashing | Needs virtual nodes to balance and a rebuild on every health change. Rendezvous hashing is a few lines, has no structure to maintain and honors weights directly. |
+| Allow CNAME members for any domain | A CNAME at a zone apex breaks the zone (RFC 1034 section 3.6.2), and implicit zones make every stand-alone domain an apex. |
+| Share the manual-resume hold between nodes over gossip | Overwatch nodes do not gossip with each other today; adding that is a larger change than this phase. Recorded as a follow-up. |
+| Isolation guard that probes an external reference address | Adds a dependency on a third party's availability and a setting most operators would get wrong. The share of simultaneous failures needs no external input. |
+
+### Consequences
+
+**Positive**: wide IPs that use these GTM features can be moved without changing how clients are answered. Everything is off by default, so an upgrade changes nothing until a key is set.
+
+**Negative**:
+- Routers gain a second method and the handler a multi-record path; `max_answers: 1` must stay byte-for-byte what it is today, which the conformance suite will pin.
+- Tiers give a meaning to region order (and to the API `priority` field) that only the failover algorithm had before.
+- The isolation guard can keep answering with backends that are really down. That is its purpose, and the reason it is off by default, has `max_freeze` and can be thawed by hand.
+- The manual-resume hold is per node, so nodes can serve different tiers until an operator resumes on all of them.
+
+### Open questions for the owner
+
+1. **Isolation guard `max_freeze` default**: unlimited (as written), or a finite default such as 10 minutes so that a real total outage cannot be masked indefinitely?
+2. **Persistence prefix defaults**: /24 and /56 (as written, matching common ECS practice), or F5's /32 and /128?
+3. **`max_answers` upper limit**: 16 (as written) keeps the largest answer well inside the 1232 byte UDP default. F5 allows up to 500.
+4. **CNAME members only inside `dns.zones`**: acceptable, or should a stand-alone domain with CNAME members be allowed with its apex records dropped?
+5. **Import tool exit status**: non-zero on a partial translation unless `--allow-partial` (as written), or always zero with the report on stderr?
+
+---
+
 ## Document History
 
 | Date | ADR | Change |
@@ -1292,3 +1456,4 @@ Operators are no longer told their zones are signed when they are not. A configu
 | 2026-11-20 | 022 | One model for servers and domain backends in the REST API |
 | 2026-11-20 | 023 | Configuration reload merges all state |
 | 2026-11-20 | 024 | DNSSEC is not active; acknowledgment requirement removed |
+| 2026-11-20 | 025 | GTM parity features (Phase 2): configuration schema and API shape (proposed) |
