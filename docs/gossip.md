@@ -149,6 +149,8 @@ An Overwatch does not trust what it receives over gossip. Before a backend from 
 
 A backend outside these ranges is skipped and logged at WARN (`rejected backend from heartbeat` or `rejected backend registration`). The other backends in the same heartbeat are still processed.
 
+A message whose `type` is not known to the Overwatch is ignored, logged at WARN and counted as `opengslb_gossip_messages_received_total{type="unknown"}`.
+
 ## Configuration
 
 ### Agent Gossip Configuration

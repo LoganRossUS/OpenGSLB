@@ -495,12 +495,13 @@ Region-level alerting:
 **Type:** Counter
 **Labels:** `type`
 
-Total gossip messages received by type.
+Total gossip messages received by type. `type` is one of `heartbeat`, `register`, `deregister`, `agent_auth`, `latency_report` or `unknown`. Every message whose type this build does not know is counted under `unknown`, so the number of series is fixed whatever peers send.
 
 **Example:**
 ```
 opengslb_gossip_messages_received_total{type="heartbeat"} 4521
-opengslb_gossip_messages_received_total{type="predictive"} 12
+opengslb_gossip_messages_received_total{type="latency_report"} 12
+opengslb_gossip_messages_received_total{type="unknown"} 3
 ```
 
 #### `opengslb_gossip_override_operations_total`

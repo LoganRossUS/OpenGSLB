@@ -55,6 +55,11 @@ const (
 	MaxGossipWeight = 1_000_000
 )
 
+// unknownGossipTypeLabel is the metric label for every message type this
+// build does not know. The type is chosen by the sender, so it must not
+// become a label value itself.
+const unknownGossipTypeLabel = "unknown"
+
 // validateGossipBackend checks the numeric fields of a backend received over
 // gossip. Gossip peers are other processes on the network, so the values are
 // checked here before they reach the backend registry, the DNS registry and
@@ -294,6 +299,8 @@ func (h *GossipHandler) processMessages(messages <-chan GossipMessage) {
 
 // handleMessage processes a single gossip message.
 func (h *GossipHandler) handleMessage(msg GossipMessage) {
+	typeLabel := string(msg.Type)
+
 	switch msg.Type {
 	case MessageAgentAuth:
 		h.handleAgentAuth(msg)
@@ -306,11 +313,12 @@ func (h *GossipHandler) handleMessage(msg GossipMessage) {
 	case MessageLatencyReport:
 		h.handleLatencyReport(msg)
 	default:
+		typeLabel = unknownGossipTypeLabel
 		h.logger.Warn("unknown message type", "type", msg.Type, "agent_id", msg.AgentID)
 	}
 
 	// Record metrics
-	RecordGossipMessage(msg.AgentID, string(msg.Type))
+	RecordGossipMessage(msg.AgentID, typeLabel)
 }
 
 // handleAgentAuth processes an agent authentication message.

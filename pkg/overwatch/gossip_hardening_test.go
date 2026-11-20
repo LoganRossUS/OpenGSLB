@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/loganrossus/OpenGSLB/pkg/metrics"
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Regression tests for defects in the gossip decoder that were found while
@@ -136,5 +138,36 @@ func TestGossipHeartbeat_InvalidBackendDoesNotDropValidOnes(t *testing.T) {
 	}
 	if !b.Draining {
 		t.Error("predictive state of the heartbeat was not applied to the valid backend")
+	}
+}
+
+func counterSeries(t *testing.T, c prometheus.Collector) int {
+	t.Helper()
+	ch := make(chan prometheus.Metric, 4096)
+	c.Collect(ch)
+	close(ch)
+	n := 0
+	for range ch {
+		n++
+	}
+	return n
+}
+
+// The message type is sender-controlled. Using it as a metric label verbatim
+// let a cluster member create one time series per message, without bound.
+func TestGossip_UnknownMessageTypesShareOneMetricSeries(t *testing.T) {
+	fuzzSilenceDefaultLogger(t)
+	env := newFuzzGossipEnv(t)
+	metrics.GossipMessagesReceivedTotal.Reset()
+	t.Cleanup(metrics.GossipMessagesReceivedTotal.Reset)
+
+	for i := 0; i < 200; i++ {
+		env.handleRaw(t, fmt.Sprintf(`{"type":"made-up-type-%d","agent_id":"agent-evil","payload":{}}`, i))
+	}
+	env.handleRaw(t, `{"type":"heartbeat","agent_id":"agent-2","payload":{}}`)
+	env.handleRaw(t, `{"type":"deregister","agent_id":"agent-2","payload":{"service":"x","address":"10.0.0.9","port":80}}`)
+
+	if got := counterSeries(t, metrics.GossipMessagesReceivedTotal); got != 3 {
+		t.Errorf("gossip_messages_received_total has %d series after 200 unknown types, heartbeat and deregister, want 3", got)
 	}
 }
