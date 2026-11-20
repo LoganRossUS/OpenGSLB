@@ -2831,7 +2831,11 @@ paths:
       tags:
       - Config
       summary: Get dns configuration
-      description: Only `listen_address` and `default_ttl` are populated.
+      description: >-
+        `listen_address`, `default_ttl`, `max_udp_size`, `return_last_healthy` and `zones` are populated; the
+        other fields are placeholders. `zones` lists the zones of `dns.zones` with their apex SOA and NS
+        settings as the node serves them, defaults included. Zones are set in the configuration file and cannot
+        be changed through the API.
       responses:
         '200':
           description: Success.
@@ -4077,6 +4081,8 @@ components:
       - recursion_enabled
       - rate_limit_enabled
       - rate_limit_qps
+      - return_last_healthy
+      - zones
       additionalProperties: false
       properties:
         listen_address:
@@ -4119,6 +4125,69 @@ components:
           type: boolean
         rate_limit_qps:
           type: integer
+        return_last_healthy:
+          type: boolean
+          description: >-
+            `dns.return_last_healthy`: when every server of the queried address family is unhealthy, answer
+            from all configured servers of that family instead of SERVFAIL.
+        zones:
+          type: array
+          description: The zones of `dns.zones`, sorted by name. Empty when none is configured.
+          items:
+            $ref: '#/components/schemas/DNSZone'
+    DNSZone:
+      type: object
+      description: A zone the node is authoritative for, with the SOA and NS records it serves at the apex.
+      required:
+      - name
+      - ttl
+      - soa
+      - nameservers
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: Zone apex in canonical form (lower case, trailing dot).
+        ttl:
+          type: integer
+          description: TTL in seconds of the apex SOA and NS records.
+        soa:
+          $ref: '#/components/schemas/DNSZoneSOA'
+        nameservers:
+          type: array
+          description: The NS record set at the apex.
+          items:
+            type: string
+    DNSZoneSOA:
+      type: object
+      description: The fields of the zone's SOA record. Times are in seconds.
+      required:
+      - primary_ns
+      - contact
+      - serial
+      - refresh
+      - retry
+      - expire
+      - negative_ttl
+      additionalProperties: false
+      properties:
+        primary_ns:
+          type: string
+          description: SOA MNAME.
+        contact:
+          type: string
+          description: SOA RNAME in DNS name form (`hostmaster.example.com.`).
+        serial:
+          type: integer
+        refresh:
+          type: integer
+        retry:
+          type: integer
+        expire:
+          type: integer
+        negative_ttl:
+          type: integer
+          description: SOA MINIMUM, how long resolvers may cache NXDOMAIN and empty answers.
     DNSConfigResponse:
       type: object
       required:

@@ -1550,6 +1550,8 @@ type ConfigBasedConfigProvider struct {
 	logger    *slog.Logger
 	startTime time.Time
 	dataDir   string
+	// dnsSettings reports the DNS settings in effect; nil when no DNS server runs.
+	dnsSettings func() LiveDNSSettings
 }
 
 // NewConfigBasedConfigProvider creates a new ConfigBasedConfigProvider.
@@ -1632,10 +1634,34 @@ func vcsRevision() string {
 
 // GetDNSConfig returns DNS-specific configuration.
 func (p *ConfigBasedConfigProvider) GetDNSConfig() (*DNSConfig, error) {
-	return &DNSConfig{
+	cfg := &DNSConfig{
 		ListenAddress: p.config.DNS.ListenAddress,
 		DefaultTTL:    p.config.DNS.DefaultTTL,
-	}, nil
+		Zones:         []DNSZone{},
+	}
+	if p.dnsSettings != nil {
+		live := p.dnsSettings()
+		cfg.MaxUDPSize = live.MaxUDPSize
+		cfg.ReturnLastHealthy = live.ReturnLastHealthy
+		if live.Zones != nil {
+			cfg.Zones = live.Zones
+		}
+	}
+	return cfg, nil
+}
+
+// LiveDNSSettings are the DNS settings in effect on the running DNS server.
+// They can differ from the configuration the process started with after a
+// reload.
+type LiveDNSSettings struct {
+	MaxUDPSize        int
+	ReturnLastHealthy bool
+	Zones             []DNSZone
+}
+
+// SetDNSSettings sets the function that reports the DNS settings in effect.
+func (p *ConfigBasedConfigProvider) SetDNSSettings(fn func() LiveDNSSettings) {
+	p.dnsSettings = fn
 }
 
 // UpdateDNSConfig updates DNS configuration.

@@ -779,6 +779,35 @@ func (a *Application) initializeAPIServer() error {
 			dataDir = a.overwatchDataDir()
 		}
 		configProvider.SetNodeInfo(a.startTime, dataDir)
+		if handler := a.dnsHandler; handler != nil {
+			// Read from the running DNS handler, so that the answer follows a
+			// configuration reload.
+			configProvider.SetDNSSettings(func() api.LiveDNSSettings {
+				zones := handler.Zones()
+				settings := api.LiveDNSSettings{
+					MaxUDPSize:        handler.MaxUDPSize(),
+					ReturnLastHealthy: handler.ReturnLastHealthy(),
+					Zones:             make([]api.DNSZone, 0, len(zones)),
+				}
+				for _, zone := range zones {
+					settings.Zones = append(settings.Zones, api.DNSZone{
+						Name: zone.Name,
+						TTL:  zone.TTL,
+						SOA: api.DNSZoneSOA{
+							PrimaryNS:   zone.PrimaryNS,
+							Contact:     zone.Contact,
+							Serial:      zone.Serial,
+							Refresh:     zone.Refresh,
+							Retry:       zone.Retry,
+							Expire:      zone.Expire,
+							NegativeTTL: zone.NegativeTTL,
+						},
+						Nameservers: append([]string(nil), zone.Nameservers...),
+					})
+				}
+				return settings
+			})
+		}
 		server.SetConfigHandlers(api.NewConfigHandlers(configProvider, a.logger))
 		a.logger.Debug("config API handlers registered")
 

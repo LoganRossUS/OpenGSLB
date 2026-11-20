@@ -633,6 +633,16 @@ func (h *Handler) Zones() []Zone {
 	return h.state().zones.Zones()
 }
 
+// MaxUDPSize returns the cap on UDP responses in effect.
+func (h *Handler) MaxUDPSize() int {
+	return int(h.state().maxUDPSize)
+}
+
+// ReturnLastHealthy reports whether dns.return_last_healthy is in effect.
+func (h *Handler) ReturnLastHealthy() bool {
+	return h.state().returnLastHealthy
+}
+
 // signResponse signs the DNS response if DNSSEC is enabled.
 // Returns the original message if DNSSEC is disabled or signing fails.
 func (h *Handler) signResponse(st handlerState, m *dns.Msg) *dns.Msg {

@@ -191,7 +191,7 @@ with 503 and a message that names the directory, and nothing is changed.
   - [`GET /api/v1/dnssec/ds`](#get-apiv1dnssecds) (unwired)
   - [`GET /api/v1/dnssec/keys`](#get-apiv1dnsseckeys) (unwired)
   - [`POST /api/v1/dnssec/sync`](#post-apiv1dnssecsync) (unwired)
-- [Schemas](#schemas) (130)
+- [Schemas](#schemas) (132)
 
 ## Discovery
 
@@ -2394,7 +2394,7 @@ Get dns configuration
 
 **Operation ID:** `getDnsConfig`
 
-Only `listen_address` and `default_ttl` are populated.
+`listen_address`, `default_ttl`, `max_udp_size`, `return_last_healthy` and `zones` are populated; the other fields are placeholders. `zones` lists the zones of `dns.zones` with their apex SOA and NS settings as the node serves them, defaults included. Zones are set in the configuration file and cannot be changed through the API.
 
 **Responses**
 
@@ -3248,6 +3248,8 @@ No other fields are allowed.
 | `forwarders` | array of string | no |  |
 | `rate_limit_enabled` | boolean | yes |  |
 | `rate_limit_qps` | integer | yes |  |
+| `return_last_healthy` | boolean | yes | `dns.return_last_healthy`: when every server of the queried address family is unhealthy, answer from all configured servers of that family instead of SERVFAIL. |
+| `zones` | array of [DNSZone](#schema-dnszone) | yes | The zones of `dns.zones`, sorted by name. Empty when none is configured. |
 
 No other fields are allowed.
 
@@ -3284,6 +3286,35 @@ No other fields are allowed.
 |---|---|---|---|
 | `status` | string | yes |  |
 | `message` | string | yes |  |
+
+No other fields are allowed.
+
+### Schema: DNSZone
+
+A zone the node is authoritative for, with the SOA and NS records it serves at the apex.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Zone apex in canonical form (lower case, trailing dot). |
+| `ttl` | integer | yes | TTL in seconds of the apex SOA and NS records. |
+| `soa` | [DNSZoneSOA](#schema-dnszonesoa) | yes |  |
+| `nameservers` | array of string | yes | The NS record set at the apex. |
+
+No other fields are allowed.
+
+### Schema: DNSZoneSOA
+
+The fields of the zone's SOA record. Times are in seconds.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `primary_ns` | string | yes | SOA MNAME. |
+| `contact` | string | yes | SOA RNAME in DNS name form (`hostmaster.example.com.`). |
+| `serial` | integer | yes |  |
+| `refresh` | integer | yes |  |
+| `retry` | integer | yes |  |
+| `expire` | integer | yes |  |
+| `negative_ttl` | integer | yes | SOA MINIMUM, how long resolvers may cache NXDOMAIN and empty answers. |
 
 No other fields are allowed.
 

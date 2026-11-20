@@ -30,6 +30,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -859,4 +860,74 @@ func listenTCP(t *testing.T, address string) int {
 
 func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0600)
+}
+
+// GET /api/v1/config/dns reports the zones the node serves with their apex
+// SOA and NS settings as resolved (configured values and defaults), the UDP
+// size limit and return_last_healthy. Zones are set in the configuration
+// file, so the endpoint is read-only for them.
+func TestConfigDNS_ReportsZoneApexSettings(t *testing.T) {
+	o := startAlignmentOverwatch(t, func(cfg *config.Config) {
+		cfg.DNS.Zones = []config.Zone{
+			{Name: "gslb.example.com"},
+			{
+				Name: "Apex.Example.NET",
+				TTL:  7200,
+				SOA: config.ZoneSOA{
+					PrimaryNS:   "ns1.example.net",
+					Contact:     "dns-admin@example.net",
+					Serial:      2026112001,
+					NegativeTTL: 30,
+				},
+				Nameservers: []string{"ns1.example.net", "ns2.example.net"},
+			},
+		}
+		cfg.DNS.ReturnLastHealthy = true
+	})
+
+	body := o.mustCall("GET", "/api/v1/config/dns", "", 200)
+	if got := field(t, body, "config", "max_udp_size"); got != float64(1232) {
+		t.Errorf("config.max_udp_size = %v, want the default 1232", got)
+	}
+	if got := field(t, body, "config", "return_last_healthy"); got != true {
+		t.Errorf("config.return_last_healthy = %v, want true", got)
+	}
+	zones, ok := field(t, body, "config", "zones").([]any)
+	if !ok || len(zones) != 2 {
+		t.Fatalf("config.zones = %v, want two zones", field(t, body, "config", "zones"))
+	}
+
+	// Sorted by name; names are canonical (lower case, trailing dot).
+	explicit := zones[0].(map[string]any)
+	want := map[string]any{
+		"name": "apex.example.net.",
+		"ttl":  float64(7200),
+		"soa": map[string]any{
+			"primary_ns":   "ns1.example.net.",
+			"contact":      "dns-admin.example.net.",
+			"serial":       float64(2026112001),
+			"refresh":      float64(3600),
+			"retry":        float64(600),
+			"expire":       float64(604800),
+			"negative_ttl": float64(30),
+		},
+		"nameservers": []any{"ns1.example.net.", "ns2.example.net."},
+	}
+	if !reflect.DeepEqual(explicit, want) {
+		t.Errorf("zone with settings:\n got  %v\n want %v", explicit, want)
+	}
+
+	// A zone given by name only gets every field from the defaults, derived
+	// from the node identity.
+	defaulted := zones[1].(map[string]any)
+	if defaulted["name"] != "gslb.example.com." {
+		t.Fatalf("second zone = %v, want gslb.example.com.", defaulted["name"])
+	}
+	soa := defaulted["soa"].(map[string]any)
+	if soa["primary_ns"] == "" || soa["contact"] != "hostmaster.gslb.example.com." || soa["serial"] != float64(1) {
+		t.Errorf("defaulted SOA = %v", soa)
+	}
+	if ns := defaulted["nameservers"].([]any); len(ns) != 1 || ns[0] != soa["primary_ns"] {
+		t.Errorf("defaulted nameservers = %v, want the primary nameserver %v", ns, soa["primary_ns"])
+	}
 }
