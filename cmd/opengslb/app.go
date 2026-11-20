@@ -1372,7 +1372,7 @@ func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
 				// Backend is draining - exclude from DNS
 				if backend.Draining {
 					if p.logger != nil {
-						p.logger.Info("DNS excluding draining backend",
+						p.logger.Debug("DNS excluding draining backend",
 							"address", address,
 							"port", port,
 							"reason", backend.DrainingReason,
@@ -1385,7 +1385,7 @@ func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
 				// Check effective status - only healthy backends should be in DNS
 				if backend.EffectiveStatus != overwatch.StatusHealthy {
 					if p.logger != nil {
-						p.logger.Info("DNS excluding unhealthy backend",
+						p.logger.Debug("DNS excluding unhealthy backend",
 							"address", address,
 							"port", port,
 							"effective_status", backend.EffectiveStatus,

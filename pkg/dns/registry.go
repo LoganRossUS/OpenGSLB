@@ -7,6 +7,7 @@
 package dns
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -133,24 +134,25 @@ func (r *Registry) Register(entry *DomainEntry) {
 
 // Lookup retrieves a domain entry by name.
 // Returns nil if the domain is not registered.
+//
+// Lookup runs for every DNS query, so it only logs at DEBUG: a miss is an
+// ordinary event (any query for an unknown name) and logging it at INFO
+// floods the log under load. The level check comes first so that the log
+// arguments cost nothing when debug logging is off.
 func (r *Registry) Lookup(name string) *DomainEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	normalizedName := normalizeDomain(name)
 	entry := r.domains[normalizedName]
-	// Log lookup details at appropriate level
-	if entry == nil {
-		// Log at INFO level when not found - helps diagnose issues
-		slog.Info("DNS registry lookup - domain not found",
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		msg := "DNS registry lookup - found"
+		if entry == nil {
+			msg = "DNS registry lookup - domain not found"
+		}
+		slog.Debug(msg,
 			"query_name", name,
 			"normalized_name", normalizedName,
 			"registry_count", len(r.domains),
-			"registry_ptr", fmt.Sprintf("%p", r),
-		)
-	} else {
-		slog.Debug("DNS registry lookup - found",
-			"query_name", name,
-			"normalized_name", normalizedName,
 			"registry_ptr", fmt.Sprintf("%p", r),
 		)
 	}
