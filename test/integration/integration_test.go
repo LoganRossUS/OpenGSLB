@@ -393,13 +393,36 @@ func TestDNSBasicQuery(t *testing.T) {
 	}
 }
 
+// TestDNSNXDOMAIN queries a name that does not exist inside a served zone.
+// The test configuration has no dns.zones, so every domain is its own zone
+// and a name below roundrobin.test is inside that zone.
 func TestDNSNXDOMAIN(t *testing.T) {
-	r, err := queryDNS("nonexistent.domain.test", dns.TypeA)
+	r, err := queryDNS("nonexistent.roundrobin.test", dns.TypeA)
 	if err != nil {
 		t.Fatalf("DNS query failed: %v", err)
 	}
 	if r.Rcode != dns.RcodeNameError {
 		t.Errorf("expected NXDOMAIN (Rcode %d), got Rcode %d", dns.RcodeNameError, r.Rcode)
+	}
+	if !r.Authoritative {
+		t.Error("expected the AA bit on NXDOMAIN inside a served zone")
+	}
+	if len(r.Ns) != 1 || r.Ns[0].Header().Rrtype != dns.TypeSOA {
+		t.Errorf("expected the zone SOA in the authority section, got %v", r.Ns)
+	}
+}
+
+// TestDNSOutOfZoneRefused queries a name outside every served zone.
+func TestDNSOutOfZoneRefused(t *testing.T) {
+	r, err := queryDNS("nonexistent.domain.test", dns.TypeA)
+	if err != nil {
+		t.Fatalf("DNS query failed: %v", err)
+	}
+	if r.Rcode != dns.RcodeRefused {
+		t.Errorf("expected REFUSED (Rcode %d), got Rcode %d", dns.RcodeRefused, r.Rcode)
+	}
+	if r.Authoritative {
+		t.Error("expected the AA bit to be clear on REFUSED")
 	}
 }
 

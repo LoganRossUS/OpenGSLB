@@ -88,11 +88,12 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	m := new(dns.Msg)
 	m.SetReply(r)
-	m.Authoritative = true
+	// The AA bit is set further down, only once the query name is known to
+	// be inside a zone this server is authoritative for.
 
 	if len(r.Question) == 0 {
 		h.logger.Warn("DNS query with no questions")
-		m.SetRcode(m, dns.RcodeFormatError)
+		setError(m, dns.RcodeFormatError)
 		h.writeResponse(w, m, start, "FORMERR", "")
 		return
 	}
@@ -115,25 +116,63 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	)
 
 	st := h.state()
-	zone, entry := st.resolve(qname)
-	// The apex of a zone exists even when no GSLB domain is registered at it.
-	apex := zone != nil && qname == zone.Name
 
 	switch {
-	case q.Qtype == dns.TypeAXFR || q.Qtype == dns.TypeIXFR:
+	case r.Opcode != dns.OpcodeQuery:
+		// NOTIFY, UPDATE and the other opcodes are not implemented.
+		h.logger.Debug("unsupported opcode", "name", qname, "opcode", dns.OpcodeToString[r.Opcode])
+		setError(m, dns.RcodeNotImplemented)
+	case q.Qclass != dns.ClassINET:
+		// Only class IN is served. A CH or ANY class query must not be
+		// answered from IN data.
+		h.logger.Debug("query class refused", "name", qname, "class", dns.ClassToString[q.Qclass])
+		setError(m, dns.RcodeRefused)
+	default:
+		h.answerQuery(st, m, q, qname, clientIP)
+	}
+
+	// Sign the response if DNSSEC is enabled
+	signed := h.signResponse(st, m)
+
+	status := dns.RcodeToString[signed.Rcode]
+	h.writeResponse(w, signed, start, status, qname)
+}
+
+// answerQuery fills in the response to a class IN query.
+func (h *Handler) answerQuery(st handlerState, m *dns.Msg, q dns.Question, qname string, clientIP net.IP) {
+	qtype := dns.TypeToString[q.Qtype]
+
+	zone, entry := st.resolve(qname)
+	if zone == nil {
+		// The name is outside every zone this server is authoritative for.
+		// An authoritative-only server refuses such a query. Answering
+		// NXDOMAIN would be a false statement about someone else's name.
+		h.logger.Debug("query outside served zones refused", "name", qname, "type", qtype)
+		setError(m, dns.RcodeRefused)
+		return
+	}
+
+	if q.Qtype == dns.TypeAXFR || q.Qtype == dns.TypeIXFR {
 		// Zone transfers are not implemented. Refuse them: an empty NOERROR
 		// could be mistaken by a secondary for an empty zone.
 		h.logger.Debug("zone transfer refused", "name", qname, "type", qtype)
-		m.SetRcode(m, dns.RcodeRefused)
-		m.Authoritative = false
+		setError(m, dns.RcodeRefused)
+		return
+	}
+
+	// Everything below is a statement about data in one of our zones.
+	m.Authoritative = true
+
+	// The apex of a zone exists even when no GSLB domain is registered at it.
+	apex := qname == zone.Name
+
+	switch {
 	case entry == nil && !apex && !st.hasNameBelow(qname):
 		// Nothing exists at or below the name. The zone SOA in the authority
 		// section lets resolvers cache the NXDOMAIN (RFC 2308 section 2.1).
 		h.logger.Debug("domain not found", "name", qname)
-		m.SetRcode(m, dns.RcodeNameError) // NXDOMAIN
-		if zone != nil {
-			m.Ns = []dns.RR{zone.negativeSOA()}
-		}
+		m.Rcode = dns.RcodeNameError // NXDOMAIN
+		m.Ns = []dns.RR{zone.negativeSOA()}
 	case (q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA) && entry != nil:
 		h.handleAddressQuery(st, m, q, qname, zone, entry, clientIP)
 	case (q.Qtype == dns.TypeSOA || q.Qtype == dns.TypeNS) && apex:
@@ -152,12 +191,15 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		h.logger.Debug("no data for query type", "name", qname, "type", qtype)
 		setNoData(m, zone)
 	}
+}
 
-	// Sign the response if DNSSEC is enabled
-	signed := h.signResponse(st, m)
-
-	status := dns.RcodeToString[signed.Rcode]
-	h.writeResponse(w, signed, start, status, qname)
+// setError turns m into an error response that makes no statement about zone
+// data: the given rcode, the AA bit clear and no records.
+func setError(m *dns.Msg, rcode int) {
+	m.Rcode = rcode
+	m.Authoritative = false
+	m.Answer = nil
+	m.Ns = nil
 }
 
 // resolve finds the zone that is authoritative for qname and the GSLB domain
@@ -218,7 +260,7 @@ func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question
 	servers := healthyServers(st.health, entry, wantIPv4)
 	if len(servers) == 0 {
 		h.logger.Debug("no healthy servers", "domain", qname, "type", dns.TypeToString[q.Qtype])
-		m.SetRcode(m, dns.RcodeServerFailure)
+		setError(m, dns.RcodeServerFailure)
 		return
 	}
 
@@ -239,7 +281,7 @@ func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question
 	selected, err := entry.Router.Route(ctx, pool)
 	if err != nil {
 		h.logger.Error("routing failed", "domain", qname, "error", err)
-		m.SetRcode(m, dns.RcodeServerFailure)
+		setError(m, dns.RcodeServerFailure)
 		return
 	}
 
@@ -264,9 +306,7 @@ func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question
 func setNoData(m *dns.Msg, zone *Zone) {
 	m.Rcode = dns.RcodeSuccess
 	m.Answer = nil
-	if zone != nil {
-		m.Ns = []dns.RR{zone.negativeSOA()}
-	}
+	m.Ns = []dns.RR{zone.negativeSOA()}
 }
 
 // hasServersOfFamily reports whether the entry has at least one configured
