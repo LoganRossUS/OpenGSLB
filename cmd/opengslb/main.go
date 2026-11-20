@@ -153,6 +153,23 @@ func main() {
 	)
 
 	// Main event loop
+	runSignalLoop(app, logger, sigChan, errChan)
+
+	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	if err := app.Shutdown(shutdownCtx); err != nil {
+		logger.Error("shutdown error", "error", err)
+		os.Exit(1)
+	}
+
+	logger.Info("OpenGSLB stopped")
+}
+
+// runSignalLoop is the main event loop. It reloads the configuration on
+// SIGHUP and returns when a shutdown signal arrives or the application stops.
+func runSignalLoop(app *Application, logger *slog.Logger, sigChan <-chan os.Signal, errChan <-chan error) {
 	for {
 		select {
 		case sig := <-sigChan:
@@ -164,27 +181,15 @@ func main() {
 				}
 			case syscall.SIGINT, syscall.SIGTERM:
 				logger.Info("received shutdown signal", "signal", sig)
-				goto shutdown
+				return
 			}
 		case err := <-errChan:
 			if err != nil {
 				logger.Error("application error", "error", err)
 			}
-			goto shutdown
+			return
 		}
 	}
-
-shutdown:
-	cancel()
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-
-	if err := app.Shutdown(shutdownCtx); err != nil {
-		logger.Error("shutdown error", "error", err)
-		os.Exit(1)
-	}
-
-	logger.Info("OpenGSLB stopped")
 }
 
 // applyModeOverride applies command-line flags to configuration.
@@ -262,8 +267,18 @@ func handleReload(app *Application, logger *slog.Logger) error {
 		return fmt.Errorf("mode change requires restart")
 	}
 
-	if err := app.Reload(newCfg); err != nil {
+	restartRequired, err := app.Reload(newCfg)
+	if err != nil {
 		return fmt.Errorf("failed to apply configuration: %w", err)
+	}
+
+	if len(restartRequired) > 0 {
+		// The reloadable settings were applied. Say which changes were not,
+		// instead of reporting a plain success.
+		logger.Warn("configuration reloaded, restart required for settings that cannot change at runtime",
+			"restart_required", restartRequired,
+		)
+		return nil
 	}
 
 	logger.Info("configuration reloaded successfully")

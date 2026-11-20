@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"type\":\"register\",\"agent_id\":\"agent-evil\",\"region\":\"eu-west-1\",\"payload\":{\"service\":\"rr.fuzz.example\",\"address\":\"10.6.6.3\",\"port\":1e30,\"weight\":-1e30}}")

@@ -326,3 +326,68 @@ func TestAddECSResponse(t *testing.T) {
 		t.Errorf("expected scope 24, got %d", ecs.SourceScope)
 	}
 }
+
+// ecsQuery builds a query with an ECS option.
+func ecsQuery(family uint16, address string, sourcePrefix uint8) *dns.Msg {
+	msg := new(dns.Msg)
+	msg.SetQuestion("example.com.", dns.TypeA)
+	msg.SetEdns0(1232, false)
+	opt := msg.IsEdns0()
+	opt.Option = append(opt.Option, &dns.EDNS0_SUBNET{
+		Code:          dns.EDNS0SUBNET,
+		Family:        family,
+		SourceNetmask: sourcePrefix,
+		Address:       net.ParseIP(address),
+	})
+	return msg
+}
+
+// A source prefix length of 0 means the sender does not want a client
+// address used (RFC 7871 section 7.1.2). The transport address is used.
+func TestGetClientIP_ECSSourcePrefixZeroFallsBack(t *testing.T) {
+	sourceAddr := &net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 12345}
+
+	msg := ecsQuery(1, "0.0.0.0", 0)
+	if ecs := ParseECS(msg); !ecs.Found || ecs.Usable() {
+		t.Fatalf("ECS /0: Found = %v, Usable = %v, want found but not usable", ecs.Found, ecs.Usable())
+	}
+	if ip := GetClientIP(msg, sourceAddr, true); !ip.Equal(net.ParseIP("192.0.2.1")) {
+		t.Errorf("client IP = %v, want the source address 192.0.2.1", ip)
+	}
+
+	msg = ecsQuery(1, "203.0.113.0", 24)
+	if ecs := ParseECS(msg); !ecs.Usable() {
+		t.Fatal("ECS /24 must be usable")
+	}
+	if ip := GetClientIP(msg, sourceAddr, true); !ip.Equal(net.ParseIP("203.0.113.0")) {
+		t.Errorf("client IP = %v, want the ECS address 203.0.113.0", ip)
+	}
+
+	var nilResult *ECSResult
+	if nilResult.Usable() {
+		t.Error("a nil result is not usable")
+	}
+}
+
+// The response option repeats FAMILY, SOURCE PREFIX-LENGTH and ADDRESS of the
+// query and sets the scope (RFC 7871 section 7.2.1).
+func TestECSResponseOption(t *testing.T) {
+	query := ParseECS(ecsQuery(2, "2001:db8:1234::", 48)).Option
+	resp := ECSResponseOption(query, 48)
+	if resp == query {
+		t.Fatal("the response option must be a copy, not the query option")
+	}
+	if resp.Code != dns.EDNS0SUBNET || resp.Family != 2 || resp.SourceNetmask != 48 || resp.SourceScope != 48 ||
+		!resp.Address.Equal(net.ParseIP("2001:db8:1234::")) {
+		t.Errorf("response option = %+v", resp)
+	}
+	if query.SourceScope != 0 {
+		t.Error("the query option was modified")
+	}
+	if got := ECSResponseOption(query, 0).SourceScope; got != 0 {
+		t.Errorf("scope = %d, want 0", got)
+	}
+	if ECSResponseOption(nil, 24) != nil {
+		t.Error("nil query option must give nil")
+	}
+}

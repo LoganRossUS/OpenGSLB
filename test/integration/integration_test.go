@@ -51,6 +51,7 @@ const (
 var (
 	gslbProcess *exec.Cmd
 	configPath  string
+	dataDir     string
 )
 
 func TestMain(m *testing.M) {
@@ -145,6 +146,9 @@ func teardownTestEnvironment() {
 	if configPath != "" {
 		os.Remove(configPath)
 	}
+	if dataDir != "" {
+		os.RemoveAll(dataDir)
+	}
 }
 
 func isGSLBRunning() bool {
@@ -171,6 +175,10 @@ dns:
   default_ttl: 30
 
 overwatch:
+  # The API tests create servers. An overwatch refuses such writes with 503
+  # when it has no store, and the default /var/lib/opengslb is not writable
+  # for an unprivileged test run.
+  data_dir: "DATA_DIR_PLACEHOLDER"
   gossip:
     encryption_key: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
     bind_address: "127.0.0.1:17946"
@@ -314,6 +322,13 @@ api:
     - "172.28.0.0/16"
 `
 
+	var err error
+	dataDir, err = os.MkdirTemp("", "opengslb-test-data-*")
+	if err != nil {
+		return "", err
+	}
+	config = strings.Replace(config, "DATA_DIR_PLACEHOLDER", dataDir, 1)
+
 	tmpFile, err := os.CreateTemp("", "opengslb-test-*.yaml")
 	if err != nil {
 		return "", err
@@ -393,13 +408,36 @@ func TestDNSBasicQuery(t *testing.T) {
 	}
 }
 
+// TestDNSNXDOMAIN queries a name that does not exist inside a served zone.
+// The test configuration has no dns.zones, so every domain is its own zone
+// and a name below roundrobin.test is inside that zone.
 func TestDNSNXDOMAIN(t *testing.T) {
-	r, err := queryDNS("nonexistent.domain.test", dns.TypeA)
+	r, err := queryDNS("nonexistent.roundrobin.test", dns.TypeA)
 	if err != nil {
 		t.Fatalf("DNS query failed: %v", err)
 	}
 	if r.Rcode != dns.RcodeNameError {
 		t.Errorf("expected NXDOMAIN (Rcode %d), got Rcode %d", dns.RcodeNameError, r.Rcode)
+	}
+	if !r.Authoritative {
+		t.Error("expected the AA bit on NXDOMAIN inside a served zone")
+	}
+	if len(r.Ns) != 1 || r.Ns[0].Header().Rrtype != dns.TypeSOA {
+		t.Errorf("expected the zone SOA in the authority section, got %v", r.Ns)
+	}
+}
+
+// TestDNSOutOfZoneRefused queries a name outside every served zone.
+func TestDNSOutOfZoneRefused(t *testing.T) {
+	r, err := queryDNS("nonexistent.domain.test", dns.TypeA)
+	if err != nil {
+		t.Fatalf("DNS query failed: %v", err)
+	}
+	if r.Rcode != dns.RcodeRefused {
+		t.Errorf("expected REFUSED (Rcode %d), got Rcode %d", dns.RcodeRefused, r.Rcode)
+	}
+	if r.Authoritative {
+		t.Error("expected the AA bit to be clear on REFUSED")
 	}
 }
 

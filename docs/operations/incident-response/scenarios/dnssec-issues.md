@@ -1,5 +1,7 @@
 # Scenario: DNSSEC Issues
 
+> **DNSSEC status: in development, not active.** The signing code (`pkg/dnssec`) is not connected to the DNS server in this release. With `overwatch.dnssec.enabled: true` the overwatch logs a warning at startup and serves unsigned responses: no RRSIG or DNSKEY records, no keys are generated, and the `/api/v1/dnssec/*` endpoints answer 404. Do not publish DS records for a zone served by OpenGSLB. The DNSSEC material on this page describes the intended behavior and does not apply yet.
+
 ## Symptoms
 
 - DNS queries return SERVFAIL when validating resolver is used

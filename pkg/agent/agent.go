@@ -39,6 +39,13 @@ type Agent struct {
 	latencyCollector  latency.Collector
 	latencyAggregator *latency.Aggregator
 
+	// lifecycleMu serializes Start and Stop. A Stop that arrives while Start
+	// is still bringing components up waits for it, so that it stops all of
+	// them and not only the ones that existed when it looked.
+	lifecycleMu sync.Mutex
+
+	// mu guards the fields below and heartbeat, latencyCollector and
+	// latencyAggregator, which Start sets and other goroutines read.
 	mu        sync.RWMutex
 	running   bool
 	stopCh    chan struct{}
@@ -57,6 +64,11 @@ type GossipSender interface {
 
 	// SendLatencyReport sends latency data to all Overwatch nodes (ADR-017).
 	SendLatencyReport(agentID, region, backend string, subnets []overwatch.SubnetLatencyData) error
+
+	// SendDeregister tells all Overwatch nodes that this agent no longer
+	// monitors a backend, so they stop serving it without waiting for it to
+	// go stale.
+	SendDeregister(agentID, region, service, address string, port int) error
 
 	// Start connects to Overwatch nodes and begins gossip.
 	Start(ctx context.Context) error
@@ -128,8 +140,25 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 	}
 
 	// Register configured backends
-	for _, backend := range cfg.Config.Agent.Backends {
-		bcfg := BackendConfig{
+	for _, bcfg := range backendConfigsFrom(cfg.Config) {
+		if err := backends.AddBackend(bcfg); err != nil {
+			return nil, fmt.Errorf("failed to add backend %s: %w", bcfg.Service, err)
+		}
+	}
+
+	// Set up health change callback to send gossip updates
+	backends.OnHealthChange(func(update BackendHealthUpdate) {
+		agent.onHealthChange(update)
+	})
+
+	return agent, nil
+}
+
+// backendConfigsFrom converts the agent.backends section of cfg.
+func backendConfigsFrom(cfg *config.Config) []BackendConfig {
+	backends := make([]BackendConfig, 0, len(cfg.Agent.Backends))
+	for _, backend := range cfg.Agent.Backends {
+		backends = append(backends, BackendConfig{
 			Service: backend.Service,
 			Address: backend.Address,
 			Port:    backend.Port,
@@ -143,22 +172,61 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 				FailureThreshold: backend.HealthCheck.FailureThreshold,
 				SuccessThreshold: backend.HealthCheck.SuccessThreshold,
 			},
-		}
-		if err := backends.AddBackend(bcfg); err != nil {
-			return nil, fmt.Errorf("failed to add backend %s: %w", backend.Service, err)
-		}
+		})
+	}
+	return backends
+}
+
+// Reconfigure applies the part of newCfg that can change while the agent
+// runs: the agent.backends list. Backends are added, removed and updated in
+// the backend manager (see BackendManager.Reconfigure). When the agent is
+// running with gossip, the Overwatch nodes are told at once: a deregistration
+// for every removed backend, then a health update that carries the added and
+// updated ones.
+//
+// Every other agent setting (identity, gossip, heartbeat, predictive,
+// latency_learning) is read when the agent is created or started and is not
+// touched here. The caller is responsible for reporting those as needing a
+// restart.
+func (a *Agent) Reconfigure(newCfg *config.Config) (ReconfigureResult, error) {
+	result, err := a.backends.Reconfigure(backendConfigsFrom(newCfg))
+	if err != nil {
+		return result, err
+	}
+	if !result.Changed() {
+		return result, nil
 	}
 
-	// Set up health change callback to send gossip updates
-	backends.OnHealthChange(func(update BackendHealthUpdate) {
-		agent.onHealthChange(update)
-	})
+	a.mu.RLock()
+	running := a.running
+	a.mu.RUnlock()
+	if !running || a.gossip == nil {
+		return result, nil
+	}
 
-	return agent, nil
+	for _, backend := range result.Removed {
+		if err := a.gossip.SendDeregister(a.identity.AgentID, a.identity.Region,
+			backend.Service, backend.Address, backend.Port); err != nil {
+			// Not fatal: without the message the Overwatch stops serving
+			// the backend once its heartbeat goes stale.
+			a.logger.Warn("failed to announce removed backend to overwatch nodes",
+				"service", backend.Service,
+				"address", backend.Address,
+				"port", backend.Port,
+				"error", err,
+			)
+		}
+	}
+	a.sendHealthUpdate()
+
+	return result, nil
 }
 
 // Start begins agent operations.
-func (a *Agent) Start(ctx context.Context) error {
+func (a *Agent) Start(ctx context.Context) (err error) {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+
 	a.mu.Lock()
 	if a.running {
 		a.mu.Unlock()
@@ -169,6 +237,17 @@ func (a *Agent) Start(ctx context.Context) error {
 	a.stopCh = make(chan struct{})
 	a.doneCh = make(chan struct{})
 	a.mu.Unlock()
+
+	// A start that fails has stopped what it started and left no main loop
+	// behind: the agent is not running, and a later Stop has nothing to wait
+	// for.
+	defer func() {
+		if err != nil {
+			a.mu.Lock()
+			a.running = false
+			a.mu.Unlock()
+		}
+	}()
 
 	a.logger.Info("starting agent",
 		"agent_id", a.identity.AgentID,
@@ -193,7 +272,7 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	// Initialize and start heartbeat
 	if a.gossip != nil {
-		a.heartbeat = NewHeartbeatSender(
+		heartbeat := NewHeartbeatSender(
 			HeartbeatSenderConfig{
 				Interval:        a.config.Agent.Heartbeat.Interval,
 				MissedThreshold: a.config.Agent.Heartbeat.MissedThreshold,
@@ -201,7 +280,10 @@ func (a *Agent) Start(ctx context.Context) error {
 			},
 			a.gossip,
 		)
-		if err := a.heartbeat.Start(ctx, a.identity.AgentID, a.identity.Region, a.backends.BackendCount()); err != nil {
+		a.mu.Lock()
+		a.heartbeat = heartbeat
+		a.mu.Unlock()
+		if err := heartbeat.Start(ctx, a.identity.AgentID, a.identity.Region, a.backends.BackendCount()); err != nil {
 			if stopErr := a.gossip.Stop(); stopErr != nil {
 				a.logger.Error("error stopping gossip", "error", stopErr)
 			}
@@ -229,6 +311,9 @@ func (a *Agent) Start(ctx context.Context) error {
 
 // Stop gracefully shuts down the agent.
 func (a *Agent) Stop(ctx context.Context) error {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+
 	a.mu.Lock()
 	if !a.running {
 		a.mu.Unlock()
@@ -236,6 +321,8 @@ func (a *Agent) Stop(ctx context.Context) error {
 	}
 	a.running = false
 	close(a.stopCh)
+	heartbeat := a.heartbeat
+	latencyCollector := a.latencyCollector
 	a.mu.Unlock()
 
 	a.logger.Info("stopping agent")
@@ -246,13 +333,13 @@ func (a *Agent) Stop(ctx context.Context) error {
 	}
 
 	// Stop heartbeat
-	if a.heartbeat != nil {
-		a.heartbeat.Stop()
+	if heartbeat != nil {
+		heartbeat.Stop()
 	}
 
 	// Stop latency collection (ADR-017)
-	if a.latencyCollector != nil {
-		if err := a.latencyCollector.Close(); err != nil {
+	if latencyCollector != nil {
+		if err := latencyCollector.Close(); err != nil {
 			a.logger.Error("error stopping latency collector", "error", err)
 		}
 	}
@@ -463,8 +550,10 @@ func (a *Agent) startLatencyCollection(ctx context.Context) error {
 		return fmt.Errorf("failed to start latency collector: %w", err)
 	}
 
+	a.mu.Lock()
 	a.latencyCollector = collector
 	a.latencyAggregator = aggregator
+	a.mu.Unlock()
 
 	// Start observation consumer goroutine
 	go a.consumeLatencyObservations(ctx)
@@ -575,13 +664,9 @@ func (a *Agent) sendLatencyReports() {
 		})
 	}
 
-	// Send a report for each backend service
-	services := make(map[string]bool)
-	for _, backend := range a.config.Agent.Backends {
-		services[backend.Service] = true
-	}
-
-	for service := range services {
+	// Send a report for each backend service. The backend manager is asked,
+	// not the configuration, because Reconfigure can change the backends.
+	for _, service := range a.backends.Services() {
 		if err := a.gossip.SendLatencyReport(
 			a.identity.AgentID,
 			a.identity.Region,
@@ -629,11 +714,12 @@ func (a *Agent) Stats() AgentStats {
 	a.mu.RLock()
 	running := a.running
 	startTime := a.startTime
+	heartbeat := a.heartbeat
 	a.mu.RUnlock()
 
 	var heartbeatSent time.Time
-	if a.heartbeat != nil {
-		heartbeatSent = a.heartbeat.LastSent()
+	if heartbeat != nil {
+		heartbeatSent = heartbeat.LastSent()
 	}
 
 	var uptime time.Duration
@@ -653,6 +739,15 @@ func (a *Agent) Stats() AgentStats {
 	}
 }
 
+// MockDeregistration stores a backend deregistration for testing.
+type MockDeregistration struct {
+	AgentID string
+	Region  string
+	Service string
+	Address string
+	Port    int
+}
+
 // MockLatencyReport stores a latency report for testing.
 type MockLatencyReport struct {
 	AgentID string
@@ -667,6 +762,7 @@ type MockGossipSender struct {
 	healthUpdates  []HealthUpdateMessage
 	heartbeats     []HeartbeatMessage
 	latencyReports []MockLatencyReport
+	deregistered   []MockDeregistration
 	startErr       error
 	sendHealthErr  error
 	sendHBErr      error
@@ -735,6 +831,28 @@ func (m *MockGossipSender) SendLatencyReport(agentID, region, backend string, su
 	return nil
 }
 
+func (m *MockGossipSender) SendDeregister(agentID, region, service, address string, port int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deregistered = append(m.deregistered, MockDeregistration{
+		AgentID: agentID,
+		Region:  region,
+		Service: service,
+		Address: address,
+		Port:    port,
+	})
+	return nil
+}
+
+// Deregistrations returns recorded backend deregistrations.
+func (m *MockGossipSender) Deregistrations() []MockDeregistration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]MockDeregistration, len(m.deregistered))
+	copy(result, m.deregistered)
+	return result
+}
+
 // HealthUpdates returns recorded health updates.
 func (m *MockGossipSender) HealthUpdates() []HealthUpdateMessage {
 	m.mu.Lock()
@@ -778,4 +896,5 @@ func (m *MockGossipSender) Clear() {
 	m.healthUpdates = m.healthUpdates[:0]
 	m.heartbeats = m.heartbeats[:0]
 	m.latencyReports = m.latencyReports[:0]
+	m.deregistered = m.deregistered[:0]
 }

@@ -18,6 +18,14 @@ const (
 	// DNS defaults
 	DefaultListenAddress = ":53"
 	DefaultTTL           = 60
+	// DefaultMaxUDPSize is the default cap on UDP responses and the default
+	// advertised EDNS UDP payload size (DNS Flag Day 2020 recommendation: it
+	// avoids IP fragmentation on almost every path).
+	DefaultMaxUDPSize = 1232
+	// MinMaxUDPSize and MaxMaxUDPSize bound dns.max_udp_size. 512 is the
+	// smallest size every DNS implementation must accept (RFC 1035).
+	MinMaxUDPSize = 512
+	MaxMaxUDPSize = 4096
 
 	// Server defaults
 	DefaultServerPort   = 80
@@ -169,6 +177,9 @@ func applyOverwatchDefaults(cfg *Config) {
 	if cfg.DNS.DefaultTTL == 0 {
 		cfg.DNS.DefaultTTL = DefaultTTL
 	}
+	if cfg.DNS.MaxUDPSize == 0 {
+		cfg.DNS.MaxUDPSize = DefaultMaxUDPSize
+	}
 
 	// Gossip defaults - only apply bind_address default if gossip is enabled (has encryption key)
 	if cfg.Overwatch.Gossip.EncryptionKey != "" && cfg.Overwatch.Gossip.BindAddress == "" {
@@ -206,7 +217,7 @@ func applyOverwatchDefaults(cfg *Config) {
 		cfg.Overwatch.Stale.RemoveAfter = DefaultStaleRemoveAfter
 	}
 
-	// DNSSEC defaults (enabled by default per ADR-015)
+	// DNSSEC defaults (enabled itself defaults to false; signing is not active in this build)
 	if cfg.Overwatch.DNSSEC.Algorithm == "" {
 		cfg.Overwatch.DNSSEC.Algorithm = DefaultDNSSECAlgorithm
 	}

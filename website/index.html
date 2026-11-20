@@ -57,7 +57,6 @@
             "EDNS Client Subnet (ECS) support",
             "HTTP and TCP health checks",
             "Predictive health monitoring",
-            "DNSSEC support",
             "Agent-Overwatch architecture",
             "Unified server architecture",
             "Server management CRUD API",
@@ -674,7 +673,7 @@
                             <td class="check">&#10003;</td>
                             <td class="check">&#10003;</td>
                             <td class="cross">&#10007;</td>
-                            <td class="highlight check">&#10003;</td>
+                            <td class="highlight">In development</td>
                         </tr>
                         <tr>
                             <td>Server management API</td>
@@ -763,8 +762,8 @@
                     <p>Agents authenticate using service tokens on first connection, then certificates are pinned. Prevents impersonation attacks even if tokens are compromised later.</p>
                 </div>
                 <div class="feature-card">
-                    <h4><i class="bi bi-patch-check me-2"></i>DNSSEC Support</h4>
-                    <p>DNSSEC signing with NSEC3 to prevent zone enumeration. Includes automatic key generation, inter-Overwatch key synchronization, and configurable algorithms.</p>
+                    <h4><i class="bi bi-patch-check me-2"></i>DNSSEC (in development)</h4>
+                    <p>Not active yet: responses are unsigned in the current release. Signing with NSEC3, automatic key generation and inter-Overwatch key synchronization are written and are being connected to the DNS server.</p>
                 </div>
                 <div class="feature-card">
                     <h4><i class="bi bi-diagram-3 me-2"></i>Health Authority Hierarchy</h4>
@@ -788,7 +787,7 @@
             <div class="feature-grid">
                 <div class="feature-card">
                     <h4>DNS Authoritative Server</h4>
-                    <p>Full DNS implementation with A/AAAA records, UDP+TCP transport, configurable TTLs, NXDOMAIN handling, and DNSSEC signing.</p>
+                    <p>Full DNS implementation with A/AAAA records, UDP+TCP transport, configurable TTLs and NXDOMAIN handling.</p>
                 </div>
                 <div class="feature-card">
                     <h4>Smart Routing Algorithms</h4>
@@ -828,7 +827,7 @@
                 </div>
                 <div class="feature-card">
                     <h4>CLI Management Tool</h4>
-                    <p>Full-featured opengslb-cli for status monitoring, server management, override control, geo testing, DNSSEC management, and config validation.</p>
+                    <p>Full-featured opengslb-cli for status monitoring, server management, override control, geo testing, and config validation.</p>
                 </div>
                 <div class="feature-card">
                     <h4>Zero External Dependencies</h4>
@@ -938,7 +937,7 @@ curl -X POST http://localhost:9090/api/v1/servers \
                             <ul class="timeline-features">
                                 <li>Mandatory gossip encryption</li>
                                 <li>TOFU certificate pinning</li>
-                                <li>DNSSEC with NSEC3</li>
+                                <li>DNSSEC with NSEC3 (code written, not active)</li>
                                 <li>External override API</li>
                                 <li>Multi-backend agents</li>
                             </ul>

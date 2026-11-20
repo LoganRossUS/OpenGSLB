@@ -1,0 +1,53 @@
+# Dependabot version updates.
+#
+# Every entry sets target-branch: develop. Pull requests against main are
+# rejected unless they come from develop (validate-source-branch.yml), and
+# Dependabot would otherwise open its pull requests against the default
+# branch, which is main.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      golang-x:
+        patterns:
+          - golang.org/x/*
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: docker
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    ignore:
+      # The builder image follows the "go" line of go.mod. Patch releases are
+      # welcome; a new Go minor or major release is adopted by hand, in go.mod
+      # and the Dockerfile together, so the released image is not built with a
+      # newer Go minor version than the one CI tests with.
+      - dependency-name: golang
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor

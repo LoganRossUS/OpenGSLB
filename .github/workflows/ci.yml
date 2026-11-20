@@ -9,6 +9,10 @@ on:
     branches:
       - main  # Only run on push to main (after PR merge)
 
+# The Go version comes from the "go" line of go.mod in every job (and in
+# release.yml and security.yml), so the workflows cannot drift from the module.
+# The Dockerfile builder image tag must be bumped together with go.mod.
+
 jobs:
   test:
     name: Test
@@ -21,7 +25,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Download dependencies
@@ -53,13 +57,81 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       # Starts a real overwatch in-process, calls every operation in
       # api/openapi.yaml and validates the responses against the spec.
       - name: Validate API responses against api/openapi.yaml
         run: go test -race -count=1 -run 'TestAPIContract' -v ./cmd/opengslb
+
+  # Starts the real DNS server in-process and asserts, for a table of queries,
+  # the response code, the AA flag and the answer and authority sections over
+  # UDP and TCP. The package also runs in the Test job; this job makes a DNS
+  # behavior change visible as its own check.
+  dns-conformance:
+    name: DNS Conformance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run the DNS conformance tests
+        run: go test -race -count=1 -v ./test/conformance/...
+
+  # Fuzzes the code that parses input from the network for 60 seconds per
+  # target. The seed corpora already run in the Test job; this job looks for
+  # new failing inputs. go test accepts one -fuzz target per invocation.
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: ./pkg/dns/
+            target: FuzzHandlerServeDNS
+          - package: ./pkg/gossip/
+            target: FuzzReceiverNotifyMsg
+          - package: ./pkg/gossip/
+            target: FuzzReceiverNodeEvents
+          - package: ./pkg/overwatch/
+            target: FuzzGossipHandleMessage
+          - package: ./pkg/overwatch/
+            target: FuzzGossipPayloadRoundTrip
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Fuzz for 60 seconds
+        env:
+          FUZZ_PACKAGE: ${{ matrix.package }}
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: go test -run='^$' -fuzz="^${FUZZ_TARGET}\$" -fuzztime=60s "$FUZZ_PACKAGE"
+
+      # A failing input is written to <package>/testdata/fuzz/<Target>/.
+      # Commit it together with the fix so that it runs as a seed from then on.
+      - name: Upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-failure-${{ matrix.target }}
+          path: pkg/*/testdata/fuzz/
+          if-no-files-found: ignore
 
   # Runs the Overlord portal's contract tests against the overwatch built from
   # this pull request, so a Go or spec change that breaks Overlord fails here.
@@ -161,13 +233,16 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pinned so a new golangci-lint release cannot break CI unannounced.
+          # The binary must be built with a Go release at least as new as the
+          # "go" line of go.mod. .golangci.yml is in the v2 format.
+          version: v2.15.0
           args: --timeout=5m
 
   build:
@@ -181,30 +256,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Build
         run: go build -v ./...
 
-  security:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-          cache: true
-
-      - name: Run govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./... || true
+  # The govulncheck job ("Security Scan") lives in security.yml, which runs on
+  # the same pull request and push events as this workflow and also weekly.
 
   integration:
     name: Integration Tests
@@ -218,7 +277,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Build OpenGSLB binary

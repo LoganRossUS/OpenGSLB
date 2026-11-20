@@ -160,15 +160,18 @@
 - [x] API handlers with IP allowlist
 - [x] Unit tests for API endpoints
 
-#### Story 7: DNSSEC Foundation ✅
-- [x] DNSSEC enabled by default
-- [x] Disabling requires explicit security acknowledgment
+#### Story 7: DNSSEC Foundation (code written, not active)
+
+> The items below exist as code and unit tests in `pkg/dnssec`, but the signer is not connected to the DNS server or the API in the released binary. DNSSEC is in development and not active.
+
+- [ ] DNSSEC enabled by default (not active; `enabled` defaults to false)
+- [ ] Disabling requires explicit security acknowledgment (requirement removed while signing is not functional)
 - [x] Key generation on first start
 - [x] DS record exposed via API
 - [x] Key stored in KV store
 - [x] Unit tests for DNSSEC signing
 
-#### Story 8: DNSSEC Key Sync ✅
+#### Story 8: DNSSEC Key Sync (code written, not active)
 - [x] Overwatches poll peers for DNSSEC keys
 - [x] Configurable poll interval
 - [x] Newest key wins (by timestamp)
@@ -334,7 +337,7 @@
 | Configurable TTL | ✅ Complete |
 | NXDOMAIN for unknown | ✅ Complete |
 | SERVFAIL when all unhealthy | ✅ Complete |
-| DNSSEC Signing | ✅ Complete |
+| DNSSEC Signing | In development, not active |
 
 ### Agent-Overwatch Architecture
 | Component | Status |
@@ -350,7 +353,7 @@
 | Health authority hierarchy | ✅ Complete |
 | Stale detection with recovery | ✅ Complete |
 | Override API | ✅ Complete |
-| DNSSEC key sync | ✅ Complete |
+| DNSSEC key sync | In development, not active |
 
 ### Operations
 | Feature | Status |

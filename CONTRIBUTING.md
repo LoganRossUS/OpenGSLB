@@ -4,9 +4,9 @@ Buy Me a Coffee ☕: https://www.buymeacoffee.com/OpenGSLB
 
 ## Prerequisites
 
-- Go 1.21 or later
+- Go 1.26.11 or later (the version on the `go` line of `go.mod`). An older Go, 1.21 or later, downloads that toolchain automatically unless `GOTOOLCHAIN=local` is set.
 - Docker and Docker Compose
-- golangci-lint
+- golangci-lint v2 (CI pins v2.15.0)
 - make
 - git
 
@@ -20,16 +20,16 @@ Or install manually:
 
 ```bash
 # Go
-wget https://go.dev/dl/go1.22.4.linux-amd64.tar.gz
-sudo tar -C /usr/local -xzf go1.22.4.linux-amd64.tar.gz
+wget https://go.dev/dl/go1.26.11.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.26.11.linux-amd64.tar.gz
 export PATH=$PATH:/usr/local/go/bin
 
 # Docker
 sudo apt install docker-ce docker-ce-cli containerd.io docker-compose-plugin
 sudo usermod -aG docker $USER
 
-# golangci-lint
-curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin
+# golangci-lint (v2; use the version pinned in .github/workflows/ci.yml)
+curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.15.0
 ```
 
 ## Development Workflow

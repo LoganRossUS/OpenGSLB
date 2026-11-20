@@ -22,6 +22,7 @@ type WeightedRouter struct {
 // NewWeightedRouter creates a new weighted router.
 func NewWeightedRouter() *WeightedRouter {
 	return &WeightedRouter{
+		// #nosec G404 -- picks a server for load distribution; not a security decision
 		rand: rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }

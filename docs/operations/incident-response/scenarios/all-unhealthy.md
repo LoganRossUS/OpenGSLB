@@ -4,7 +4,7 @@
 
 - Alert: `OpenGSLBNoHealthyServers`
 - DNS queries return SERVFAIL (if `return_last_healthy: false`)
-- DNS queries return stale IPs (if `return_last_healthy: true`)
+- DNS queries return the addresses of the unhealthy backends (if `return_last_healthy: true`); `opengslb_dns_last_healthy_answers_total` is increasing
 - Metric: `opengslb_overwatch_backends_healthy == 0`
 - User reports: Cannot reach application
 
@@ -152,7 +152,7 @@ If DNS must return something:
 ```yaml
 # In config
 dns:
-  return_last_healthy: true  # Return last known healthy IPs when all unhealthy
+  return_last_healthy: true  # Answer from the configured servers when all are unhealthy
 ```
 
 ```bash

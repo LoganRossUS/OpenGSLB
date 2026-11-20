@@ -214,7 +214,7 @@ overwatch:
   data_dir: /var/lib/opengslb
 
   dnssec:
-    enabled: true
+    enabled: false   # signing is not active in this release
     algorithm: ECDSAP256SHA256
 ```
 
@@ -264,6 +264,8 @@ External validation allows Overwatch to independently verify agent health claims
 
 The `health_check` block of a region (`path`, `failure_threshold`, `success_threshold`) drives the health manager behind `GET /api/v1/health/regions` and the `health status changed` log lines. In overwatch mode the DNS answer follows the validation verdict, not the health manager, so the two can report different states for a few seconds.
 
+**Per-server health checks:** a server created through the API (`POST /api/v1/servers` or `POST /api/v1/domains/{name}/backends`) can carry its own `health_check`: type (`http`, `https`, `tcp`), path, host, interval, timeout and thresholds. Validation then probes that server with those values; every value that is not set falls back to the settings in this table, and to `GET /` for an `http` check. Each backend is probed when its own interval has passed, a new server gets its first probe within a second, and a slow probe of one backend does not delay the others. When `enabled` is `false` no backend is probed, and a request that sets a health check on a server is refused with `409`. See the [API guide](api-guide.md).
+
 ### Overwatch Stale Settings
 
 Configure when backends are considered stale (no recent heartbeat from agent).
@@ -273,19 +275,33 @@ Configure when backends are considered stale (no recent heartbeat from agent).
 | `threshold` | duration | `30s` | Time without heartbeat before marking stale |
 | `remove_after` | duration | `5m` | Time after which stale backends are removed |
 
+Staleness applies to backends registered by an agent. Servers of the configuration file and servers created through the API have no agent and are never marked stale or removed by these timers.
+
 ### Overwatch Data Directory
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `data_dir` | string | `/var/lib/opengslb` | Directory for persistent data (bbolt database) |
 
+The store, `overwatch.db` in this directory, holds the domains, servers and regions created through the API, agent registrations, overrides and pinned agent certificates. The directory is created when it does not exist. At startup:
+
+- If no store has ever existed there and none can be created (the directory cannot be created or written), the overwatch starts, logs `RUNNING WITHOUT PERSISTENCE` at WARN and serves the domains of the configuration file. API requests that create, change or delete a domain, server or region are answered with `503` and a message that names the directory. Nothing that was stored can be missing in this case, which is why the node starts.
+- If `overwatch.db` exists, or its existence cannot be ruled out, and it cannot be opened (wrong owner, held by another process for more than five seconds, not a bbolt file), the overwatch does not start. Starting without it would silently drop the domains and servers that were created through the API and answer NXDOMAIN for them.
+
+A store written by version 1.1.10 or earlier is migrated when it is opened: backends that were added with `POST /api/v1/domains/{name}/backends` were kept under their own key (`domain_backends/`) and are rewritten as servers (`backends/`). The migration is logged, needs no action and is safe to repeat. An older version does not find the migrated backends where it kept them, so take a copy of `overwatch.db` before the upgrade if a downgrade must stay possible.
+
+The container image creates `/var/lib/opengslb` for its runtime user and declares it a volume; see the [Docker guide](docker.md#persistent-data).
+
 ### Overwatch DNSSEC Settings
+
+> **DNSSEC status: in development, not active.** The signing code (`pkg/dnssec`) is not connected to the DNS server in this release. With `enabled: true` the overwatch logs a warning at startup and serves unsigned responses: no RRSIG or DNSKEY records, no keys are generated, and the `/api/v1/dnssec/*` endpoints answer 404. Do not publish DS records for a zone served by OpenGSLB.
+
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `true` | Enable DNSSEC signing |
-| `security_acknowledgment` | string | (empty) | Required if disabling DNSSEC |
-| `algorithm` | string | `ECDSAP256SHA256` | DNSSEC signing algorithm |
+| `enabled` | boolean | `false` | Asks for DNSSEC signing. Not active in this release: `true` only logs a warning at startup, and responses stay unsigned |
+| `security_acknowledgment` | string | (empty) | No longer required. Earlier releases needed it to set `enabled: false`; it is still accepted, so existing files load, and is ignored |
+| `algorithm` | string | `ECDSAP256SHA256` | Signing algorithm the signer will use once it is active |
 
 ## Configuration Sections
 
@@ -298,18 +314,108 @@ dns:
   listen_address: ":53"
   default_ttl: 60
   return_last_healthy: false
+  max_udp_size: 1232
+  zones:
+    - gslb.example.com
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `listen_address` | string | `:53` | Address and port to listen on. Format: `ip:port` or `:port` for all interfaces. |
 | `default_ttl` | integer | `60` | Default TTL (seconds) for DNS responses. Clients cache responses for this duration. |
-| `return_last_healthy` | boolean | `false` | When all servers are unhealthy: `false` returns SERVFAIL, `true` returns the last known healthy IP. |
+| `return_last_healthy` | boolean | `false` | What to answer when servers of the queried address family are configured for a name and every one of them is unhealthy. `false`: SERVFAIL. `true`: answer as if all of them were healthy, so the domain's routing algorithm picks among the configured servers. |
+| `max_udp_size` | integer | `1232` | Largest DNS response sent over UDP, in bytes, and the UDP payload size advertised in EDNS responses. Allowed: `512` to `4096`. |
+| `zones` | list | (empty) | Zones this Overwatch is authoritative for. Each entry is a zone name or a mapping with SOA and NS settings. See [Zones](#zones). |
 
 **Notes:**
 - Lower TTL = faster failover but higher DNS query volume
 - Port 53 requires root privileges. Use a high port (e.g., `:5353`) for non-root operation
-- `return_last_healthy: true` enables "limp mode" - degraded service instead of complete failure
+- `return_last_healthy: true` trades correctness for availability: clients get an address that failed its health check instead of no address. No history of earlier answers is kept; the choice is made among all configured servers of the queried family. Each such answer is counted in the metric `opengslb_dns_last_healthy_answers_total`. A name with no configured server of the queried family is an empty answer either way.
+- `max_udp_size`: a client that advertises a smaller EDNS size gets the smaller size, and a query without EDNS is always limited to 512 bytes. A response that does not fit is cut down to whole records and sent with the TC bit, and the client retries over TCP. TCP responses are never truncated. The default of 1232 bytes avoids IP fragmentation on almost every path (DNS Flag Day 2020); raise it only when you know the path MTU between your resolvers and the Overwatch.
+- `return_last_healthy`, `max_udp_size` and `zones` are applied on configuration reload (SIGHUP).
+
+#### Zones
+
+`dns.zones` lists the zones the Overwatch is authoritative for. It decides three things:
+
+- which names get an authoritative negative answer (NXDOMAIN or an empty answer) and which are REFUSED,
+- the SOA record in the authority section of negative answers, which tells resolvers how long to cache them,
+- the SOA and NS records answered at the zone apex.
+
+An entry is either a zone name, which leaves every setting at its default, or a mapping. Both forms can be mixed:
+
+```yaml
+dns:
+  zones:
+    # Plain form: every SOA and NS value is defaulted.
+    - gslb.example.com
+
+    # Object form.
+    - name: internal.corp
+      ttl: 3600                       # TTL of the apex SOA and NS records
+      soa:
+        primary_ns: ns1.internal.corp # SOA MNAME
+        contact: dns-admin@internal.corp
+        serial: 2026112001
+        refresh: 3600
+        retry: 600
+        expire: 604800
+        negative_ttl: 60              # SOA MINIMUM
+      nameservers:
+        - ns1.internal.corp
+        - ns2.internal.corp
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | (required) | Zone apex, for example `gslb.example.com`. Case is ignored and a trailing dot is optional. |
+| `ttl` | integer | `3600` | TTL (seconds) of the SOA and NS records at the apex. |
+| `soa.primary_ns` | string | first entry of `nameservers`, else derived from the node identity | SOA MNAME: the primary nameserver of the zone. |
+| `soa.contact` | string | `hostmaster.<zone>` | SOA RNAME: the mailbox of the person responsible for the zone. Accepts `user@example.com` or the DNS form `user.example.com`. |
+| `soa.serial` | integer | `1` | SOA serial number. |
+| `soa.refresh` | integer | `3600` | SOA REFRESH (seconds). |
+| `soa.retry` | integer | `600` | SOA RETRY (seconds). |
+| `soa.expire` | integer | `604800` | SOA EXPIRE (seconds). |
+| `soa.negative_ttl` | integer | `60` | SOA MINIMUM (seconds): how long resolvers may cache NXDOMAIN and empty answers (RFC 2308). |
+| `nameservers` | list | the SOA primary nameserver | NS record set at the apex, as host names. It should list the same names as the delegation (NS records) in the parent zone. |
+
+A field that is left out or set to `0` (or to an empty string or list) gets its default. A zone therefore cannot have a `negative_ttl` or `serial` of 0.
+
+**Defaults from the node identity.** When a zone has neither `soa.primary_ns` nor `nameservers`, the primary nameserver (and the single NS record) is derived from `overwatch.identity.node_id`, or from the host name when no node ID is set:
+
+- a node ID that is a host name with at least two labels, such as `overwatch-1.dc1.example.net`, is used as it is;
+- any other node ID is reduced to one DNS label and placed under the zone: node `overwatch-1` in zone `gslb.example.com` gives `overwatch-1.gslb.example.com`;
+- with no usable node ID the name is `ns.<zone>`.
+
+These defaults differ from node to node. When more than one Overwatch serves a zone, set `nameservers` (and usually `soa.contact`) to the same values on all of them so that every node answers the same SOA and NS records. OpenGSLB does not answer A or AAAA queries for the nameserver names themselves: they must resolve somewhere else (glue in the parent zone, or names in another zone).
+
+**Serial.** OpenGSLB has no zone transfers, so nothing compares serial numbers and the serial does not change when domains or servers change. It stays at the configured value (default `1`). Give every Overwatch that serves the zone the same value. A date-based value such as `2026112001` is conventional but not required.
+
+**Negative caching.** NXDOMAIN and empty answers carry the zone SOA with a TTL of `min(ttl, soa.negative_ttl)`. Resolvers cache the negative answer for that long, so a domain created through the API or by an agent can stay invisible to a resolver for up to `negative_ttl` seconds if it was queried just before it existed. The default is 60 seconds for that reason.
+
+**Domains outside every listed zone.** A GSLB domain that is not inside any zone of `dns.zones`, which includes every domain when `dns.zones` is empty, is served as its own zone with all defaults: the domain name is the apex, and names beneath it get authoritative negative answers. Existing configurations without `dns.zones` therefore keep resolving. Listing the zone is still recommended: without it, a query for a sibling of the domain (another name under the same parent) is REFUSED instead of NXDOMAIN, because the server cannot know it is authoritative for the parent.
+
+Validation rejects an invalid or duplicate zone name, the root zone, timers outside 0 to 2147483647, an invalid `primary_ns` or `contact`, and empty, invalid or duplicate `nameservers` entries.
+
+#### DNS Responses
+
+What the DNS server answers, for reference when reading `dig` output or resolver logs:
+
+| Query | Response |
+|-------|----------|
+| A or AAAA for a domain with a healthy server of that address family | NOERROR with one record. Names are matched without regard to case and the response repeats the name exactly as it was asked. |
+| A or AAAA for a domain with no configured server of that family (for example AAAA for an IPv4-only domain) | NOERROR with an empty answer and the zone SOA in the authority section |
+| A or AAAA for a domain whose servers of that family are all unhealthy | SERVFAIL, or an answer when `return_last_healthy` is `true` |
+| Any other record type for a name that exists (TXT, MX, CNAME, HTTPS, ANY, ...) | NOERROR with an empty answer and the zone SOA in the authority section |
+| SOA or NS at a zone apex | NOERROR with the zone's SOA record or NS record set |
+| Any type for a name that does not exist inside a served zone | NXDOMAIN with the zone SOA in the authority section |
+| Any type for a name outside every served zone | REFUSED, not authoritative |
+| AXFR or IXFR | REFUSED (zone transfers are not supported) |
+| A query with an EDNS version other than 0 | BADVERS |
+| A class other than IN | REFUSED |
+| An opcode other than QUERY (NOTIFY, UPDATE, ...) | NOTIMP |
+
+A response carries an EDNS OPT record exactly when the query did. With `overwatch.geolocation.ecs_enabled: true`, a query that carries an EDNS Client Subnet option gets the option back; its scope prefix length equals the source prefix length when the client subnet decided the answer (geolocation and learned latency routing) and is 0 otherwise.
 
 ### Logging Configuration
 

@@ -28,30 +28,61 @@ Total number of DNS queries received.
 
 | Label | Description |
 |-------|-------------|
-| `domain` | The queried domain name |
+| `domain` | A registered domain or a zone apex, in canonical form (lower case with a trailing dot, whatever case the query used). Every other queried name, whether it does not exist or lies outside the served zones, is counted under `other`, so that clients cannot create a time series per name they ask for. Empty for a request without a question. |
 | `type` | DNS query type (A, AAAA, etc.) |
-| `status` | Response status: `success`, `nxdomain`, `servfail` |
+| `status` | The DNS response code of the answer: `NOERROR`, `NXDOMAIN`, `SERVFAIL`, `REFUSED`, `FORMERR`, `NOTIMP` or `BADVERS` |
+
+`NOERROR` covers answers with a record and empty answers (a name that exists but has no record of the queried type). `REFUSED` counts queries for names outside the served zones, which usually means a client is using the Overwatch as a recursive resolver. `SERVFAIL` counts queries for which every server of the queried address family was unhealthy.
 
 **Example:**
 ```
-opengslb_dns_queries_total{domain="app.example.com",type="A",status="success"} 1542
-opengslb_dns_queries_total{domain="app.example.com",type="AAAA",status="success"} 523
-opengslb_dns_queries_total{domain="unknown.com",type="A",status="nxdomain"} 12
+opengslb_dns_queries_total{domain="app.example.com.",type="A",status="NOERROR"} 1542
+opengslb_dns_queries_total{domain="app.example.com.",type="AAAA",status="NOERROR"} 523
+opengslb_dns_queries_total{domain="other",type="A",status="NXDOMAIN"} 12
+opengslb_dns_queries_total{domain="other",type="A",status="REFUSED"} 3
 ```
 
 #### `opengslb_dns_query_duration_seconds`
 **Type:** Histogram  
 **Labels:** `domain`, `status`
 
-DNS query processing duration in seconds.
+DNS query processing duration in seconds. The labels have the same values as in `opengslb_dns_queries_total`.
 
 **Buckets:** 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1
 
 **Example:**
 ```
-opengslb_dns_query_duration_seconds_bucket{domain="app.example.com",status="success",le="0.001"} 1200
-opengslb_dns_query_duration_seconds_sum{domain="app.example.com",status="success"} 0.892
-opengslb_dns_query_duration_seconds_count{domain="app.example.com",status="success"} 1542
+opengslb_dns_query_duration_seconds_bucket{domain="app.example.com.",status="NOERROR",le="0.001"} 1200
+opengslb_dns_query_duration_seconds_sum{domain="app.example.com.",status="NOERROR"} 0.892
+opengslb_dns_query_duration_seconds_count{domain="app.example.com.",status="NOERROR"} 1542
+```
+
+#### `opengslb_dns_last_healthy_answers_total`
+**Type:** Counter  
+**Labels:** `domain`, `type`
+
+Number of answers served under `dns.return_last_healthy: true` while every
+server of the queried address family was unhealthy. In that situation the
+answer is chosen as if all configured servers of the family were healthy, so
+it may point at a server that is down. The counter stays at zero while
+`return_last_healthy` is `false` (those queries are answered SERVFAIL and are
+counted in `opengslb_dns_queries_total{status="SERVFAIL"}`).
+
+| Label | Description |
+|-------|-------------|
+| `domain` | The queried domain name (lower case, with trailing dot) |
+| `type` | DNS query type: `A` or `AAAA` |
+
+Any increase means a domain has no healthy server left and is running in
+"limp mode". Alert on it:
+
+```
+increase(opengslb_dns_last_healthy_answers_total[5m]) > 0
+```
+
+**Example:**
+```
+opengslb_dns_last_healthy_answers_total{domain="app.example.com.",type="A"} 37
 ```
 
 ### Health Check Metrics
@@ -228,8 +259,11 @@ histogram_quantile(0.99, rate(opengslb_dns_query_duration_seconds_bucket[5m]))
 ```
 
 ### Error Rate
+
+The `status` label holds the DNS response code. `SERVFAIL` is the server-side failure (every server of a domain down). `NXDOMAIN` and `REFUSED` are correct answers to queries for names that do not exist or are not served here, so they are not counted as errors.
+
 ```promql
-sum(rate(opengslb_dns_queries_total{status!="success"}[5m])) 
+sum(rate(opengslb_dns_queries_total{status="SERVFAIL"}[5m])) 
 / 
 sum(rate(opengslb_dns_queries_total[5m]))
 ```
@@ -273,7 +307,7 @@ rate(opengslb_routing_decisions_total{algorithm="failover"}[5m])
 ```yaml
 - alert: OpenGSLBHighErrorRate
   expr: |
-    sum(rate(opengslb_dns_queries_total{status!="success"}[5m])) 
+    sum(rate(opengslb_dns_queries_total{status="SERVFAIL"}[5m])) 
     / 
     sum(rate(opengslb_dns_queries_total[5m])) > 0.05
   for: 5m
@@ -495,12 +529,13 @@ Region-level alerting:
 **Type:** Counter
 **Labels:** `type`
 
-Total gossip messages received by type.
+Total gossip messages received by type. `type` is one of `heartbeat`, `register`, `deregister`, `agent_auth`, `latency_report` or `unknown`. Every message whose type this build does not know is counted under `unknown`, so the number of series is fixed whatever peers send.
 
 **Example:**
 ```
 opengslb_gossip_messages_received_total{type="heartbeat"} 4521
-opengslb_gossip_messages_received_total{type="predictive"} 12
+opengslb_gossip_messages_received_total{type="latency_report"} 12
+opengslb_gossip_messages_received_total{type="unknown"} 3
 ```
 
 #### `opengslb_gossip_override_operations_total`
@@ -740,6 +775,9 @@ opengslb_overrides_changes_total{service="myapp",action="clear"} 3
 ```
 
 ### Enhanced DNSSEC Metrics (Sprint 6)
+
+> **DNSSEC status: in development, not active.** Responses are unsigned in this release and the `/api/v1/dnssec/*` endpoints answer 404. The DNSSEC steps, commands, metrics and figures on this page describe the intended behavior and do not apply yet. See [Overwatch DNSSEC Settings](configuration.md#overwatch-dnssec-settings).
+
 
 #### `opengslb_dnssec_signatures_total`
 **Type:** Counter

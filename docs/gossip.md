@@ -138,6 +138,19 @@ Sent by agent during graceful shutdown to remove backends from registry.
 }
 ```
 
+### Validation of Received Messages
+
+An Overwatch does not trust what it receives over gossip. Before a backend from a `heartbeat` or `register` message reaches the backend registry or DNS, its numeric fields are checked:
+
+| Field | Accepted range |
+|-------|----------------|
+| `port` | 1 to 65535 |
+| `weight` | 0 to 1000000 |
+
+A backend outside these ranges is skipped and logged at WARN (`rejected backend from heartbeat` or `rejected backend registration`). The other backends in the same heartbeat are still processed.
+
+A message whose `type` is not known to the Overwatch is ignored, logged at WARN and counted as `opengslb_gossip_messages_received_total{type="unknown"}`.
+
 ## Configuration
 
 ### Agent Gossip Configuration

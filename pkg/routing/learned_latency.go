@@ -196,7 +196,7 @@ func (r *LearnedLatencyRouter) Route(ctx context.Context, pool ServerPool) (*Ser
 		}
 
 		// Check minimum samples
-		if data.SampleCount < uint64(minSamples) {
+		if minSamples > 0 && data.SampleCount < uint64(minSamples) {
 			continue
 		}
 
@@ -282,6 +282,12 @@ func (r *LearnedLatencyRouter) selectLowestLatency(servers []serverLearnedLatenc
 // Algorithm returns the algorithm name.
 func (r *LearnedLatencyRouter) Algorithm() string {
 	return "learned_latency"
+}
+
+// UsesClientIP implements ClientAware: latency is looked up by the client's
+// subnet.
+func (r *LearnedLatencyRouter) UsesClientIP() bool {
+	return true
 }
 
 // SetProvider sets or updates the learned latency provider.
