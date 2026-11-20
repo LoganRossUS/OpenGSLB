@@ -65,7 +65,7 @@ func (a *Application) buildDNSRegistry(cfg *config.Config, tolerateStoreErrors b
 	//
 	// Static servers are not taken from the backend registry. The
 	// configuration file is their only source and step 1 has placed them,
-	// honouring the region list of each domain.
+	// honoring the region list of each domain.
 	if a.backendRegistry != nil {
 		for _, b := range a.backendRegistry.GetAllBackends() {
 			// A disabled server stays in the backend registry and out of DNS.

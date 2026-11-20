@@ -16,6 +16,7 @@ linters:
   default: none
   enable:
     - errcheck
+    - gosec
     - govet
     - ineffassign
     - misspell
@@ -43,9 +44,12 @@ linters:
       - std-error-handling
     rules:
       # Exclude some linters from running on tests
+      # Tests write fixture files with ordinary modes, hold fake credentials
+      # and convert small constants; gosec findings there are noise.
       - path: _test\.go
         linters:
           - errcheck
+          - gosec
     paths:
       - third_party$
       - builtin$

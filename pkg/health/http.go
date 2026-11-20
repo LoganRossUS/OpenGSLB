@@ -87,6 +87,7 @@ func NewHTTPChecker(opts ...HTTPCheckerOption) *HTTPChecker {
 		ResponseHeaderTimeout: 5 * time.Second,
 		DisableKeepAlives:     true, // Don't reuse connections for health checks
 		TLSClientConfig: &tls.Config{
+			// #nosec G402 -- false by default; an operator sets it per health check to probe a backend with a self-signed certificate
 			InsecureSkipVerify: c.InsecureSkipVerify,
 		},
 	}
@@ -160,6 +161,7 @@ func (c *HTTPChecker) Check(ctx context.Context, target Target) Result {
 				ResponseHeaderTimeout: 5 * time.Second,
 				DisableKeepAlives:     true,
 				TLSClientConfig: &tls.Config{
+					// #nosec G402 -- false by default; an operator sets it per health check to probe a backend with a self-signed certificate
 					InsecureSkipVerify: c.InsecureSkipVerify,
 					ServerName:         target.Host, // This is the key - tells TLS to validate cert against this hostname
 				},

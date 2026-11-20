@@ -196,7 +196,7 @@ func (r *LearnedLatencyRouter) Route(ctx context.Context, pool ServerPool) (*Ser
 		}
 
 		// Check minimum samples
-		if data.SampleCount < uint64(minSamples) {
+		if minSamples > 0 && data.SampleCount < uint64(minSamples) {
 			continue
 		}
 

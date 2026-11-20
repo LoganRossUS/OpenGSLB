@@ -202,7 +202,7 @@ func (t *LearnedLatencyTable) GetBestBackend(clientIP netip.Addr, healthy []stri
 		}
 
 		// Skip entries with insufficient samples
-		if entry.SampleCount < uint64(t.config.MinSamples) {
+		if t.config.MinSamples > 0 && entry.SampleCount < uint64(t.config.MinSamples) {
 			continue
 		}
 

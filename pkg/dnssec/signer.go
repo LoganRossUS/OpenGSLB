@@ -234,12 +234,13 @@ func (s *Signer) signRRset(rrset []dns.RR, keyPair *KeyPair, zone string) (*dns.
 		},
 		TypeCovered: rrset[0].Header().Rrtype,
 		Algorithm:   dnskey.Algorithm,
-		Labels:      uint8(dns.CountLabel(rrset[0].Header().Name)),
+		Labels:      uint8(dns.CountLabel(rrset[0].Header().Name)), // #nosec G115 -- a domain name has at most 127 labels
 		OrigTtl:     rrset[0].Header().Ttl,
-		Expiration:  uint32(now.Add(s.config.SignatureExpiration).Unix()),
-		Inception:   uint32(now.Add(-s.config.SignatureInception).Unix()),
-		KeyTag:      dnskey.KeyTag(),
-		SignerName:  zone,
+		// RRSIG times are 32-bit serial numbers that wrap by design (RFC 4034 section 3.1.5).
+		Expiration: uint32(now.Add(s.config.SignatureExpiration).Unix()), // #nosec G115
+		Inception:  uint32(now.Add(-s.config.SignatureInception).Unix()), // #nosec G115
+		KeyTag:     dnskey.KeyTag(),
+		SignerName: zone,
 	}
 
 	// Sign the RRset

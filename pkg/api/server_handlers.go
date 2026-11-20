@@ -65,7 +65,7 @@ type BackendServer struct {
 	Healthy bool `json:"healthy"`
 	// Source says who owns the server: static (configuration file), agent or api.
 	Source string `json:"source"`
-	// Metadata carries status details as strings. Deprecated in favour of the
+	// Metadata carries status details as strings. Deprecated in favor of the
 	// typed fields; kept for existing clients.
 	Metadata  map[string]string `json:"metadata,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`

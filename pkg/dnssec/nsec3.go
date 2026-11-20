@@ -8,7 +8,7 @@ package dnssec
 
 import (
 	"crypto/rand"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- SHA-1 is the only hash algorithm defined for NSEC3 (RFC 5155 section 11)
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
@@ -139,13 +139,13 @@ func nsec3Hash(name, saltHex string, iterations uint16) string {
 	name = strings.ToLower(name)
 	wireFormat := make([]byte, 0, 256)
 	for _, label := range dns.SplitDomainName(name) {
-		wireFormat = append(wireFormat, byte(len(label)))
+		wireFormat = append(wireFormat, byte(len(label))) // #nosec G115 -- a DNS label is at most 63 octets
 		wireFormat = append(wireFormat, []byte(label)...)
 	}
 	wireFormat = append(wireFormat, 0) // root label
 
 	// Initial hash: H(name || salt)
-	h := sha1.New()
+	h := sha1.New() // #nosec G401 -- SHA-1 is the only hash algorithm defined for NSEC3 (RFC 5155 section 11)
 	h.Write(wireFormat)
 	h.Write(salt)
 	digest := h.Sum(nil)
@@ -238,7 +238,7 @@ func (m *NSEC3Manager) createNSEC3WithTypes(zone, ownerHash, nextHash, saltHex s
 		Hash:       1, // SHA-1 (only standardized algorithm)
 		Flags:      m.nsec3Flags(),
 		Iterations: m.config.Iterations,
-		SaltLength: uint8(len(saltHex) / 2),
+		SaltLength: uint8(len(saltHex) / 2), // #nosec G115 -- an NSEC3 salt is at most 255 octets (RFC 5155 section 3.2)
 		Salt:       saltHex,
 		HashLength: 20, // SHA-1 produces 20 bytes
 		NextDomain: nextHash,
@@ -270,7 +270,7 @@ func (m *NSEC3Manager) NSEC3PARAM(zone string) *dns.NSEC3PARAM {
 		Hash:       1, // SHA-1
 		Flags:      0, // Flags are 0 in NSEC3PARAM
 		Iterations: m.config.Iterations,
-		SaltLength: uint8(len(salt) / 2),
+		SaltLength: uint8(len(salt) / 2), // #nosec G115 -- an NSEC3 salt is at most 255 octets (RFC 5155 section 3.2)
 		Salt:       salt,
 	}
 }
