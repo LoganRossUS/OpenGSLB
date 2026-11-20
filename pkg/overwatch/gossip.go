@@ -8,7 +8,9 @@ package overwatch
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"math"
 	"time"
 )
 
@@ -41,6 +43,49 @@ const (
 	// MessageLatencyReport is a latency learning report (ADR-017).
 	MessageLatencyReport GossipMessageType = "latency_report"
 )
+
+// Bounds for the numeric backend fields accepted from gossip. Agents validate
+// the same port range in their own configuration. The weight ceiling is far
+// above the documented 1-1000 range and exists so that the sum of the weights
+// of every server of a domain can never overflow an int in the weighted router.
+const (
+	minGossipPort = 1
+	maxGossipPort = 65535
+	// MaxGossipWeight is the largest backend weight accepted from an agent.
+	MaxGossipWeight = 1_000_000
+)
+
+// validateGossipBackend checks the numeric fields of a backend received over
+// gossip. Gossip peers are other processes on the network, so the values are
+// checked here before they reach the backend registry, the DNS registry and
+// the routers.
+func validateGossipBackend(port, weight int) error {
+	if port < minGossipPort || port > maxGossipPort {
+		return fmt.Errorf("port %d is outside %d-%d", port, minGossipPort, maxGossipPort)
+	}
+	if weight < 0 || weight > MaxGossipWeight {
+		return fmt.Errorf("weight %d is outside 0-%d", weight, MaxGossipWeight)
+	}
+	return nil
+}
+
+// gossipInt converts a decoded JSON number to an int. Converting a float64
+// that does not fit is implementation-defined in Go (amd64 and arm64 give
+// different results), so out-of-range values are pinned to the nearest int
+// limit, where range validation rejects them on every platform. A fractional
+// part is dropped, as before.
+func gossipInt(f float64) int {
+	switch {
+	case math.IsNaN(f):
+		return 0
+	case f >= math.MaxInt:
+		return math.MaxInt
+	case f <= math.MinInt:
+		return math.MinInt
+	default:
+		return int(f)
+	}
+}
 
 // HeartbeatPayload is the payload for heartbeat messages.
 type HeartbeatPayload struct {
@@ -328,6 +373,16 @@ func (h *GossipHandler) handleHeartbeat(msg GossipMessage) {
 	}
 
 	for _, backend := range payload.Backends {
+		if err := validateGossipBackend(backend.Port, backend.Weight); err != nil {
+			h.logger.Warn("rejected backend from heartbeat",
+				"agent_id", msg.AgentID,
+				"service", backend.Service,
+				"address", backend.Address,
+				"error", err,
+			)
+			continue
+		}
+
 		// Register in backend registry (for health tracking and validation)
 		if err := h.registry.Register(
 			msg.AgentID,
@@ -413,6 +468,16 @@ func (h *GossipHandler) handleRegister(msg GossipMessage) {
 			h.logger.Warn("invalid register payload", "agent_id", msg.AgentID)
 			return
 		}
+	}
+
+	if err := validateGossipBackend(payload.Port, payload.Weight); err != nil {
+		h.logger.Warn("rejected backend registration",
+			"agent_id", msg.AgentID,
+			"service", payload.Service,
+			"address", payload.Address,
+			"error", err,
+		)
+		return
 	}
 
 	if err := h.registry.Register(
@@ -536,10 +601,10 @@ func (h *GossipHandler) parseHeartbeatPayload(m map[string]interface{}) Heartbea
 					backend.Address = a
 				}
 				if p, ok := bm["port"].(float64); ok {
-					backend.Port = int(p)
+					backend.Port = gossipInt(p)
 				}
 				if w, ok := bm["weight"].(float64); ok {
-					backend.Weight = int(w)
+					backend.Weight = gossipInt(w)
 				}
 				if healthy, ok := bm["healthy"].(bool); ok {
 					backend.Healthy = healthy
@@ -596,10 +661,10 @@ func (h *GossipHandler) parseRegisterPayload(m map[string]interface{}) RegisterP
 		payload.Address = a
 	}
 	if p, ok := m["port"].(float64); ok {
-		payload.Port = int(p)
+		payload.Port = gossipInt(p)
 	}
 	if w, ok := m["weight"].(float64); ok {
-		payload.Weight = int(w)
+		payload.Weight = gossipInt(w)
 	}
 
 	return payload
@@ -616,7 +681,7 @@ func (h *GossipHandler) parseDeregisterPayload(m map[string]interface{}) Deregis
 		payload.Address = a
 	}
 	if p, ok := m["port"].(float64); ok {
-		payload.Port = int(p)
+		payload.Port = gossipInt(p)
 	}
 
 	return payload
