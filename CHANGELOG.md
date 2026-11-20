@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`api/openapi.yaml`**: OpenAPI 3.1 description of every REST route registered in `pkg/api/server.go`, written from observed handler behaviour. Operations that are not fully real carry an `x-status` extension (`stub`, `not-implemented`, `unavailable`, `unwired`, `broken`). This file is now the single source of truth for the API.
 - **API contract test** (`cmd/opengslb/api_contract_test.go`, `test/apicontract`): starts a real overwatch in-process, calls every operation in the spec and validates the real responses against it. Runs in `go test ./...` and as its own `API Contract` CI job.
 - **`docs/api-alignment.md`**: per-endpoint status of the overwatch API and of the Overlord portal's use of it, with the mismatches found.
+- **`tools/apidocs`**: generator that writes `docs/api.md` from `api/openapi.yaml` (`make api-docs` or `go generate ./tools/apidocs`). Its test fails in `go test ./...` when the committed `docs/api.md` is out of date with the spec.
+- **`docs/api-guide.md`**: hand-maintained guide to API access control, configuration, error format and usage examples, moved out of `docs/api.md`. Every statement and example was checked against the code, the spec and a running overwatch.
+
+### Changed
+- **`docs/api.md`** is now generated from `api/openapi.yaml` and must not be edited by hand. It lists all 107 operations with their status (real, stub, not implemented, unavailable, unwired, broken) and the 128 schemas, replacing the hand-written endpoint prose and its example responses. Anchors inside the file have changed.
+- **API documentation corrections** (documentation only, no change in behaviour): the DNSSEC endpoints and `/api/health` are no longer presented as available (the binary answers 404), and the `api.enable_cors` / `api.cors` settings are no longer documented because the configuration has no such keys and CORS is never enabled.
 
 ### Fixed
 - **Data race at overwatch start**: `Registry.loadFromStore` wrote the backend map without holding the registry lock while status-change callbacks read it from other goroutines. Found by the contract test under `-race`. No change in behaviour.

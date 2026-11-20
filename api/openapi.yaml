@@ -1492,6 +1492,8 @@ paths:
       tags:
       - Servers
       summary: Get a server's health check
+      description: 'Returns the same fixed document for every server (http, /health, 3 s interval, 5 s timeout); it does not reflect the check actually in use.'
+      x-status: stub
       parameters:
       - name: id
         in: path
@@ -1518,7 +1520,8 @@ paths:
       tags:
       - Servers
       summary: Replace a server's health check
-      description: An unknown server returns 500, not 404.
+      description: 'A no-op: the body is validated and echoed back but nothing is stored or applied. An unknown server returns 500, not 404.'
+      x-status: stub
       parameters:
       - name: id
         in: path
@@ -1553,7 +1556,8 @@ paths:
       tags:
       - Servers
       summary: Replace a server's health check
-      description: An unknown server returns 500, not 404.
+      description: 'A no-op: the body is validated and echoed back but nothing is stored or applied. An unknown server returns 500, not 404.'
+      x-status: stub
       parameters:
       - name: id
         in: path

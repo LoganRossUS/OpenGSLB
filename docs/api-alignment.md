@@ -7,16 +7,17 @@ Status of every REST endpoint on both sides, as of `develop` (OpenGSLB v1.1.10) 
   the old prose in `docs/api.md`.
 - "Go status" was observed by starting a real overwatch in-process and calling each endpoint
   (`cmd/opengslb/api_contract_test.go`). It is not inferred from the code alone.
-- Overlord columns come from reading its source. Nothing in Overlord was executed, because it has no tests
-  yet (Phase 0 task 5 adds them).
+- Overlord columns come from reading its source. The rows where Overlord calls the overwatch are now pinned by
+  Overlord's contract suite (`test/contract`), which runs its real client and poller code against an overwatch
+  container. Mismatch tests there are named by M-number and fail when the mismatch is fixed.
 
 ## Summary
 
 | | Count |
 |---|---|
 | Operations in the spec | 107 (71 paths) |
-| Real | 60 |
-| Stub (placeholder or always-empty data) | 19 |
+| Real | 57 |
+| Stub (placeholder, always-empty or no-op) | 22 |
 | Stub that always fails (`not-implemented`) | 16 |
 | Real handler that always answers 503 (`unavailable`, agent certificates) | 5 |
 | Handler never attached by the binary (`unwired`, DNSSEC and `/api/health`) | 6 |
@@ -49,6 +50,8 @@ Phase 0.
 | M11 | Overlord polls agent nodes over HTTP (`/api/v1/health`, `/api/v1/backends`). Agent mode starts no API server. | Every agent is marked unhealthy. | Overlord (agents are visible through the overwatch) |
 | M12 | Overlord's client assumes plain HTTP on port 8080 with no credentials, and pushes to nodes it has marked unhealthy. Go's default is `127.0.0.1:8080` behind a loopback-only allowlist. | Works only when the operator has opened `api.address` and `api.allowed_networks`. Phase 3A changes this. | Both (Phase 3A) |
 | M13 | Push failures are not errors in Overlord: the Postgres write commits and the route returns 2xx with `_pushResults.failed[]`. | Overlord and the nodes drift silently (M5 and M7 make this the normal case). | Overlord (Phase 4 drift work) |
+| M15 | A backend created with `POST /api/v1/domains/{name}/backends` (how Overlord creates servers) is not a server: it is absent from `GET /api/v1/servers`, and `PUT /api/v1/servers/{service:address:port}` for it returns 404. | Every server update made in Overlord fails on every node for servers Overlord created. | Go (one model for backends and servers), then the spec |
+| M16 | The published container image runs as a non-root user that cannot create the default data directory `/var/lib/opengslb`. The overwatch logs "running without persistence" and then every create, update and delete of domains, backends and regions answers 500 `not implemented`. | With the image as shipped and no `overwatch.data_dir` override, nothing Overlord pushes is accepted. Observed in Overlord's contract container, which sets `data_dir` under `/tmp` to get past it. Not reproduced by the in-process Go test, which uses a writable temp directory. | Go (image and error text) |
 | M14 | Overlord's Overrides, Geo, DNSSEC, Gossip, Audit, Routing and Config routes share paths with the overwatch API but serve only Overlord's Postgres or generated data. | An override or geo mapping made in Overlord has no effect on DNS. | Overlord (Phase 1E task 2, Phase 3B task 6) |
 
 Go-side findings that do not involve Overlord are listed under "Found, not fixed" in the Phase 0 pull request.
@@ -112,12 +115,12 @@ broken; missing.
 | `GET /api/v1/servers` | yes | real | `server/services/nodePoller.js` `pollNode` -> `syncServers` | Servers | **M3** Overlord reads `domain` / `domain_name`; Go sends the owning domain in `name` and `metadata.service`, so the domain link is not set from this call. |
 | `POST /api/v1/servers` | yes | real | `server/services/openGslbClient.js` `pushServer` (never called) | none | **M9** Dead code. If called it would fail: it sends `service`, which Go ignores, and Go then returns 500 `service is required`. |
 | `GET /api/v1/servers/{id}` | yes | real | not called | none |  |
-| `PUT /api/v1/servers/{id}` | yes | real | `server/services/openGslbClient.js` `updateServerOnNodes` (from `routes/servers.js` PUT) | Servers | **M8** Overlord sends `health_check.interval` / `timeout` as seconds (30, 5); Go decodes them as nanoseconds. `PATCH /servers/:id` and `PUT /servers/:id/health-check` in Overlord are not pushed at all. |
+| `PUT /api/v1/servers/{id}` | yes | real | `server/services/openGslbClient.js` `updateServerOnNodes` (from `routes/servers.js` PUT) | Servers | **M15** Always 404 for servers Overlord created: it creates them with `POST /domains/{name}/backends`, and those do not exist under `/servers`. **M8** It also sends `health_check.interval` / `timeout` as seconds (30, 5); Go decodes them as nanoseconds. `PATCH /servers/:id` and `PUT /servers/:id/health-check` in Overlord are not pushed at all. |
 | `PATCH /api/v1/servers/{id}` | yes | real | not called | none |  |
 | `DELETE /api/v1/servers/{id}` | yes | real | `server/services/openGslbClient.js` `deleteServerFromNodes` (never called) | none | Dead code. |
-| `GET /api/v1/servers/{id}/health-check` | yes | real | not called | none |  |
-| `PUT /api/v1/servers/{id}/health-check` | yes | real | not called | none |  |
-| `PATCH /api/v1/servers/{id}/health-check` | yes | real | not called | none |  |
+| `GET /api/v1/servers/{id}/health-check` | yes | stub | not called | none |  |
+| `PUT /api/v1/servers/{id}/health-check` | yes | stub | not called | none |  |
+| `PATCH /api/v1/servers/{id}/health-check` | yes | stub | not called | none |  |
 | `GET /api/v1/regions` | yes | real | `server/services/nodePoller.js` `pollNode` -> `syncRegions` | Servers, Domains (region lists) | None. Overlord also looks for nested `servers[]`, which Go does not send. |
 | `POST /api/v1/regions` | yes | real | `server/services/openGslbClient.js` `pushRegion` (never called) | none | Dead code. Regions created in Overlord are never pushed. |
 | `GET /api/v1/regions/{id}` | yes | real | not called | none |  |
