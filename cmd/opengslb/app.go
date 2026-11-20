@@ -37,10 +37,17 @@ type Application struct {
 	configMu sync.RWMutex
 	logger   *slog.Logger
 
+	// startupConfig is the configuration the process started with. Settings
+	// that a reload does not apply are compared against it, so that they keep
+	// being reported until the process is restarted.
+	startupConfig *config.Config
+
 	// Overwatch mode components
 	dnsServer     *dns.Server
 	dnsHandler    *dns.Handler
 	dnsRegistry   *dns.Registry
+	dnsSync       *dnsStateSync    // write path to dnsRegistry at runtime (see dns_state.go)
+	routerFactory *routing.Factory // shared by startup, reload and API-created domains
 	healthManager *health.Manager
 	metricsServer *metrics.Server
 	apiServer     *api.Server
@@ -71,10 +78,11 @@ func NewApplication(cfg *config.Config, logger *slog.Logger) *Application {
 		logger = slog.Default()
 	}
 	return &Application{
-		config:     cfg,
-		logger:     logger,
-		startTime:  time.Now(),
-		shutdownCh: make(chan struct{}),
+		config:        cfg,
+		startupConfig: cfg,
+		logger:        logger,
+		startTime:     time.Now(),
+		shutdownCh:    make(chan struct{}),
 	}
 }
 
@@ -394,7 +402,7 @@ func (a *Application) initializeBackendRegistry() error {
 		if a.dnsRegistry != nil {
 			// New backend registration (oldStatus is empty)
 			if oldStatus == "" {
-				if err := a.dnsRegistry.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
+				if err := a.dnsSync.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
 					a.logger.Error("failed to register backend in DNS",
 						"service", backend.Service,
 						"address", backend.Address,
@@ -403,8 +411,10 @@ func (a *Application) initializeBackendRegistry() error {
 				}
 			} else if newStatus == "" {
 				// Backend is being removed (newStatus is empty means deregistration)
-				if err := a.dnsRegistry.DeregisterServer(backend.Service, backend.Address, backend.Port); err != nil {
-					a.logger.Error("failed to deregister backend from DNS",
+				// An error here means the server (or its domain) is already
+				// absent from DNS, which is the state a removal asks for.
+				if err := a.dnsSync.DeregisterServer(backend.Service, backend.Address, backend.Port); err != nil {
+					a.logger.Debug("backend already absent from DNS",
 						"service", backend.Service,
 						"address", backend.Address,
 						"port", backend.Port,
@@ -412,7 +422,7 @@ func (a *Application) initializeBackendRegistry() error {
 				}
 			} else if oldStatus != newStatus {
 				// Status changed - update registration (weight might have changed)
-				if err := a.dnsRegistry.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
+				if err := a.dnsSync.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
 					a.logger.Error("failed to update backend in DNS",
 						"service", backend.Service,
 						"address", backend.Address,
@@ -433,20 +443,22 @@ func (a *Application) initializeBackendRegistry() error {
 
 	// v1.1.0: Register static servers from config into backend registry
 	// This unifies validation - static servers use same validation as agent servers
-	if err := a.registerStaticServers(); err != nil {
+	if err := a.registerStaticServers(a.config); err != nil {
 		return fmt.Errorf("failed to register static servers: %w", err)
 	}
 
 	return nil
 }
 
-// registerStaticServers registers all static servers from config into backend registry.
+// registerStaticServers registers all static servers from cfg into backend registry.
+// It is called at startup and on reload; registering a server that is already
+// present updates it.
 // v1.1.0: Unified architecture - static servers use same validation system as agents.
 // v1.1.1: Pass health check type to fix latency routing with TCP health checks.
-func (a *Application) registerStaticServers() error {
+func (a *Application) registerStaticServers(cfg *config.Config) error {
 	staticCount := 0
 
-	for _, region := range a.config.Regions {
+	for _, region := range cfg.Regions {
 		// Get health check type from region config (defaults to "http" in RegisterStatic)
 		healthCheckType := region.HealthCheck.Type
 
@@ -565,7 +577,9 @@ func (a *Application) initializeDNSServer() error {
 		learnedLatencyProvider = &learnedLatencyTableAdapter{table: a.learnedLatencyTable}
 	}
 
-	routerFactory := routing.NewFactory(routing.FactoryConfig{
+	// One factory builds every router: for configuration file domains at
+	// startup and on reload, and for domains created through the API.
+	a.routerFactory = routing.NewFactory(routing.FactoryConfig{
 		LatencyProvider:        latencyProvider,
 		LearnedLatencyProvider: learnedLatencyProvider, // ADR-017: Passive latency learning
 		MinLatencySamples:      1,                      // Backend registry tracks latency from external validation
@@ -573,11 +587,14 @@ func (a *Application) initializeDNSServer() error {
 		Logger:                 a.logger,
 	})
 
-	registry, err := dns.BuildRegistry(a.config, routerFactory.NewRouter)
+	// Merge configuration file, store and backend registry state. A reload
+	// calls the same function (reloadDNSRegistry).
+	registry, err := a.buildDNSRegistry(a.config, true)
 	if err != nil {
-		return fmt.Errorf("failed to build DNS registry: %w", err)
+		return err
 	}
 	a.dnsRegistry = registry
+	a.dnsSync = newDNSStateSync(registry)
 	a.logger.Debug("DNS registry initialized",
 		"dns_registry_ptr", fmt.Sprintf("%p", a.dnsRegistry),
 		"domains", registry.Count(),
@@ -585,7 +602,7 @@ func (a *Application) initializeDNSServer() error {
 
 	// v1.1.0: Wire up DNS registry to gossip handler for dynamic agent registration
 	if a.gossipHandler != nil {
-		a.gossipHandler.SetDNSRegistry(registry)
+		a.gossipHandler.SetDNSRegistry(a.dnsSync)
 		a.logger.Info("wired DNS registry to gossip handler for dynamic registration")
 	}
 
@@ -714,29 +731,14 @@ func (a *Application) initializeAPIServer() error {
 		if a.overwatchStore != nil {
 			domainProvider.SetStore(a.overwatchStore)
 		}
-		// Wire DNS registry for dynamic domain registration
+		// Wire DNS registry for dynamic domain registration. Stored domains
+		// and backends were already merged into it by buildDNSRegistry.
 		if a.dnsRegistry != nil {
-			domainProvider.SetDNSRegistry(a.dnsRegistry)
-			// Create router factory for dynamic domain creation
-			latencyProvider := &backendRegistryLatencyProvider{registry: a.backendRegistry}
-			routerFactory := routing.NewFactory(routing.FactoryConfig{
-				LatencyProvider:   latencyProvider,
-				MinLatencySamples: 1,
-				GeoResolver:       a.geoResolver,
-				Logger:            a.logger,
-			})
-			// Wrap router factory to return interface{} for the provider
-			domainProvider.SetRouterFactory(func(algorithm string) (interface{}, error) {
-				return routerFactory.NewRouter(algorithm)
-			})
+			domainProvider.SetDNSRegistry(a.dnsSync)
+			domainProvider.SetRouterFactory(a.newDynamicRouter)
 			a.logger.Debug("domain provider wired to DNS registry",
 				"dns_registry_ptr", fmt.Sprintf("%p", a.dnsRegistry),
 			)
-
-			// Load stored domains and backends into DNS registry on startup
-			if err := domainProvider.LoadStoredDomainsIntoDNS(); err != nil {
-				a.logger.Warn("failed to load stored domains into DNS registry", "error", err)
-			}
 		}
 		server.SetDomainHandlers(api.NewDomainHandlers(domainProvider, a.logger))
 		a.logger.Debug("domain API handlers registered")
@@ -870,6 +872,12 @@ func (a *Application) startOverwatchMode(ctx context.Context) error {
 			return fmt.Errorf("failed to start backend registry: %w", err)
 		}
 		a.logger.Info("backend registry started")
+
+		// Starting the registry loaded the persisted backends, which can
+		// include static servers of an earlier configuration file. The file
+		// is their only source, so drop the ones it no longer defines. A
+		// reload does the same (reloadDNSRegistry).
+		a.pruneStaticBackends(a.config)
 	}
 
 	// Start external validator (Story 3)
@@ -1063,131 +1071,63 @@ func (a *Application) shutdownOverwatchMode(ctx context.Context) error {
 }
 
 // Reload applies a new configuration without restarting.
-func (a *Application) Reload(newCfg *config.Config) error {
+//
+// Only part of the configuration can change at runtime (see
+// reloadableSettings). Reload applies that part and returns the settings that
+// differ from the ones the process started with and need a restart to take
+// effect. A non-nil error means the reload failed and the previous
+// configuration stays in effect.
+func (a *Application) Reload(newCfg *config.Config) (restartRequired []string, err error) {
 	a.configMu.Lock()
 	defer a.configMu.Unlock()
 
-	oldCfg := a.config
-
-	a.logger.Info("reloading configuration",
-		"old_domains", len(oldCfg.Domains),
-		"new_domains", len(newCfg.Domains),
-	)
-
-	// Check for changes that require restart
-	if oldCfg.DNS.ListenAddress != newCfg.DNS.ListenAddress {
-		a.logger.Warn("DNS listen address change requires restart")
-	}
+	a.logger.Info("reloading configuration", "mode", a.config.GetEffectiveMode())
 
 	// Mode-specific reload
 	switch a.config.GetEffectiveMode() {
 	case config.ModeAgent:
 		if err := a.reloadAgentMode(newCfg); err != nil {
 			metrics.RecordReload(false)
-			return err
+			return nil, err
 		}
 	case config.ModeOverwatch:
 		if err := a.reloadOverwatchMode(newCfg); err != nil {
 			metrics.RecordReload(false)
-			return err
+			return nil, err
 		}
 	}
 
 	a.config = newCfg
 	metrics.RecordReload(true)
-	return nil
+	return restartRequiredSettings(a.startupConfig, newCfg), nil
 }
 
-// reloadAgentMode reloads agent-specific configuration.
+// reloadAgentMode applies the agent.backends section of newCfg: the agent
+// starts checking added backends, stops checking removed ones, applies
+// changed weights and health check settings, and tells the Overwatch nodes.
 func (a *Application) reloadAgentMode(newCfg *config.Config) error {
 	if a.agentInstance == nil {
 		return nil
 	}
 
-	// Compare backend configurations
-	oldBackends := a.config.Agent.Backends
-	newBackends := newCfg.Agent.Backends
+	result, err := a.agentInstance.Reconfigure(newCfg)
+	if err != nil {
+		return fmt.Errorf("failed to reconfigure agent backends: %w", err)
+	}
 
-	a.logger.Info("reloading agent configuration",
-		"old_backends", len(oldBackends),
-		"new_backends", len(newBackends),
+	if !result.Changed() {
+		a.logger.Info("agent backends unchanged",
+			"backends", a.agentInstance.GetBackendManager().BackendCount(),
+		)
+		return nil
+	}
+
+	a.logger.Info("agent backends reconfigured",
+		"added", len(result.Added),
+		"removed", len(result.Removed),
+		"updated", len(result.Updated),
+		"backends", a.agentInstance.GetBackendManager().BackendCount(),
 	)
-
-	// For now, log what would change
-	// Full reload implementation would:
-	// 1. Stop health checks for removed backends
-	// 2. Start health checks for new backends
-	// 3. Update configuration for modified backends
-
-	// backendKey generates a unique key for a backend
-	backendKey := func(service, address string, port int) string {
-		return fmt.Sprintf("%s:%s:%d", service, address, port)
-	}
-
-	// Build maps for comparison using interface{} to avoid type dependency
-	type backendInfo struct {
-		Service string
-		Address string
-		Port    int
-		Weight  int
-	}
-
-	oldMap := make(map[string]backendInfo)
-	for _, b := range oldBackends {
-		key := backendKey(b.Service, b.Address, b.Port)
-		oldMap[key] = backendInfo{
-			Service: b.Service,
-			Address: b.Address,
-			Port:    b.Port,
-			Weight:  b.Weight,
-		}
-	}
-
-	newMap := make(map[string]backendInfo)
-	for _, b := range newBackends {
-		key := backendKey(b.Service, b.Address, b.Port)
-		newMap[key] = backendInfo{
-			Service: b.Service,
-			Address: b.Address,
-			Port:    b.Port,
-			Weight:  b.Weight,
-		}
-	}
-
-	// Find added backends
-	var added, removed, modified int
-	for key := range newMap {
-		if _, exists := oldMap[key]; !exists {
-			added++
-			a.logger.Info("backend added", "backend", key)
-		}
-	}
-
-	// Find removed backends
-	for key := range oldMap {
-		if _, exists := newMap[key]; !exists {
-			removed++
-			a.logger.Info("backend removed", "backend", key)
-		}
-	}
-
-	// Find modified backends (same key but different config)
-	for key, newB := range newMap {
-		if oldB, exists := oldMap[key]; exists {
-			if newB.Weight != oldB.Weight {
-				modified++
-				a.logger.Info("backend modified", "backend", key,
-					"old_weight", oldB.Weight, "new_weight", newB.Weight)
-			}
-		}
-	}
-
-	a.logger.Info("agent configuration reload complete",
-		"added", added, "removed", removed, "modified", modified)
-
-	// TODO: Implement actual backend manager reconfiguration
-	// This would call a.agentInstance.GetBackendManager().Reconfigure(newBackends)
-
 	return nil
 }
 
@@ -1205,33 +1145,49 @@ func (a *Application) reloadOverwatchMode(newCfg *config.Config) error {
 		return fmt.Errorf("failed to reload DNS settings: %w", err)
 	}
 
+	// The geolocation resolver maps countries and continents to regions from
+	// the regions section, which it was given at startup.
+	if a.geoResolver != nil {
+		a.geoResolver.ReloadRegions(newCfg.Regions)
+	}
+
 	return nil
 }
 
-// reloadDNSRegistry updates the DNS registry with new domain configuration.
+// reloadDNSRegistry replaces the DNS registry contents with the state merged
+// from the new configuration file, the store and the backend registry. It is
+// the reload counterpart of the startup sequence and uses the same functions:
+// registerStaticServers, buildDNSRegistry and pruneStaticBackends.
 func (a *Application) reloadDNSRegistry(newCfg *config.Config) error {
-	// v1.1.0: Use backend registry for latency (unified for static, agent, and API servers)
-	latencyProvider := &backendRegistryLatencyProvider{registry: a.backendRegistry}
-	routerFactory := routing.NewFactory(routing.FactoryConfig{
-		LatencyProvider:   latencyProvider,
-		MinLatencySamples: 1,             // Backend registry tracks latency from external validation
-		GeoResolver:       a.geoResolver, // Demo 4: GeoIP-based routing
-		Logger:            a.logger,
-	})
-
-	newRegistry, err := dns.BuildRegistry(newCfg, routerFactory.NewRouter)
-	if err != nil {
+	// Reject a configuration the registry cannot be built from before any
+	// live state is touched.
+	if _, err := dns.BuildRegistry(newCfg, a.routerFactory.NewRouter); err != nil {
 		return fmt.Errorf("failed to build new registry: %w", err)
 	}
 
-	var entries []*dns.DomainEntry
-	for _, name := range newRegistry.Domains() {
-		if entry := newRegistry.Lookup(name); entry != nil {
-			entries = append(entries, entry)
-		}
+	// Static servers of the new file join the backend registry first, so that
+	// they are validated and merged like the ones present at startup.
+	if err := a.registerStaticServers(newCfg); err != nil {
+		a.pruneStaticBackends(a.config)
+		return err
 	}
 
-	a.dnsRegistry.ReplaceAll(entries)
+	// Build the merged state and swap it in atomically.
+	if err := a.dnsSync.rebuild(func() (*dns.Registry, error) {
+		return a.buildDNSRegistry(newCfg, false)
+	}); err != nil {
+		a.pruneStaticBackends(a.config)
+		return err
+	}
+
+	// Static servers that left the file leave the backend registry and the
+	// store. They are already out of the DNS registry.
+	removed := a.pruneStaticBackends(newCfg)
+
+	a.logger.Info("DNS registry reloaded",
+		"domains", a.dnsRegistry.Count(),
+		"static_servers_removed", removed,
+	)
 	return nil
 }
 
