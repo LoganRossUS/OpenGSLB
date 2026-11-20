@@ -40,6 +40,19 @@ render overwatch overwatch-1 us-east overwatch-1.yaml
 render overwatch overwatch-2 eu-west overwatch-2.yaml
 render agent     unused      unused  agent.yaml
 
+# --- Port 53 ----------------------------------------------------------------------
+# Ubuntu's systemd-resolved listens on 127.0.0.53:53, which stops Docker from
+# publishing port 53. Turn its stub listener off once; the VM then resolves
+# through the upstream servers in /run/systemd/resolve/resolv.conf.
+if command -v systemctl >/dev/null && systemctl is-active -q systemd-resolved 2>/dev/null \
+   && [ ! -f /etc/systemd/resolved.conf.d/opengslb-lab.conf ]; then
+  echo "==> Freeing port 53 (systemd-resolved stub listener off)"
+  mkdir -p /etc/systemd/resolved.conf.d
+  printf '[Resolve]\nDNSStubListener=no\n' > /etc/systemd/resolved.conf.d/opengslb-lab.conf
+  ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+  systemctl restart systemd-resolved
+fi
+
 # --- Images --------------------------------------------------------------------
 # LAB_SKIP_SOURCE_BUILD=1 uses existing opengslb-lab and overlord-lab-base images.
 if [ "${LAB_SKIP_SOURCE_BUILD:-0}" != 1 ]; then

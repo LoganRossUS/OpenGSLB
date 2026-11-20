@@ -8,7 +8,7 @@ features by hand; not hardened and not for production.
 | Component | Detail |
 |---|---|
 | Overlord | Web portal on port 3001, admin account created for you, both overwatches already registered |
-| overwatch-1, overwatch-2 | Two independent overwatch nodes (identities us-east and eu-west). DNS on ports 8053 and 8054 |
+| overwatch-1, overwatch-2 | Two independent overwatch nodes (identities us-east and eu-west). DNS on ports 53 and 8053 (overwatch-1) and 8054 (overwatch-2) |
 | agent-ap-1 | An agent beside the ap-southeast backend, reporting its health to both overwatches over gossip |
 | Web backends | Seven nginx containers in three regions. Each answers `Hello from <name> (<region>)` |
 
@@ -51,19 +51,22 @@ and the other lab secrets are generated on the VM and kept in `/opt/opengslb-lab
 - **Nodes**: both overwatches healthy, with version and polling.
 - **Domains / Servers**: the four domains and their backends. Create a domain or server in Overlord: it is
   pushed to both overwatches. Then query both nodes to see whether they agree.
-- **DNS**, from your machine:
-
-```bash
-dig @<vm-ip> -p 8053 app.gslb.lab +short
-```
-
-On Windows, use TCP (`-vc`). In testing, Windows `nslookup` UDP queries to a non-standard port timed out
-and never reached the VM, while a raw UDP DNS query from PowerShell to the same port was answered. `-type=A`
-and the trailing dot avoid the AAAA lookup and the search-suffix lookups:
+- **DNS**, from your machine. overwatch-1 answers on port 53 (and 8053), overwatch-2 on 8054:
 
 ```powershell
-nslookup -vc -type=A -port=8053 app.gslb.lab. <vm-ip>
+nslookup -type=A app.gslb.lab. <vm-ip>
 ```
+
+```powershell
+Resolve-DnsName app.gslb.lab -Server <vm-ip> -Type A -DnsOnly
+```
+
+```bash
+dig @<vm-ip> -p 8054 app.gslb.lab +short
+```
+
+  Windows `nslookup` ignored `-port` in testing (its queries went to port 53), so it can only reach
+  overwatch-1. Use `dig` (for example from WSL) for overwatch-2.
 
 - **Failover**: stop the primary and watch `failover.gslb.lab` move to eu-west within about 20 seconds:
 

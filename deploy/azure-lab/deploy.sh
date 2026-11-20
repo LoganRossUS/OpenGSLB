@@ -95,7 +95,7 @@ az network nsg create -g "$RG" -n "$NSG" -o none
 # Delete before create so a re-run applies changed addresses and ports.
 az network nsg rule delete -g "$RG" --nsg-name "$NSG" -n allow-lab-user -o none 2>/dev/null || true
 az network nsg rule create -g "$RG" --nsg-name "$NSG" -n allow-lab-user --priority 100 \
-  --source-address-prefixes "$ALLOWED_IP" --destination-port-ranges 22 3001 8053 8054 \
+  --source-address-prefixes "$ALLOWED_IP" --destination-port-ranges 22 3001 53 8053 8054 \
   --protocol '*' --access Allow --direction Inbound -o none
 # Temporary: lets this Cloud Shell copy the lab to the VM. Removed at the end.
 az network nsg rule delete -g "$RG" --nsg-name "$NSG" -n allow-deployer-ssh -o none 2>/dev/null || true
@@ -146,9 +146,10 @@ cat <<DONE
  Password:  $ADMIN_PASSWORD
 
  DNS (from your machine, $ALLOWED_IP):
-   dig @$IP -p 8053 app.gslb.lab        # overwatch-1
+   nslookup -type=A app.gslb.lab. $IP   (Windows; overwatch-1, port 53)
+   Resolve-DnsName app.gslb.lab -Server $IP -Type A -DnsOnly
+   dig @$IP app.gslb.lab                # overwatch-1 (also port 8053)
    dig @$IP -p 8054 app.gslb.lab        # overwatch-2
-   nslookup -vc -type=A -port=8053 app.gslb.lab. $IP   (Windows: use TCP)
    Domains: app (round-robin), failover, weighted, ap (agent-managed)
 
  Shell on the VM (works from Cloud Shell; SSH itself is only open to $ALLOWED_IP):
