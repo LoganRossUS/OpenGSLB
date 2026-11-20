@@ -42,7 +42,7 @@ jobs:
       # CodeQL builds the module to extract it, so it needs the toolchain that
       # go.mod asks for.
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
