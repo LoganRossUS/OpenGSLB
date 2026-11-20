@@ -193,7 +193,24 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	// Truncate keeps the OPT record (RFC 6891 section 7).
 	signed.Truncate(responseSizeLimit(w.RemoteAddr(), queryOPT, st.maxUDPSize))
 
-	h.writeResponse(w, signed, start, rcodeString(signed), qname)
+	h.writeResponse(w, signed, start, rcodeString(signed), st.metricDomain(qname))
+}
+
+// metricDomain returns the value of the "domain" metric label for a query
+// name. The name is chosen by the client, so only names this server has data
+// for become label values: a registered domain and a zone apex are their own
+// label, every other name is counted under "other". Without this, every
+// distinct name a client asks for would add a time series that is never
+// removed.
+func (st handlerState) metricDomain(qname string) string {
+	if qname == "" {
+		return ""
+	}
+	zone, entry := st.resolve(qname)
+	if entry != nil || (zone != nil && qname == zone.Name) {
+		return qname
+	}
+	return "other"
 }
 
 // clientAddress returns the address that routing decisions are made for and

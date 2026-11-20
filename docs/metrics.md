@@ -28,7 +28,7 @@ Total number of DNS queries received.
 
 | Label | Description |
 |-------|-------------|
-| `domain` | The queried name in canonical form: lower case with a trailing dot, whatever case the query used. Empty for a request without a question. |
+| `domain` | A registered domain or a zone apex, in canonical form (lower case with a trailing dot, whatever case the query used). Every other queried name, whether it does not exist or lies outside the served zones, is counted under `other`, so that clients cannot create a time series per name they ask for. Empty for a request without a question. |
 | `type` | DNS query type (A, AAAA, etc.) |
 | `status` | The DNS response code of the answer: `NOERROR`, `NXDOMAIN`, `SERVFAIL`, `REFUSED`, `FORMERR`, `NOTIMP` or `BADVERS` |
 
@@ -38,8 +38,8 @@ Total number of DNS queries received.
 ```
 opengslb_dns_queries_total{domain="app.example.com.",type="A",status="NOERROR"} 1542
 opengslb_dns_queries_total{domain="app.example.com.",type="AAAA",status="NOERROR"} 523
-opengslb_dns_queries_total{domain="missing.example.com.",type="A",status="NXDOMAIN"} 12
-opengslb_dns_queries_total{domain="www.google.com.",type="A",status="REFUSED"} 3
+opengslb_dns_queries_total{domain="other",type="A",status="NXDOMAIN"} 12
+opengslb_dns_queries_total{domain="other",type="A",status="REFUSED"} 3
 ```
 
 #### `opengslb_dns_query_duration_seconds`
