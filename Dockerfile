@@ -23,8 +23,18 @@ FROM alpine:latest
 # Install runtime dependencies
 RUN apk --no-cache add ca-certificates tzdata
 
-# Create non-root user
-RUN adduser -D -g '' appuser
+# Create non-root user. The UID is fixed (it is the one Alpine assigned before)
+# so that the owner of bind-mounted directories can be set on the host.
+RUN adduser -D -g '' -u 1000 appuser
+
+# Data directory: the overwatch store (overwatch.data_dir) and the agent
+# certificate and key (agent.identity.cert_path, key_path) default to
+# /var/lib/opengslb. It must exist and belong to the runtime user, who cannot
+# create it under /var/lib. A named or anonymous volume mounted here starts as
+# a copy of this directory, with its owner.
+RUN mkdir -p /var/lib/opengslb \
+    && chown appuser:appuser /var/lib/opengslb \
+    && chmod 0750 /var/lib/opengslb
 
 WORKDIR /app
 
@@ -36,6 +46,10 @@ COPY --from=builder /opengslb .
 
 # Use non-root user
 USER appuser
+
+# Persistent data. Mount a named volume here to keep it when the container is
+# replaced: -v opengslb-data:/var/lib/opengslb
+VOLUME ["/var/lib/opengslb"]
 
 # Expose ports: DNS (TCP/UDP) and metrics
 EXPOSE 53/udp 53/tcp 9090
