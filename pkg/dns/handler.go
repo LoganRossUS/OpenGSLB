@@ -126,9 +126,14 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		h.logger.Debug("zone transfer refused", "name", qname, "type", qtype)
 		m.SetRcode(m, dns.RcodeRefused)
 		m.Authoritative = false
-	case entry == nil && !apex:
+	case entry == nil && !apex && !st.hasNameBelow(qname):
+		// Nothing exists at or below the name. The zone SOA in the authority
+		// section lets resolvers cache the NXDOMAIN (RFC 2308 section 2.1).
 		h.logger.Debug("domain not found", "name", qname)
 		m.SetRcode(m, dns.RcodeNameError) // NXDOMAIN
+		if zone != nil {
+			m.Ns = []dns.RR{zone.negativeSOA()}
+		}
 	case (q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA) && entry != nil:
 		h.handleAddressQuery(st, m, q, qname, zone, entry, clientIP)
 	case (q.Qtype == dns.TypeSOA || q.Qtype == dns.TypeNS) && apex:
@@ -141,8 +146,9 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		// The name exists but the server has no data of this type. That is
 		// not an error: NOERROR with an empty answer (RFC 2308 "NODATA").
 		// This covers every type OpenGSLB does not serve (TXT, MX, CNAME,
-		// HTTPS, ANY, DS, ...), SOA and NS below an apex, and address
-		// queries at an apex that is not itself a GSLB domain.
+		// HTTPS, ANY, DS, ...), SOA and NS below an apex, address queries at
+		// an apex that is not itself a GSLB domain, and every query for an
+		// empty non-terminal (a name with a GSLB domain beneath it).
 		h.logger.Debug("no data for query type", "name", qname, "type", qtype)
 		setNoData(m, zone)
 	}
@@ -171,6 +177,15 @@ func (st handlerState) resolve(qname string) (*Zone, *DomainEntry) {
 		}
 	}
 	return zone, entry
+}
+
+// hasNameBelow reports whether a GSLB domain or a configured zone apex lies
+// beneath qname. Such a name is an empty non-terminal: it exists, so the
+// answer for it is an empty NOERROR and never NXDOMAIN. NXDOMAIN states that
+// nothing exists at or below the name (RFC 8020), and a resolver that caches
+// it may stop resolving the names beneath it.
+func (st handlerState) hasNameBelow(qname string) bool {
+	return st.registry.hasDescendant(qname) || st.zones.hasApexBelow(qname)
 }
 
 // handleApexQuery answers SOA and NS queries at a zone apex.
