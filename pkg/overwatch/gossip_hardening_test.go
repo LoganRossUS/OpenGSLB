@@ -9,6 +9,8 @@ package overwatch
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -219,5 +221,126 @@ func TestGossipAgentAuth_AcceptsPlainPEMString(t *testing.T) {
 
 	if _, err := env.handler.auth.GetPinnedCertificate(context.Background(), fuzzAgentID); err != nil {
 		t.Fatalf("agent was not pinned after an agent_auth message with a plain PEM string: %v", err)
+	}
+}
+
+// When the learned latency table was full, every new subnet in a latency
+// report scanned the whole table to evict one subnet. One report with n new
+// subnets cost n full scans under the table's write lock, on the only
+// goroutine that processes gossip. With the default limit of 100000 subnets a
+// single message held the Overwatch's gossip processing for many seconds.
+//
+// The table here is a fifth of the default size. Before the fix the report
+// below needed 40 million entry visits (seconds); it now needs a few hundred
+// thousand (milliseconds). The time limit is far above the fixed cost so that
+// a loaded CI machine does not trip it.
+func TestGossipLatencyReport_FullTableDoesNotStall(t *testing.T) {
+	fuzzSilenceDefaultLogger(t)
+	env := newFuzzGossipEnv(t)
+
+	const (
+		maxEntries = 20000
+		newSubnets = 2000
+		limit      = 1500 * time.Millisecond
+	)
+	table := NewLearnedLatencyTable(LearnedLatencyConfig{MaxEntries: maxEntries, Logger: fuzzDiscardLogger()})
+	env.handler.SetLatencyTable(table)
+
+	subnet := func(i int) string {
+		return fmt.Sprintf("%d.%d.%d.0/24", 1+(i>>16)&0xff, (i>>8)&0xff, i&0xff)
+	}
+	existing := make([]SubnetLatencyData, 0, maxEntries)
+	for i := 0; i < maxEntries; i++ {
+		existing = append(existing, SubnetLatencyData{Subnet: subnet(i), EWMA: int64(time.Millisecond), SampleCount: 10})
+	}
+	table.Update("agent-1", fuzzRegion, "weighted.fuzz.example", existing)
+	if got := table.SubnetCount(); got != maxEntries {
+		t.Fatalf("table holds %d subnets after filling, want %d", got, maxEntries)
+	}
+	// The entries of the report must be newer than the ones already stored.
+	time.Sleep(2 * time.Millisecond)
+
+	var report strings.Builder
+	report.WriteString(`{"type":"latency_report","agent_id":"agent-2","region":"eu-west-1","payload":{"backend":"weighted.fuzz.example","subnets":[`)
+	for i := 0; i < newSubnets; i++ {
+		if i > 0 {
+			report.WriteByte(',')
+		}
+		fmt.Fprintf(&report, `{"subnet":%q,"ewma_ns":2000000,"sample_count":10}`, subnet(maxEntries+i))
+	}
+	report.WriteString(`]}}`)
+
+	start := time.Now()
+	env.handleRaw(t, report.String())
+	elapsed := time.Since(start)
+
+	if elapsed > limit {
+		t.Errorf("one latency report with %d new subnets took %v on a full table of %d, limit %v", newSubnets, elapsed, maxEntries, limit)
+	}
+	if got := table.SubnetCount(); got > maxEntries {
+		t.Errorf("table holds %d subnets, limit is %d", got, maxEntries)
+	}
+	// Eviction removes the oldest subnets, never the ones just reported.
+	for _, i := range []int{0, newSubnets / 2, newSubnets - 1} {
+		prefix := netip.MustParsePrefix(subnet(maxEntries + i))
+		if _, ok := table.GetLatencyForBackendInRegion(prefix.Addr(), "weighted.fuzz.example", fuzzRegion); !ok {
+			t.Errorf("subnet %s from the report is missing from the table", prefix)
+		}
+	}
+	// Eviction must not empty the table either.
+	if got := table.SubnetCount(); got < maxEntries*9/10 {
+		t.Errorf("table holds %d subnets after the report, eviction removed far more than needed", got)
+	}
+}
+
+// Eviction frees a batch per pass. It must still take the oldest subnets and
+// leave the table within its limit.
+func TestLearnedLatencyTable_EvictsOldestSubnetsFirst(t *testing.T) {
+	for _, maxEntries := range []int{4, 300} {
+		t.Run(fmt.Sprintf("max_%d", maxEntries), func(t *testing.T) {
+			table := NewLearnedLatencyTable(LearnedLatencyConfig{MaxEntries: maxEntries, Logger: fuzzDiscardLogger()})
+			batch := maxEntries / evictionBatchDivisor
+			if batch < 1 {
+				batch = 1
+			}
+			subnet := func(i int) string { return fmt.Sprintf("10.%d.%d.0/24", i>>8, i&0xff) }
+			has := func(i int) bool {
+				_, ok := table.GetLatencyForBackend(netip.MustParsePrefix(subnet(i)).Addr(), "svc")
+				return ok
+			}
+
+			for i := 0; i < maxEntries; i++ {
+				table.Update("agent-1", fuzzRegion, "svc", []SubnetLatencyData{{Subnet: subnet(i), EWMA: 1, SampleCount: 1}})
+			}
+			if got := table.SubnetCount(); got != maxEntries {
+				t.Fatalf("table holds %d subnets after filling, want %d", got, maxEntries)
+			}
+			// Give every subnet its own age, oldest first, without relying
+			// on the clock moving between two updates.
+			base := time.Now().Add(-time.Hour)
+			table.mu.Lock()
+			for i := 0; i < maxEntries; i++ {
+				for _, entry := range table.data[netip.MustParsePrefix(subnet(i))] {
+					entry.LastUpdated = base.Add(time.Duration(i) * time.Second)
+				}
+			}
+			table.mu.Unlock()
+
+			table.Update("agent-1", fuzzRegion, "svc", []SubnetLatencyData{{Subnet: subnet(maxEntries), EWMA: 1, SampleCount: 1}})
+
+			if got, want := table.SubnetCount(), maxEntries-batch+1; got != want {
+				t.Errorf("table holds %d subnets after one insert into a full table, want %d", got, want)
+			}
+			for i := 0; i < batch; i++ {
+				if has(i) {
+					t.Errorf("subnet %s is one of the %d oldest and was not evicted", subnet(i), batch)
+				}
+			}
+			for _, i := range []int{batch, maxEntries - 1, maxEntries} {
+				if !has(i) {
+					t.Errorf("subnet %s is newer than the evicted batch and is missing", subnet(i))
+				}
+			}
+		})
 	}
 }

@@ -9,6 +9,7 @@ package overwatch
 import (
 	"log/slog"
 	"net/netip"
+	"sort"
 	"sync"
 	"time"
 )
@@ -354,27 +355,49 @@ func (t *LearnedLatencyTable) Prune() {
 	}
 }
 
-// evictOldest removes the oldest entry to make room for new ones.
-// Must be called with lock held.
-func (t *LearnedLatencyTable) evictOldest() {
-	var oldestPrefix netip.Prefix
-	var oldestTime time.Time
-	first := true
+// evictionBatchDivisor sets how much of a full table one eviction pass frees:
+// MaxEntries/evictionBatchDivisor subnets, and at least one.
+//
+// Finding the oldest subnet takes a scan of the whole table. Freeing a batch
+// per scan keeps the cost of adding a subnet to a full table at a bounded
+// number of entry visits. Freeing a single subnet per scan made one latency
+// report with n new subnets cost n full scans while holding the write lock,
+// which a gossip peer could use to stall gossip processing for seconds.
+const evictionBatchDivisor = 100
 
+// evictOldest makes room in a full table by removing the subnets whose data
+// is oldest. Must be called with lock held.
+func (t *LearnedLatencyTable) evictOldest() {
+	batch := t.config.MaxEntries / evictionBatchDivisor
+	if batch < 1 {
+		batch = 1
+	}
+
+	type subnetAge struct {
+		prefix netip.Prefix
+		oldest time.Time
+	}
+	ages := make([]subnetAge, 0, len(t.data))
 	for prefix, backendMap := range t.data {
+		age := subnetAge{prefix: prefix}
+		first := true
 		for _, entry := range backendMap {
-			if first || entry.LastUpdated.Before(oldestTime) {
-				oldestPrefix = prefix
-				oldestTime = entry.LastUpdated
+			if first || entry.LastUpdated.Before(age.oldest) {
+				age.oldest = entry.LastUpdated
 				first = false
 			}
 		}
+		ages = append(ages, age)
+	}
+	if batch > len(ages) {
+		batch = len(ages)
 	}
 
-	if !first {
-		delete(t.data, oldestPrefix)
-		latencyEntriesEvicted.Inc()
+	sort.Slice(ages, func(i, j int) bool { return ages[i].oldest.Before(ages[j].oldest) })
+	for _, age := range ages[:batch] {
+		delete(t.data, age.prefix)
 	}
+	latencyEntriesEvicted.Add(float64(batch))
 }
 
 // countEntries returns the total number of backend entries across all subnets.
