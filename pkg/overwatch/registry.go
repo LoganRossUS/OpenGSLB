@@ -207,7 +207,10 @@ type Registry struct {
 	config   RegistryConfig
 	store    store.Store
 	backends map[string]*Backend // key: "service:address:port"
-	mu       sync.RWMutex
+	// byEndpoint indexes the same backends by address and port for the DNS
+	// query path. It is maintained by putBackend and removeBackend.
+	byEndpoint map[endpointKey][]*Backend
+	mu         sync.RWMutex
 
 	// Callbacks
 	onStatusChange func(backend *Backend, oldStatus, newStatus BackendStatus)
@@ -236,6 +239,8 @@ func NewRegistry(cfg RegistryConfig, st store.Store) *Registry {
 		backends: make(map[string]*Backend),
 		ctx:      ctx,
 		cancel:   cancel,
+
+		byEndpoint: make(map[endpointKey][]*Backend),
 	}
 }
 
@@ -297,7 +302,7 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 			AgentLastSeen:   now,
 			EffectiveStatus: StatusHealthy,
 		}
-		r.backends[key] = backend
+		r.putBackend(key, backend)
 		r.config.Logger.Info("backend registered",
 			"service", service,
 			"address", address,
@@ -371,7 +376,7 @@ func (r *Registry) RegisterStatic(service, address string, port, weight int, reg
 			EffectiveStatus: StatusHealthy, // Assume healthy until validated
 			HealthCheckType: healthCheckType,
 		}
-		r.backends[key] = backend
+		r.putBackend(key, backend)
 		r.config.Logger.Info("static backend registered",
 			"service", service,
 			"address", address,
@@ -449,7 +454,7 @@ func (r *Registry) RegisterAPI(service, address string, port, weight int, region
 		EffectiveStatus: StatusHealthy, // Assume healthy until validated
 	}
 
-	r.backends[key] = backend
+	r.putBackend(key, backend)
 	r.computeEffectiveStatus(backend)
 	newStatus := backend.EffectiveStatus
 
@@ -548,7 +553,7 @@ func (r *Registry) Deregister(service, address string, port int) error {
 	backendCopy := *backend
 	oldStatus := backend.EffectiveStatus
 
-	delete(r.backends, key)
+	r.removeBackend(key)
 	metrics.DeleteBackendHealthy(backend.Service, backend.Region, backend.Address, backend.Port)
 
 	r.config.Logger.Info("backend deregistered",
@@ -890,13 +895,15 @@ func (r *Registry) IsHealthy(address string, port int) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// Search for backend by address:port (service-agnostic for DNS)
-	for _, backend := range r.backends {
-		if backend.Address == address && backend.Port == port {
-			return backend.EffectiveStatus == StatusHealthy
+	// Look the backend up by address:port (service-agnostic for DNS). With
+	// several services at one endpoint, all of them must be healthy.
+	list := r.byEndpoint[endpointKey{address: address, port: port}]
+	for _, backend := range list {
+		if backend.EffectiveStatus != StatusHealthy {
+			return false
 		}
 	}
-	return false
+	return len(list) > 0
 }
 
 // LatencyInfo contains latency information for a backend.
@@ -916,9 +923,11 @@ func (r *Registry) GetLatency(address string, port int) LatencyInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// Search for backend by address:port (service-agnostic for DNS)
-	for _, backend := range r.backends {
-		if backend.Address == address && backend.Port == port {
+	// Look the backend up by address:port (service-agnostic for DNS). With
+	// several services at one endpoint, the first one, in order of service
+	// name, that has latency samples is used.
+	for _, backend := range r.byEndpoint[endpointKey{address: address, port: port}] {
+		if backend.LatencySamples > 0 {
 			return LatencyInfo{
 				SmoothedLatency: backend.SmoothedLatency,
 				Samples:         backend.LatencySamples,
@@ -1082,7 +1091,7 @@ func (r *Registry) checkStaleBackends() {
 	// Remove expired backends
 	for _, key := range toRemove {
 		backend := r.backends[key]
-		delete(r.backends, key)
+		r.removeBackend(key)
 		metrics.DeleteBackendHealthy(backend.Service, backend.Region, backend.Address, backend.Port)
 
 		r.config.Logger.Info("stale backend removed",
@@ -1144,7 +1153,7 @@ func (r *Registry) loadFromStore() error {
 		}
 
 		key := backendKey(backend.Service, backend.Address, backend.Port)
-		r.backends[key] = &backend
+		r.putBackend(key, &backend)
 
 		// Recompute effective status
 		r.computeEffectiveStatus(&backend)

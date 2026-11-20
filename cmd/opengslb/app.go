@@ -1363,39 +1363,37 @@ type combinedHealthProvider struct {
 func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
 	// v1.1.0: Check backend registry first (unified health for static, agent, and API backends)
 	if p.backendRegistry != nil {
-		// The registry stores backends by service:address:port, but we only have address:port
-		// So we need to search all backends for a matching address:port
-		allBackends := p.backendRegistry.GetAllBackends()
-
-		for _, backend := range allBackends {
-			if backend.Address == address && backend.Port == port {
-				// Backend is draining - exclude from DNS
-				if backend.Draining {
-					if p.logger != nil {
-						p.logger.Debug("DNS excluding draining backend",
-							"address", address,
-							"port", port,
-							"reason", backend.DrainingReason,
-							"cpu_percent", backend.CPUPercent,
-							"effective_status", backend.EffectiveStatus,
-						)
-					}
-					return false
+		// The registry stores backends by service:address:port, but we only
+		// have address:port. This runs for every candidate server of every
+		// query, so it uses the registry's address:port index and never
+		// copies or scans the backend list.
+		if backend, found := p.backendRegistry.GetBackendByEndpoint(address, port); found {
+			// Backend is draining - exclude from DNS
+			if backend.Draining {
+				if p.debugEnabled() {
+					p.logger.Debug("DNS excluding draining backend",
+						"address", address,
+						"port", port,
+						"reason", backend.DrainingReason,
+						"cpu_percent", backend.CPUPercent,
+						"effective_status", backend.EffectiveStatus,
+					)
 				}
-				// Check effective status - only healthy backends should be in DNS
-				if backend.EffectiveStatus != overwatch.StatusHealthy {
-					if p.logger != nil {
-						p.logger.Debug("DNS excluding unhealthy backend",
-							"address", address,
-							"port", port,
-							"effective_status", backend.EffectiveStatus,
-						)
-					}
-					return false
-				}
-				// Backend found in registry and is healthy
-				return true
+				return false
 			}
+			// Check effective status - only healthy backends should be in DNS
+			if backend.EffectiveStatus != overwatch.StatusHealthy {
+				if p.debugEnabled() {
+					p.logger.Debug("DNS excluding unhealthy backend",
+						"address", address,
+						"port", port,
+						"effective_status", backend.EffectiveStatus,
+					)
+				}
+				return false
+			}
+			// Backend found in registry and is healthy
+			return true
 		}
 	}
 
@@ -1406,6 +1404,12 @@ func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
 
 	// No health information available
 	return false
+}
+
+// debugEnabled reports whether the provider has a logger that emits DEBUG
+// records, so that the query path builds no log arguments otherwise.
+func (p *combinedHealthProvider) debugEnabled() bool {
+	return p.logger != nil && p.logger.Enabled(context.Background(), slog.LevelDebug)
 }
 
 // backendRegistryLatencyProvider implements routing.LatencyProvider using the backend registry.
