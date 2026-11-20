@@ -79,7 +79,7 @@ OpenGSLB is **predictive from the inside** (agents know trouble is coming) while
 ### Prerequisites
 
 - Docker and Docker Compose
-- Go 1.22+ (for building OpenGSLB)
+- Go 1.26.11+ (for building OpenGSLB; Go 1.21 or later downloads this toolchain automatically)
 - `dig` command (for DNS queries)
 - `curl` and `jq` (for API calls)
 

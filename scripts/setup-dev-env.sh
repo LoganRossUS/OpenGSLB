@@ -35,11 +35,11 @@ fi
 
 # Install Go (if not present)
 if ! command -v go &> /dev/null; then
-    echo "Installing Go 1.22..."
-    wget -q https://go.dev/dl/go1.22.4.linux-amd64.tar.gz
+    echo "Installing Go 1.26.11..."
+    wget -q https://go.dev/dl/go1.26.11.linux-amd64.tar.gz
     sudo rm -rf /usr/local/go
-    sudo tar -C /usr/local -xzf go1.22.4.linux-amd64.tar.gz
-    rm go1.22.4.linux-amd64.tar.gz
+    sudo tar -C /usr/local -xzf go1.26.11.linux-amd64.tar.gz
+    rm go1.26.11.linux-amd64.tar.gz
     
     # Add to path if not already there
     if ! grep -q "/usr/local/go/bin" ~/.bashrc; then

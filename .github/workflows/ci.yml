@@ -9,6 +9,10 @@ on:
     branches:
       - main  # Only run on push to main (after PR merge)
 
+# The Go version comes from the "go" line of go.mod in every job (and in
+# release.yml and security.yml), so the workflows cannot drift from the module.
+# The Dockerfile builder image tag must be bumped together with go.mod.
+
 jobs:
   test:
     name: Test
@@ -21,7 +25,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Download dependencies
@@ -53,7 +57,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       # Starts a real overwatch in-process, calls every operation in
@@ -161,7 +165,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Run golangci-lint
@@ -181,7 +185,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Build
@@ -198,7 +202,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Run govulncheck
@@ -218,7 +222,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Build OpenGSLB binary

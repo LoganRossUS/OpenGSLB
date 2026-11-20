@@ -18,7 +18,7 @@ The agent-overwatch model consists of two components:
 
 ## Prerequisites
 
-- Go 1.21+ (for building from source)
+- Go 1.26.11+ (for building from source; Go 1.21 or later downloads this toolchain automatically)
 - Network connectivity between agents and Overwatches (port 7946 for gossip)
 - DNS port access (port 53 or custom) for Overwatch nodes
 
