@@ -57,10 +57,12 @@ and the other lab secrets are generated on the VM and kept in `/opt/opengslb-lab
 dig @<vm-ip> -p 8053 app.gslb.lab +short
 ```
 
-On Windows (`-type=A` and the trailing dot avoid the AAAA lookup and the search-suffix lookups):
+On Windows, use TCP (`-vc`). In testing, Windows `nslookup` UDP queries to a non-standard port timed out
+and never reached the VM, while a raw UDP DNS query from PowerShell to the same port was answered. `-type=A`
+and the trailing dot avoid the AAAA lookup and the search-suffix lookups:
 
 ```powershell
-nslookup -type=A -port=8053 app.gslb.lab. <vm-ip>
+nslookup -vc -type=A -port=8053 app.gslb.lab. <vm-ip>
 ```
 
 - **Failover**: stop the primary and watch `failover.gslb.lab` move to eu-west within about 20 seconds:

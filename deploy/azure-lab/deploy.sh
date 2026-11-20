@@ -148,7 +148,7 @@ cat <<DONE
  DNS (from your machine, $ALLOWED_IP):
    dig @$IP -p 8053 app.gslb.lab        # overwatch-1
    dig @$IP -p 8054 app.gslb.lab        # overwatch-2
-   nslookup -type=A -port=8053 app.gslb.lab. $IP   (Windows)
+   nslookup -vc -type=A -port=8053 app.gslb.lab. $IP   (Windows: use TCP)
    Domains: app (round-robin), failover, weighted, ap (agent-managed)
 
  Shell on the VM (works from Cloud Shell; SSH itself is only open to $ALLOWED_IP):
