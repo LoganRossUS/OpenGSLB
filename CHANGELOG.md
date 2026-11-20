@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **API documentation corrections** (documentation only, no change in behaviour): the DNSSEC endpoints and `/api/health` are no longer presented as available (the binary answers 404), and the `api.enable_cors` / `api.cors` settings are no longer documented because the configuration has no such keys and CORS is never enabled.
 
 ### Fixed
+- **Domain backends listed servers of other domains**: for domains defined in the config file, `GET /api/v1/domains/{name}/backends` returned every server in the domain's regions, including servers whose `service` names a different domain. It now returns only servers whose `service` matches the domain (case-insensitive, trailing dot ignored), the same set DNS answers with. `backend_count` and `healthy_backends` in `GET /api/v1/domains` and `GET /api/v1/domains/{name}` were inflated the same way and are fixed. Removing another domain's config backend through `DELETE /api/v1/domains/{name}/backends/{id}` now reports it as not found instead of as a config-based backend of this domain. Response shapes are unchanged; consumers that sync backends per domain (such as the Overlord portal's node poller) no longer see each shared-region server once per domain.
 - **Data race at overwatch start**: `Registry.loadFromStore` wrote the backend map without holding the registry lock while status-change callbacks read it from other goroutines. Found by the contract test under `-race`. No change in behaviour.
 
 ---

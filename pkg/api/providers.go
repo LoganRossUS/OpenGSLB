@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/loganrossus/OpenGSLB/pkg/config"
@@ -208,15 +209,8 @@ func (p *RegistryDomainProvider) ListDomains() []Domain {
 	// Add domains from config
 	if p.config != nil {
 		for _, d := range p.config.Domains {
-			// Count backends from config regions
-			backendCount := 0
-			for _, regionName := range d.Regions {
-				for _, r := range p.config.Regions {
-					if r.Name == regionName {
-						backendCount += len(r.Servers)
-					}
-				}
-			}
+			// Count the config servers that belong to this domain
+			backendCount := len(p.configDomainServers(d))
 
 			ttl := d.TTL
 			if ttl == 0 {
@@ -326,15 +320,8 @@ func (p *RegistryDomainProvider) GetDomain(name string) (*Domain, error) {
 	if p.config != nil {
 		for _, d := range p.config.Domains {
 			if d.Name == name {
-				// Count backends from config regions
-				backendCount := 0
-				for _, regionName := range d.Regions {
-					for _, r := range p.config.Regions {
-						if r.Name == regionName {
-							backendCount += len(r.Servers)
-						}
-					}
-				}
+				// Count the config servers that belong to this domain
+				backendCount := len(p.configDomainServers(d))
 
 				ttl := d.TTL
 				if ttl == 0 {
@@ -584,6 +571,43 @@ func (p *RegistryDomainProvider) DeleteDomain(name string) error {
 	return nil
 }
 
+// configServerRef is a config-file server together with the region it is in.
+type configServerRef struct {
+	Region string
+	Server config.Server
+}
+
+// serviceMatchesDomain reports whether a server's service field names the
+// given domain. Names are compared case-insensitively with any trailing dot
+// ignored.
+func serviceMatchesDomain(service, domain string) bool {
+	return strings.EqualFold(strings.TrimSuffix(service, "."), strings.TrimSuffix(domain, "."))
+}
+
+// configDomainServers returns the config-file servers that belong to domain d:
+// those in d's regions whose service field names d. Since v1.1.0 a region can
+// hold servers for several domains, so region membership alone is not enough
+// (the DNS registry applies the same filter).
+func (p *RegistryDomainProvider) configDomainServers(d config.Domain) []configServerRef {
+	if p.config == nil {
+		return nil
+	}
+	var refs []configServerRef
+	for _, regionName := range d.Regions {
+		for _, r := range p.config.Regions {
+			if r.Name != regionName {
+				continue
+			}
+			for _, s := range r.Servers {
+				if serviceMatchesDomain(s.Service, d.Name) {
+					refs = append(refs, configServerRef{Region: regionName, Server: s})
+				}
+			}
+		}
+	}
+	return refs
+}
+
 // GetDomainBackends returns the backends for a domain.
 func (p *RegistryDomainProvider) GetDomainBackends(name string) ([]DomainBackend, error) {
 	result := make([]DomainBackend, 0)
@@ -592,23 +616,18 @@ func (p *RegistryDomainProvider) GetDomainBackends(name string) ([]DomainBackend
 	if p.config != nil {
 		for _, d := range p.config.Domains {
 			if d.Name == name {
-				// Find backends from associated regions
-				for _, regionName := range d.Regions {
-					for _, r := range p.config.Regions {
-						if r.Name == regionName {
-							for _, s := range r.Servers {
-								result = append(result, DomainBackend{
-									ID:      fmt.Sprintf("%s:%s:%d", name, s.Address, s.Port),
-									Address: s.Address,
-									Port:    s.Port,
-									Weight:  s.Weight,
-									Region:  regionName,
-									Healthy: true, // Assume healthy until checked
-									Enabled: true,
-								})
-							}
-						}
-					}
+				// Servers in the domain's regions whose service is this domain
+				for _, ref := range p.configDomainServers(d) {
+					s := ref.Server
+					result = append(result, DomainBackend{
+						ID:      fmt.Sprintf("%s:%s:%d", name, s.Address, s.Port),
+						Address: s.Address,
+						Port:    s.Port,
+						Weight:  s.Weight,
+						Region:  ref.Region,
+						Healthy: true, // Assume healthy until checked
+						Enabled: true,
+					})
 				}
 				break
 			}
@@ -754,16 +773,10 @@ func (p *RegistryDomainProvider) RemoveDomainBackend(domainName string, backendI
 		if p.config != nil {
 			for _, d := range p.config.Domains {
 				if d.Name == domainName {
-					for _, regionName := range d.Regions {
-						for _, r := range p.config.Regions {
-							if r.Name == regionName {
-								for _, s := range r.Servers {
-									configID := fmt.Sprintf("%s:%s:%d", domainName, s.Address, s.Port)
-									if configID == backendID {
-										return fmt.Errorf("cannot remove config-based backend %q via API; use config file", backendID)
-									}
-								}
-							}
+					for _, ref := range p.configDomainServers(d) {
+						configID := fmt.Sprintf("%s:%s:%d", domainName, ref.Server.Address, ref.Server.Port)
+						if configID == backendID {
+							return fmt.Errorf("cannot remove config-based backend %q via API; use config file", backendID)
 						}
 					}
 				}
