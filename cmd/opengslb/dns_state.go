@@ -58,18 +58,17 @@ func (a *Application) buildDNSRegistry(cfg *config.Config, tolerateStoreErrors b
 		}
 	}
 
-	// 3. Backend registry. At startup it holds the static servers only: the
-	// backends persisted in the store are loaded when the registry starts and
-	// reach the DNS registry through its status callback. On a reload it
-	// holds every backend. Static servers that cfg no longer defines are left
-	// out here and removed by pruneStaticBackends.
+	// 3. Servers registered through the API and by agents. On a reload the
+	// backend registry holds all of them. At startup it does not yet: the
+	// backends persisted in the store are loaded when the registry starts,
+	// and reach the DNS registry through its status callback.
 	//
-	// Like the status callback, this registers a backend with the domain named
-	// by its service whatever the domain's region list says.
+	// Static servers are not taken from the backend registry. The
+	// configuration file is their only source and step 1 has placed them,
+	// honouring the region list of each domain.
 	if a.backendRegistry != nil {
-		static := staticBackendKeys(cfg)
 		for _, b := range a.backendRegistry.GetAllBackends() {
-			if b.Source == overwatch.SourceStatic && !static[staticBackendKey(b.Service, b.Address, b.Port)] {
+			if b.Source == overwatch.SourceStatic {
 				continue
 			}
 			if err := registry.RegisterServer(b.Service, b.Address, b.Port, b.Weight, b.Region); err != nil {
