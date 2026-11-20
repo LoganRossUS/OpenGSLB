@@ -1,32 +1,67 @@
+# golangci-lint v2 configuration.
+#
+# The golangci-lint binary must be built with a Go version at least as new as
+# the "go" line in go.mod, otherwise it refuses to load the module. CI pins the
+# version in .github/workflows/ci.yml; use the same version locally.
+version: "2"
+
 run:
   timeout: 5m
   modules-download-mode: readonly
 
 linters:
+  # List the linters explicitly instead of relying on the "standard" default
+  # set, so an upgrade of golangci-lint cannot silently change what runs.
+  # gosimple was merged into staticcheck in golangci-lint v2.
+  default: none
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
+    - misspell
     - staticcheck
     - unused
+  settings:
+    errcheck:
+      check-type-assertions: true
+    misspell:
+      locale: US
+    staticcheck:
+      # golangci-lint v1 ran staticcheck (SA checks) and gosimple (S1 checks)
+      # as two linters. v2 merges them and adds the stylecheck (ST) and
+      # quickfix (QF) groups by default. Keep the set that ran under v1.
+      checks:
+        - SA*
+        - S1*
+  exclusions:
+    generated: lax
+    # These presets are the exclusions golangci-lint v1 applied by default.
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # Exclude some linters from running on tests
+      - path: _test\.go
+        linters:
+          - errcheck
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+
+formatters:
+  enable:
     - gofmt
     - goimports
-    - misspell
-
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-
-  misspell:
-    locale: US
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 
 issues:
-  exclude-rules:
-    # Exclude some linters from running on tests
-    - path: _test\.go
-      linters:
-        - errcheck
-
   max-issues-per-linter: 0
   max-same-issues: 0

@@ -9,6 +9,10 @@ on:
     branches:
       - main  # Only run on push to main (after PR merge)
 
+# The Go version comes from the "go" line of go.mod in every job (and in
+# release.yml and security.yml), so the workflows cannot drift from the module.
+# The Dockerfile builder image tag must be bumped together with go.mod.
+
 jobs:
   test:
     name: Test
@@ -21,7 +25,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Download dependencies
@@ -53,7 +57,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       # Starts a real overwatch in-process, calls every operation in
@@ -161,13 +165,16 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pinned so a new golangci-lint release cannot break CI unannounced.
+          # The binary must be built with a Go release at least as new as the
+          # "go" line of go.mod. .golangci.yml is in the v2 format.
+          version: v2.15.0
           args: --timeout=5m
 
   build:
@@ -181,30 +188,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Build
         run: go build -v ./...
 
-  security:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-          cache: true
-
-      - name: Run govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./... || true
+  # The govulncheck job ("Security Scan") lives in security.yml, which runs on
+  # the same pull request and push events as this workflow and also weekly.
 
   integration:
     name: Integration Tests
@@ -218,7 +209,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Build OpenGSLB binary
