@@ -78,6 +78,14 @@ func NewRegistryServerProvider(registry ServerRegistry, defaults HealthCheckDefa
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// The fallbacks of the validator (cmd/opengslb) for a configuration that
+	// does not set the timing.
+	if defaults.Interval <= 0 {
+		defaults.Interval = 30 * time.Second
+	}
+	if defaults.Timeout <= 0 {
+		defaults.Timeout = 5 * time.Second
+	}
 	if defaults.HealthyThreshold < 1 {
 		defaults.HealthyThreshold = 1
 	}
