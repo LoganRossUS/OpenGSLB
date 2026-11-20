@@ -100,7 +100,7 @@ func TestApplication_ZonesFromConfig(t *testing.T) {
 	}
 
 	soa = apexSOA(t, app, "gslb.example.net.")
-	if soa.Serial != 2026112001 || soa.Ns != "overwatch-7.gslb.example.net." {
+	if soa.Serial != 2026112001 || soa.Ns != "ns1.example.net." {
 		t.Errorf("object-form zone SOA = %v", soa)
 	}
 

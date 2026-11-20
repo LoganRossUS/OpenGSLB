@@ -160,9 +160,6 @@ func NewZoneTable(zones []config.Zone, nodeID string) (*ZoneTable, error) {
 		if zc.TTL > 0 {
 			zone.TTL = uint32(zc.TTL)
 		}
-		if zc.SOA.PrimaryNS != "" {
-			zone.PrimaryNS = normalizeDomain(zc.SOA.PrimaryNS)
-		}
 		if zc.SOA.Contact != "" {
 			contact, err := config.MailboxToDNSName(zc.SOA.Contact)
 			if err != nil {
@@ -186,19 +183,30 @@ func NewZoneTable(zones []config.Zone, nodeID string) (*ZoneTable, error) {
 			zone.NegativeTTL = uint32(zc.SOA.NegativeTTL)
 		}
 
-		// The NS set defaults to the primary nameserver, after any
-		// soa.primary_ns override has been applied.
-		zone.Nameservers = []string{zone.PrimaryNS}
-		if len(zc.Nameservers) > 0 {
-			zone.Nameservers = make([]string, 0, len(zc.Nameservers))
-			for j, ns := range zc.Nameservers {
-				name := normalizeDomain(ns)
-				if _, ok := dns.IsDomainName(name); !ok || name == "" || name == "." {
-					return nil, fmt.Errorf("dns.zones[%d].nameservers[%d]: invalid name %q", i, j, ns)
-				}
-				zone.Nameservers = append(zone.Nameservers, name)
+		// The NS set and the SOA primary nameserver default to each other:
+		//   - neither set: both are the name derived from the node identity;
+		//   - only soa.primary_ns set: it is the whole NS set;
+		//   - only nameservers set: the first of them is the primary, so that
+		//     overwatches sharing a zone configuration answer the same SOA
+		//     whatever their node IDs are.
+		var nameservers []string
+		for j, ns := range zc.Nameservers {
+			name := normalizeDomain(ns)
+			if _, ok := dns.IsDomainName(name); !ok || name == "" || name == "." {
+				return nil, fmt.Errorf("dns.zones[%d].nameservers[%d]: invalid name %q", i, j, ns)
 			}
+			nameservers = append(nameservers, name)
 		}
+		switch {
+		case zc.SOA.PrimaryNS != "":
+			zone.PrimaryNS = normalizeDomain(zc.SOA.PrimaryNS)
+		case len(nameservers) > 0:
+			zone.PrimaryNS = nameservers[0]
+		}
+		if len(nameservers) == 0 {
+			nameservers = []string{zone.PrimaryNS}
+		}
+		zone.Nameservers = nameservers
 
 		t.zones[apex] = zone
 	}

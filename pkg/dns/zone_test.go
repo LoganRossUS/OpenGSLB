@@ -124,6 +124,27 @@ func TestNewZoneTable_NameserversFollowPrimaryNS(t *testing.T) {
 	}
 }
 
+// TestNewZoneTable_PrimaryNSFollowsNameservers checks the other direction:
+// with an NS set and no soa.primary_ns, the SOA names the first nameserver
+// of the set and not a name derived from the node identity. Overwatches
+// that share a zone configuration then answer the same SOA whatever their
+// node IDs are.
+func TestNewZoneTable_PrimaryNSFollowsNameservers(t *testing.T) {
+	zones := []config.Zone{{
+		Name:        "gslb.example.com",
+		Nameservers: []string{"NS1.example.net", "ns2.example.net"},
+	}}
+	for _, nodeID := range []string{"overwatch-1", "overwatch-2", ""} {
+		zone := mustZones(t, nodeID, zones...).Find("gslb.example.com.")
+		if zone.PrimaryNS != "ns1.example.net." {
+			t.Errorf("node %q: PrimaryNS = %q, want ns1.example.net.", nodeID, zone.PrimaryNS)
+		}
+		if !reflect.DeepEqual(zone.Nameservers, []string{"ns1.example.net.", "ns2.example.net."}) {
+			t.Errorf("node %q: Nameservers = %v", nodeID, zone.Nameservers)
+		}
+	}
+}
+
 func TestNewZoneTable_Errors(t *testing.T) {
 	for name, zones := range map[string][]config.Zone{
 		"empty name":    {{Name: ""}},

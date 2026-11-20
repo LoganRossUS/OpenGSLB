@@ -50,7 +50,8 @@ type Zone struct {
 // optional. Timers are in seconds, as in a zone file.
 type ZoneSOA struct {
 	// PrimaryNS is the SOA MNAME, the primary nameserver of the zone.
-	// Default: derived from overwatch.identity.node_id (see docs).
+	// Default: the first entry of the zone's nameservers list, or, when that
+	// is not set either, a name derived from overwatch.identity.node_id.
 	PrimaryNS string `yaml:"primary_ns,omitempty"`
 
 	// Contact is the SOA RNAME, the mailbox of the person responsible for the
