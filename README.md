@@ -229,6 +229,10 @@ Full documentation is available at **[docs.opengslb.org](https://docs.opengslb.o
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and workflow.
 
+## Security
+
+To report a vulnerability, follow [SECURITY.md](SECURITY.md). Please do not open a public issue for security problems.
+
 ## Support the Project
 
 If OpenGSLB is useful to you, consider supporting continued development:
