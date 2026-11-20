@@ -18,7 +18,7 @@ OpenGSLB includes a comprehensive set of interactive demos that showcase its fea
 All demos require:
 
 - Docker and Docker Compose
-- Go 1.22+ (for building OpenGSLB)
+- Go 1.26.11+ (for building OpenGSLB; Go 1.21 or later downloads this toolchain automatically)
 - Basic CLI tools: `dig`, `curl`, `jq`
 
 ### Building the Binary

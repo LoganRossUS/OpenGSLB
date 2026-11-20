@@ -119,7 +119,7 @@ func (a *Aggregator) GetReportable() []SubnetStats {
 
 	var result []SubnetStats
 	for _, entry := range a.subnets {
-		if entry.stats.SampleCount >= uint64(a.config.MinSamples) {
+		if a.config.MinSamples <= 0 || entry.stats.SampleCount >= uint64(a.config.MinSamples) {
 			result = append(result, entry.stats)
 		}
 	}

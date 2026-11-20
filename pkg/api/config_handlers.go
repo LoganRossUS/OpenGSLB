@@ -98,6 +98,31 @@ type DNSConfig struct {
 	Forwarders       []string `json:"forwarders,omitempty"`
 	RateLimitEnabled bool     `json:"rate_limit_enabled"`
 	RateLimitQPS     int      `json:"rate_limit_qps"`
+	// ReturnLastHealthy is dns.return_last_healthy.
+	ReturnLastHealthy bool `json:"return_last_healthy"`
+	// Zones are the zones of dns.zones as the node serves them. Read-only:
+	// zones are set in the configuration file.
+	Zones []DNSZone `json:"zones"`
+}
+
+// DNSZone is a zone the node is authoritative for, with the SOA and NS
+// records it serves at the apex (configured values and defaults).
+type DNSZone struct {
+	Name        string     `json:"name"`
+	TTL         uint32     `json:"ttl"`
+	SOA         DNSZoneSOA `json:"soa"`
+	Nameservers []string   `json:"nameservers"`
+}
+
+// DNSZoneSOA holds the fields of a zone's SOA record. Times are in seconds.
+type DNSZoneSOA struct {
+	PrimaryNS   string `json:"primary_ns"`
+	Contact     string `json:"contact"`
+	Serial      uint32 `json:"serial"`
+	Refresh     uint32 `json:"refresh"`
+	Retry       uint32 `json:"retry"`
+	Expire      uint32 `json:"expire"`
+	NegativeTTL uint32 `json:"negative_ttl"`
 }
 
 // HealthCheckConfig represents health check configuration.

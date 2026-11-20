@@ -8,7 +8,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -27,19 +26,26 @@ type DomainProvider interface {
 	UpdateDomain(name string, domain Domain) error
 	// DeleteDomain deletes a domain by name.
 	DeleteDomain(name string) error
-	// GetDomainBackends returns the backends for a domain.
-	GetDomainBackends(name string) ([]DomainBackend, error)
-	// AddDomainBackend adds a backend to a domain.
-	AddDomainBackend(domainName string, backend DomainBackend) error
-	// RemoveDomainBackend removes a backend from a domain.
+	// GetDomainBackends returns the servers of a domain. A domain that exists
+	// and has no servers returns an empty list, not an error.
+	GetDomainBackends(name string) ([]BackendServer, error)
+	// AddDomainBackend creates a server for a domain. spec.Service is ignored:
+	// the domain name is the service.
+	AddDomainBackend(domainName string, spec ServerSpec) (*BackendServer, error)
+	// RemoveDomainBackend deletes a server of a domain by its server ID.
 	RemoveDomainBackend(domainName string, backendID string) error
 }
 
 // Domain represents a DNS domain configuration.
 type Domain struct {
-	ID              string          `json:"id,omitempty"`
-	Name            string          `json:"name"`
-	TTL             int             `json:"ttl"`
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name"`
+	TTL  int    `json:"ttl"`
+	// RoutingAlgorithm selects the routing algorithm. It has the name and the
+	// values of the routing_algorithm key of a domain in the configuration file.
+	RoutingAlgorithm string `json:"routing_algorithm"`
+	// RoutingPolicy is the deprecated former name of RoutingAlgorithm. It
+	// always holds the same value and will be removed in a later API version.
 	RoutingPolicy   string          `json:"routing_policy"`
 	HealthCheckID   string          `json:"health_check_id,omitempty"`
 	DNSSECEnabled   bool            `json:"dnssec_enabled"`
@@ -61,17 +67,13 @@ type DomainSettings struct {
 	LoadBalancingMethod string `json:"load_balancing_method"`
 }
 
-// DomainBackend represents a backend server for a domain.
-type DomainBackend struct {
-	ID        string    `json:"id"`
-	Address   string    `json:"address"`
-	Port      int       `json:"port"`
-	Weight    int       `json:"weight"`
-	Priority  int       `json:"priority"`
-	Region    string    `json:"region"`
-	Healthy   bool      `json:"healthy"`
-	Enabled   bool      `json:"enabled"`
-	LastCheck time.Time `json:"last_check,omitempty"`
+// normalizeRouting makes the canonical and the deprecated routing field agree.
+// Domains stored by earlier versions carry only routing_policy.
+func (d *Domain) normalizeRouting() {
+	if d.RoutingAlgorithm == "" {
+		d.RoutingAlgorithm = d.RoutingPolicy
+	}
+	d.RoutingPolicy = d.RoutingAlgorithm
 }
 
 // DomainListResponse is the response for GET /api/v1/domains.
@@ -88,30 +90,38 @@ type DomainResponse struct {
 
 // DomainBackendsResponse is the response for GET /api/v1/domains/{name}/backends.
 type DomainBackendsResponse struct {
-	Backends    []DomainBackend `json:"backends"`
+	Backends    []BackendServer `json:"backends"`
 	Total       int             `json:"total"`
 	GeneratedAt time.Time       `json:"generated_at"`
 }
 
-// DomainBackendCreateRequest is the request body for adding a backend to a domain.
+// DomainBackendCreateRequest is the request body for adding a backend to a
+// domain. It is a server create request without the service, which is the
+// domain in the path.
 type DomainBackendCreateRequest struct {
-	Address  string `json:"address"`
-	Port     int    `json:"port"`
-	Weight   int    `json:"weight"`
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+	Weight  int    `json:"weight"`
+	// Priority is stored and returned; no routing algorithm reads it.
 	Priority int    `json:"priority"`
 	Region   string `json:"region"`
-	Enabled  bool   `json:"enabled"`
+	// Enabled defaults to true when it is left out.
+	Enabled     *bool                     `json:"enabled,omitempty"`
+	HealthCheck *ServerHealthCheckRequest `json:"health_check,omitempty"`
 }
 
 // DomainBackendResponse is the response for single backend operations.
 type DomainBackendResponse struct {
-	Backend DomainBackend `json:"backend"`
+	Backend BackendServer `json:"backend"`
 }
 
 // DomainCreateRequest is the request body for creating a domain.
 type DomainCreateRequest struct {
-	Name          string          `json:"name"`
-	TTL           int             `json:"ttl"`
+	Name string `json:"name"`
+	TTL  int    `json:"ttl"`
+	// RoutingAlgorithm selects the routing algorithm.
+	RoutingAlgorithm string `json:"routing_algorithm"`
+	// RoutingPolicy is the deprecated former name of RoutingAlgorithm.
 	RoutingPolicy string          `json:"routing_policy"`
 	DNSSECEnabled bool            `json:"dnssec_enabled"`
 	Enabled       bool            `json:"enabled"`
@@ -122,13 +132,43 @@ type DomainCreateRequest struct {
 
 // DomainUpdateRequest is the request body for updating a domain.
 type DomainUpdateRequest struct {
-	TTL           *int            `json:"ttl,omitempty"`
+	TTL *int `json:"ttl,omitempty"`
+	// RoutingAlgorithm selects the routing algorithm.
+	RoutingAlgorithm *string `json:"routing_algorithm,omitempty"`
+	// RoutingPolicy is the deprecated former name of RoutingAlgorithm.
 	RoutingPolicy *string         `json:"routing_policy,omitempty"`
 	DNSSECEnabled *bool           `json:"dnssec_enabled,omitempty"`
 	Enabled       *bool           `json:"enabled,omitempty"`
 	Description   *string         `json:"description,omitempty"`
 	Tags          []string        `json:"tags,omitempty"`
 	Settings      *DomainSettings `json:"settings,omitempty"`
+}
+
+// routingAlgorithms are the values of routing_algorithm, as in the
+// configuration file (pkg/routing).
+var routingAlgorithms = []string{"round-robin", "weighted", "failover", "geolocation", "latency", "learned_latency"}
+
+// resolveRoutingAlgorithm returns the algorithm a request names. algorithm is
+// the canonical field and policy its deprecated alias; either may be empty.
+// Naming two different algorithms is refused, as is an unknown one.
+func resolveRoutingAlgorithm(algorithm, policy string) (string, error) {
+	algorithm = strings.ToLower(strings.TrimSpace(algorithm))
+	policy = strings.ToLower(strings.TrimSpace(policy))
+	if algorithm != "" && policy != "" && algorithm != policy {
+		return "", errInvalid("routing_algorithm (%q) and its deprecated alias routing_policy (%q) name different algorithms; send routing_algorithm only", algorithm, policy)
+	}
+	if algorithm == "" {
+		algorithm = policy
+	}
+	if algorithm == "" {
+		return "", nil
+	}
+	for _, known := range routingAlgorithms {
+		if algorithm == known {
+			return algorithm, nil
+		}
+	}
+	return "", errInvalid("unknown routing_algorithm %q; must be one of %s", algorithm, strings.Join(routingAlgorithms, ", "))
 }
 
 // DomainHandlers provides HTTP handlers for domain API endpoints.
@@ -171,12 +211,14 @@ func (h *DomainHandlers) HandleDomains(w http.ResponseWriter, r *http.Request) {
 	parts := strings.SplitN(path, "/", 2)
 	domainName := parts[0]
 
-	// Check for sub-resources
+	// Check for sub-resources: backends and backends/{id}
 	if len(parts) == 2 {
 		subResource := parts[1]
-		switch subResource {
-		case "backends":
-			h.handleDomainBackends(w, r, domainName)
+		switch {
+		case subResource == "backends":
+			h.handleDomainBackends(w, r, domainName, "")
+		case strings.HasPrefix(subResource, "backends/"):
+			h.handleDomainBackends(w, r, domainName, strings.TrimPrefix(subResource, "backends/"))
 		default:
 			h.writeError(w, http.StatusNotFound, "endpoint not found")
 		}
@@ -248,31 +290,45 @@ func (h *DomainHandlers) createDomain(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if strings.ContainsAny(req.Name, ":/ \t\r\n") {
+		h.writeError(w, http.StatusBadRequest, "name must be a DNS name; it cannot contain ':', '/' or white space")
+		return
+	}
+	if req.TTL < 0 {
+		h.writeError(w, http.StatusBadRequest, "ttl must not be negative")
+		return
+	}
+	algorithm, err := resolveRoutingAlgorithm(req.RoutingAlgorithm, req.RoutingPolicy)
+	if err != nil {
+		h.writeProviderError(w, err, "create domain")
+		return
+	}
 
 	domain := Domain{
-		Name:          req.Name,
-		TTL:           req.TTL,
-		RoutingPolicy: req.RoutingPolicy,
-		DNSSECEnabled: req.DNSSECEnabled,
-		Enabled:       req.Enabled,
-		Description:   req.Description,
-		Tags:          req.Tags,
-		Settings:      req.Settings,
-		CreatedAt:     time.Now().UTC(),
-		UpdatedAt:     time.Now().UTC(),
+		ID:               req.Name,
+		Name:             req.Name,
+		TTL:              req.TTL,
+		RoutingAlgorithm: algorithm,
+		DNSSECEnabled:    req.DNSSECEnabled,
+		Enabled:          req.Enabled,
+		Description:      req.Description,
+		Tags:             req.Tags,
+		Settings:         req.Settings,
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
 	}
 
 	// Set defaults
 	if domain.TTL == 0 {
 		domain.TTL = 300
 	}
-	if domain.RoutingPolicy == "" {
-		domain.RoutingPolicy = "round-robin"
+	if domain.RoutingAlgorithm == "" {
+		domain.RoutingAlgorithm = "round-robin"
 	}
+	domain.normalizeRouting()
 
 	if err := h.provider.CreateDomain(domain); err != nil {
-		h.logger.Error("failed to create domain", "name", req.Name, "error", err)
-		h.writeError(w, http.StatusInternalServerError, "failed to create domain: "+err.Error())
+		h.writeProviderError(w, err, "create domain")
 		return
 	}
 
@@ -302,11 +358,30 @@ func (h *DomainHandlers) updateDomain(w http.ResponseWriter, r *http.Request, na
 
 	// Apply updates
 	if req.TTL != nil {
+		if *req.TTL < 0 {
+			h.writeError(w, http.StatusBadRequest, "ttl must not be negative")
+			return
+		}
 		existing.TTL = *req.TTL
 	}
-	if req.RoutingPolicy != nil {
-		existing.RoutingPolicy = *req.RoutingPolicy
+	if req.RoutingAlgorithm != nil || req.RoutingPolicy != nil {
+		var algorithm, policy string
+		if req.RoutingAlgorithm != nil {
+			algorithm = *req.RoutingAlgorithm
+		}
+		if req.RoutingPolicy != nil {
+			policy = *req.RoutingPolicy
+		}
+		resolved, err := resolveRoutingAlgorithm(algorithm, policy)
+		if err != nil {
+			h.writeProviderError(w, err, "update domain")
+			return
+		}
+		if resolved != "" {
+			existing.RoutingAlgorithm = resolved
+		}
 	}
+	existing.normalizeRouting()
 	if req.DNSSECEnabled != nil {
 		existing.DNSSECEnabled = *req.DNSSECEnabled
 	}
@@ -325,8 +400,7 @@ func (h *DomainHandlers) updateDomain(w http.ResponseWriter, r *http.Request, na
 	existing.UpdatedAt = time.Now().UTC()
 
 	if err := h.provider.UpdateDomain(name, *existing); err != nil {
-		h.logger.Error("failed to update domain", "name", name, "error", err)
-		h.writeError(w, http.StatusInternalServerError, "failed to update domain: "+err.Error())
+		h.writeProviderError(w, err, "update domain")
 		return
 	}
 
@@ -342,12 +416,7 @@ func (h *DomainHandlers) deleteDomain(w http.ResponseWriter, r *http.Request, na
 	}
 
 	if err := h.provider.DeleteDomain(name); err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			h.writeError(w, http.StatusNotFound, "domain not found")
-			return
-		}
-		h.logger.Error("failed to delete domain", "name", name, "error", err)
-		h.writeError(w, http.StatusInternalServerError, "failed to delete domain: "+err.Error())
+		h.writeProviderError(w, err, "delete domain")
 		return
 	}
 
@@ -355,19 +424,23 @@ func (h *DomainHandlers) deleteDomain(w http.ResponseWriter, r *http.Request, na
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleDomainBackends handles /api/v1/domains/{name}/backends.
-func (h *DomainHandlers) handleDomainBackends(w http.ResponseWriter, r *http.Request, domainName string) {
+// handleDomainBackends handles /api/v1/domains/{name}/backends and
+// /api/v1/domains/{name}/backends/{id}.
+func (h *DomainHandlers) handleDomainBackends(w http.ResponseWriter, r *http.Request, domainName, backendID string) {
 	if h.provider == nil {
 		h.writeError(w, http.StatusServiceUnavailable, "domain provider not configured")
 		return
 	}
 
-	// Parse path to check for specific backend ID: /api/v1/domains/{name}/backends/{id}
-	path := r.URL.Path
-	backendsPrefix := "/api/v1/domains/" + domainName + "/backends"
-	backendID := ""
-	if strings.HasPrefix(path, backendsPrefix+"/") {
-		backendID = strings.TrimPrefix(path, backendsPrefix+"/")
+	if backendID != "" {
+		// A single backend supports DELETE only. Read and change it as a
+		// server: /api/v1/servers/{id}.
+		if r.Method != http.MethodDelete {
+			h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.removeDomainBackend(w, r, domainName, backendID)
+		return
 	}
 
 	switch r.Method {
@@ -376,11 +449,7 @@ func (h *DomainHandlers) handleDomainBackends(w http.ResponseWriter, r *http.Req
 	case http.MethodPost:
 		h.addDomainBackend(w, r, domainName)
 	case http.MethodDelete:
-		if backendID == "" {
-			h.writeError(w, http.StatusBadRequest, "backend ID required for delete")
-			return
-		}
-		h.removeDomainBackend(w, r, domainName, backendID)
+		h.writeError(w, http.StatusBadRequest, "backend ID required for delete")
 	default:
 		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -390,8 +459,11 @@ func (h *DomainHandlers) handleDomainBackends(w http.ResponseWriter, r *http.Req
 func (h *DomainHandlers) listDomainBackends(w http.ResponseWriter, r *http.Request, domainName string) {
 	backends, err := h.provider.GetDomainBackends(domainName)
 	if err != nil {
-		h.writeError(w, http.StatusNotFound, "domain not found: "+err.Error())
+		h.writeProviderError(w, err, "list backends")
 		return
+	}
+	if backends == nil {
+		backends = []BackendServer{}
 	}
 
 	resp := DomainBackendsResponse{
@@ -421,46 +493,43 @@ func (h *DomainHandlers) addDomainBackend(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	backend := DomainBackend{
-		ID:       fmt.Sprintf("%s:%s:%d", domainName, req.Address, req.Port),
-		Address:  req.Address,
-		Port:     req.Port,
-		Weight:   req.Weight,
-		Priority: req.Priority,
-		Region:   req.Region,
-		Enabled:  req.Enabled,
-		Healthy:  true, // Assume healthy until checked
-	}
-
-	// Set defaults
-	if backend.Weight == 0 {
-		backend.Weight = 1
-	}
-
-	if err := h.provider.AddDomainBackend(domainName, backend); err != nil {
-		h.logger.Error("failed to add backend to domain", "domain", domainName, "error", err)
-		h.writeError(w, http.StatusInternalServerError, "failed to add backend: "+err.Error())
+	backend, err := h.provider.AddDomainBackend(domainName, ServerSpec{
+		Service:     domainName,
+		Address:     req.Address,
+		Port:        req.Port,
+		Weight:      req.Weight,
+		Region:      req.Region,
+		Priority:    req.Priority,
+		Enabled:     req.Enabled == nil || *req.Enabled,
+		HealthCheck: req.HealthCheck,
+	})
+	if err != nil {
+		h.writeProviderError(w, err, "add backend")
 		return
 	}
 
 	h.logger.Info("backend added to domain", "domain", domainName, "address", req.Address, "port", req.Port)
-	h.writeJSON(w, http.StatusCreated, DomainBackendResponse{Backend: backend})
+	h.writeJSON(w, http.StatusCreated, DomainBackendResponse{Backend: *backend})
 }
 
 // removeDomainBackend handles DELETE /api/v1/domains/{name}/backends/{id}.
 func (h *DomainHandlers) removeDomainBackend(w http.ResponseWriter, r *http.Request, domainName, backendID string) {
 	if err := h.provider.RemoveDomainBackend(domainName, backendID); err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			h.writeError(w, http.StatusNotFound, err.Error())
-			return
-		}
-		h.logger.Error("failed to remove backend from domain", "domain", domainName, "backend", backendID, "error", err)
-		h.writeError(w, http.StatusInternalServerError, "failed to remove backend: "+err.Error())
+		h.writeProviderError(w, err, "remove backend")
 		return
 	}
 
 	h.logger.Info("backend removed from domain", "domain", domainName, "backend", backendID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeProviderError answers with the status a provider error maps to.
+func (h *DomainHandlers) writeProviderError(w http.ResponseWriter, err error, action string) {
+	status, message := errorStatus(err, action)
+	if status >= http.StatusInternalServerError {
+		h.logger.Error("domain API request failed", "action", action, "status", status, "error", err)
+	}
+	h.writeError(w, status, message)
 }
 
 // writeJSON writes a JSON response with the given status code.

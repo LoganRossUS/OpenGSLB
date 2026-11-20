@@ -1,5 +1,7 @@
 # Incident Response Playbook
 
+> **DNSSEC status: in development, not active.** Responses are unsigned in this release and the `/api/v1/dnssec/*` endpoints answer 404. The DNSSEC steps, commands, metrics and figures on this page describe the intended behavior and do not apply yet. See [Overwatch DNSSEC Settings](../../configuration.md#overwatch-dnssec-settings).
+
 This document provides a general framework for responding to OpenGSLB incidents.
 
 ## Incident Severity Levels
@@ -180,7 +182,7 @@ sudo systemctl reload opengslb-overwatch
 sum(rate(opengslb_dns_queries_total[5m]))
 
 # Error rate
-sum(rate(opengslb_dns_queries_total{status!="success"}[5m])) / sum(rate(opengslb_dns_queries_total[5m]))
+sum(rate(opengslb_dns_queries_total{status="SERVFAIL"}[5m])) / sum(rate(opengslb_dns_queries_total[5m]))
 
 # Healthy backends
 opengslb_overwatch_backends_healthy

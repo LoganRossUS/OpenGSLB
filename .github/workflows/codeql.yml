@@ -1,0 +1,59 @@
+name: CodeQL
+
+# Static analysis of the Go code with GitHub CodeQL. Results appear under the
+# repository's Security tab (Code scanning) and as annotations on pull requests.
+#
+# Pushes to main and develop are analyzed as well as pull requests, because
+# code scanning compares a pull request with the latest analysis of its base
+# branch to decide which alerts are new. The weekly run picks up new queries.
+#
+# This is an "advanced setup" workflow. If CodeQL "default setup" is switched
+# on in the repository settings, switch it off, or GitHub rejects the uploads
+# from this workflow.
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+  push:
+    branches:
+      - main
+      - develop
+  schedule:
+    - cron: '47 4 * * 3'  # Wednesdays 04:47 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL (Go)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to upload the results to code scanning.
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # CodeQL builds the module to extract it, so it needs the toolchain that
+      # go.mod asks for.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: go
+          build-mode: autobuild
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:go

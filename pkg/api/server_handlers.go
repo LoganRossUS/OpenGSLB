@@ -7,7 +7,9 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -15,67 +17,132 @@ import (
 )
 
 // BackendServerProvider defines the interface for server management operations.
+//
+// A server is one backend of one service (domain). The same objects are the
+// backends of GET /api/v1/domains/{name}/backends: there is one model, kept
+// in the overwatch backend registry, whatever endpoint created the object.
 type BackendServerProvider interface {
-	// ListServers returns all configured backend servers.
+	// ListServers returns all servers: from the configuration file, from
+	// agents and created through the API.
 	ListServers() []BackendServer
 	// GetServer returns a server by ID.
 	GetServer(id string) (*BackendServer, error)
-	// CreateServer creates a new server.
-	CreateServer(server BackendServer) error
-	// UpdateServer updates an existing server.
-	UpdateServer(id string, server BackendServer) error
+	// CreateServer creates a new server and returns it as stored.
+	CreateServer(spec ServerSpec) (*BackendServer, error)
+	// UpdateServer applies the set fields to a server created through the API.
+	UpdateServer(id string, update ServerUpdate) (*BackendServer, error)
 	// DeleteServer deletes a server by ID.
 	DeleteServer(id string) error
-	// GetServerHealthCheck returns the health check configuration for a server.
+	// GetServerHealthCheck returns the health check in effect for a server.
 	GetServerHealthCheck(id string) (*ServerHealthCheck, error)
-	// UpdateServerHealthCheck updates the health check configuration for a server.
-	UpdateServerHealthCheck(id string, config ServerHealthCheck) error
+	// UpdateServerHealthCheck changes the health check of a server created
+	// through the API. With replace, fields that are not set go back to the
+	// node-wide setting; without it they keep their value.
+	UpdateServerHealthCheck(id string, check ServerHealthCheckRequest, replace bool) (*ServerHealthCheck, error)
 }
 
-// BackendServer represents a backend server configuration.
+// BackendServer is a backend server as the API returns it, both under
+// /api/v1/servers and under /api/v1/domains/{name}/backends.
 type BackendServer struct {
-	ID          string             `json:"id,omitempty"`
-	Name        string             `json:"name"`
-	Address     string             `json:"address"`
-	Port        int                `json:"port"`
-	Protocol    string             `json:"protocol"`
-	Weight      int                `json:"weight"`
-	Priority    int                `json:"priority"`
-	Region      string             `json:"region"`
-	Enabled     bool               `json:"enabled"`
-	Healthy     bool               `json:"healthy"`
-	Description string             `json:"description,omitempty"`
-	Tags        []string           `json:"tags,omitempty"`
-	Metadata    map[string]string  `json:"metadata,omitempty"`
-	CreatedAt   time.Time          `json:"created_at,omitempty"`
-	UpdatedAt   time.Time          `json:"updated_at,omitempty"`
-	HealthCheck *ServerHealthCheck `json:"health_check,omitempty"`
-	Status      *ServerStatus      `json:"status,omitempty"`
+	// ID is "{service}:{address}:{port}".
+	ID string `json:"id"`
+	// Service is the name of the domain this server answers for. It is the
+	// link between a server and its domain.
+	Service string `json:"service"`
+	// Name is a deprecated alias of Service.
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+	// Protocol is deprecated and always "tcp"; see HealthCheck.Type.
+	Protocol string `json:"protocol"`
+	Weight   int    `json:"weight"`
+	// Priority is stored and returned; no routing algorithm reads it.
+	Priority int    `json:"priority"`
+	Region   string `json:"region"`
+	// Enabled is the administrative state. A disabled server is not answered in DNS.
+	Enabled bool `json:"enabled"`
+	// Healthy is true when the effective status of the server is healthy.
+	Healthy bool `json:"healthy"`
+	// Source says who owns the server: static (configuration file), agent or api.
+	Source string `json:"source"`
+	// Metadata carries status details as strings. Deprecated in favor of the
+	// typed fields; kept for existing clients.
+	Metadata  map[string]string `json:"metadata,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	UpdatedAt time.Time         `json:"updated_at"`
+	// LastCheck is the time of the last health check (Go zero time: never).
+	LastCheck time.Time `json:"last_check"`
+	// HealthCheck is the health check in effect for the server.
+	HealthCheck ServerHealthCheck `json:"health_check"`
 }
 
-// ServerHealthCheck represents health check configuration for a server.
+// ServerHealthCheck is the health check in effect for a server, as the API
+// returns it. Every field holds the value actually used: the server's own
+// setting where one was made through the API, the node-wide setting otherwise.
 type ServerHealthCheck struct {
-	Enabled            bool              `json:"enabled"`
-	Type               string            `json:"type"` // tcp, http, https, dns
-	Path               string            `json:"path,omitempty"`
-	Interval           time.Duration     `json:"interval"`
-	Timeout            time.Duration     `json:"timeout"`
-	HealthyThreshold   int               `json:"healthy_threshold"`
-	UnhealthyThreshold int               `json:"unhealthy_threshold"`
-	ExpectedStatus     int               `json:"expected_status,omitempty"`
-	ExpectedBody       string            `json:"expected_body,omitempty"`
-	Headers            map[string]string `json:"headers,omitempty"`
+	// Enabled is false when the overwatch does not probe the server.
+	Enabled bool `json:"enabled"`
+	// Type is http, https or tcp.
+	Type string `json:"type"`
+	// Path is the request path of an http or https check.
+	Path string `json:"path,omitempty"`
+	// Host is the Host header and TLS server name of an http or https check.
+	Host string `json:"host,omitempty"`
+	// Interval is the time between two checks, for example "30s".
+	Interval Duration `json:"interval"`
+	// Timeout is the time one check may take, for example "5s".
+	Timeout            Duration `json:"timeout"`
+	HealthyThreshold   int      `json:"healthy_threshold"`
+	UnhealthyThreshold int      `json:"unhealthy_threshold"`
 }
 
-// ServerStatus represents the current status of a server.
-type ServerStatus struct {
-	Healthy              bool       `json:"healthy"`
-	LastCheck            *time.Time `json:"last_check,omitempty"`
-	LastHealthy          *time.Time `json:"last_healthy,omitempty"`
-	ConsecutiveFailures  int        `json:"consecutive_failures"`
-	ConsecutiveSuccesses int        `json:"consecutive_successes"`
-	LastError            string     `json:"last_error,omitempty"`
-	ResponseTime         int64      `json:"response_time_ms,omitempty"`
+// ServerHealthCheckRequest is a health check as a client sends it. Every field
+// is optional. Fields that the overwatch cannot apply are refused, not ignored.
+type ServerHealthCheckRequest struct {
+	Enabled            *bool     `json:"enabled,omitempty"`
+	Type               *string   `json:"type,omitempty"`
+	Path               *string   `json:"path,omitempty"`
+	Host               *string   `json:"host,omitempty"`
+	Interval           *Duration `json:"interval,omitempty"`
+	Timeout            *Duration `json:"timeout,omitempty"`
+	HealthyThreshold   *int      `json:"healthy_threshold,omitempty"`
+	UnhealthyThreshold *int      `json:"unhealthy_threshold,omitempty"`
+}
+
+// UnmarshalJSON decodes a health check strictly. A field that is not part of
+// the contract (for example expected_status) is an error: a health check that
+// silently does less than what was asked for is worse than a refused request.
+func (r *ServerHealthCheckRequest) UnmarshalJSON(data []byte) error {
+	type plain ServerHealthCheckRequest
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var p plain
+	if err := dec.Decode(&p); err != nil {
+		return fmt.Errorf("health check: %w", err)
+	}
+	*r = ServerHealthCheckRequest(p)
+	return nil
+}
+
+// ServerSpec describes a server to create.
+type ServerSpec struct {
+	Service     string
+	Address     string
+	Port        int
+	Weight      int
+	Region      string
+	Priority    int
+	Enabled     bool
+	HealthCheck *ServerHealthCheckRequest
+}
+
+// ServerUpdate holds the changes to a server. A nil field is left as it is.
+type ServerUpdate struct {
+	Weight      *int
+	Region      *string
+	Priority    *int
+	Enabled     *bool
+	HealthCheck *ServerHealthCheckRequest
 }
 
 // ServerListResponse is the response for GET /api/v1/servers.
@@ -98,34 +165,47 @@ type ServerHealthCheckResponse struct {
 
 // ServerCreateRequest is the request body for creating a server.
 type ServerCreateRequest struct {
-	Name        string             `json:"name"`
-	Address     string             `json:"address"`
-	Port        int                `json:"port"`
-	Protocol    string             `json:"protocol"`
-	Weight      int                `json:"weight"`
-	Priority    int                `json:"priority"`
-	Region      string             `json:"region"`
-	Enabled     bool               `json:"enabled"`
-	Description string             `json:"description,omitempty"`
-	Tags        []string           `json:"tags,omitempty"`
-	Metadata    map[string]string  `json:"metadata,omitempty"`
-	HealthCheck *ServerHealthCheck `json:"health_check,omitempty"`
+	// Service is the domain the server belongs to.
+	Service string `json:"service"`
+	// Name is a deprecated alias of Service, used when Service is empty.
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+	Weight  int    `json:"weight"`
+	// Priority is stored and returned; no routing algorithm reads it.
+	Priority int    `json:"priority"`
+	Region   string `json:"region"`
+	// Enabled defaults to true when it is left out.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Metadata: only the deprecated key "service" is read, as an alias of Service.
+	Metadata    map[string]string         `json:"metadata,omitempty"`
+	HealthCheck *ServerHealthCheckRequest `json:"health_check,omitempty"`
 }
 
-// ServerUpdateRequest is the request body for updating a server.
+// service returns the domain the request names, in order of preference:
+// service, metadata.service (deprecated), name (deprecated).
+func (r *ServerCreateRequest) service() string {
+	if r.Service != "" {
+		return r.Service
+	}
+	if svc := r.Metadata["service"]; svc != "" {
+		return svc
+	}
+	return r.Name
+}
+
+// ServerUpdateRequest is the request body for updating a server. Service,
+// address and port identify the server: they are accepted only when they
+// repeat the current value.
 type ServerUpdateRequest struct {
-	Name        *string            `json:"name,omitempty"`
-	Address     *string            `json:"address,omitempty"`
-	Port        *int               `json:"port,omitempty"`
-	Protocol    *string            `json:"protocol,omitempty"`
-	Weight      *int               `json:"weight,omitempty"`
-	Priority    *int               `json:"priority,omitempty"`
-	Region      *string            `json:"region,omitempty"`
-	Enabled     *bool              `json:"enabled,omitempty"`
-	Description *string            `json:"description,omitempty"`
-	Tags        []string           `json:"tags,omitempty"`
-	Metadata    map[string]string  `json:"metadata,omitempty"`
-	HealthCheck *ServerHealthCheck `json:"health_check,omitempty"`
+	Service     *string                   `json:"service,omitempty"`
+	Address     *string                   `json:"address,omitempty"`
+	Port        *int                      `json:"port,omitempty"`
+	Weight      *int                      `json:"weight,omitempty"`
+	Priority    *int                      `json:"priority,omitempty"`
+	Region      *string                   `json:"region,omitempty"`
+	Enabled     *bool                     `json:"enabled,omitempty"`
+	HealthCheck *ServerHealthCheckRequest `json:"health_check,omitempty"`
 }
 
 // ServerHandlers provides HTTP handlers for server API endpoints.
@@ -248,7 +328,7 @@ func (h *ServerHandlers) getServer(w http.ResponseWriter, r *http.Request, id st
 
 	server, err := h.provider.GetServer(id)
 	if err != nil {
-		h.writeError(w, http.StatusNotFound, "server not found: "+err.Error())
+		h.writeProviderError(w, err, "get server")
 		return
 	}
 
@@ -277,40 +357,29 @@ func (h *ServerHandlers) createServer(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "port is required")
 		return
 	}
-
-	server := BackendServer{
-		Name:        req.Name,
-		Address:     req.Address,
-		Port:        req.Port,
-		Protocol:    req.Protocol,
-		Weight:      req.Weight,
-		Priority:    req.Priority,
-		Region:      req.Region,
-		Enabled:     req.Enabled,
-		Description: req.Description,
-		Tags:        req.Tags,
-		Metadata:    req.Metadata,
-		HealthCheck: req.HealthCheck,
-		CreatedAt:   time.Now().UTC(),
-		UpdatedAt:   time.Now().UTC(),
-	}
-
-	// Set defaults
-	if server.Protocol == "" {
-		server.Protocol = "tcp"
-	}
-	if server.Weight == 0 {
-		server.Weight = 1
-	}
-
-	if err := h.provider.CreateServer(server); err != nil {
-		h.logger.Error("failed to create server", "address", req.Address, "error", err)
-		h.writeError(w, http.StatusInternalServerError, "failed to create server: "+err.Error())
+	service := req.service()
+	if service == "" {
+		h.writeError(w, http.StatusBadRequest, "service is required: the name of the domain this server belongs to")
 		return
 	}
 
-	h.logger.Info("server created", "address", req.Address, "port", req.Port)
-	h.writeJSON(w, http.StatusCreated, ServerResponse{Server: server})
+	server, err := h.provider.CreateServer(ServerSpec{
+		Service:     service,
+		Address:     req.Address,
+		Port:        req.Port,
+		Weight:      req.Weight,
+		Region:      req.Region,
+		Priority:    req.Priority,
+		Enabled:     req.Enabled == nil || *req.Enabled,
+		HealthCheck: req.HealthCheck,
+	})
+	if err != nil {
+		h.writeProviderError(w, err, "create server")
+		return
+	}
+
+	h.logger.Info("server created", "id", server.ID)
+	h.writeJSON(w, http.StatusCreated, ServerResponse{Server: *server})
 }
 
 // updateServer handles PUT/PATCH /api/v1/servers/{id}.
@@ -323,7 +392,7 @@ func (h *ServerHandlers) updateServer(w http.ResponseWriter, r *http.Request, id
 	// Get existing server
 	existing, err := h.provider.GetServer(id)
 	if err != nil {
-		h.writeError(w, http.StatusNotFound, "server not found: "+err.Error())
+		h.writeProviderError(w, err, "update server")
 		return
 	}
 
@@ -333,53 +402,29 @@ func (h *ServerHandlers) updateServer(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	// Apply updates
-	if req.Name != nil {
-		existing.Name = *req.Name
+	// The identity of a server cannot be changed.
+	if (req.Service != nil && *req.Service != existing.Service) ||
+		(req.Address != nil && *req.Address != existing.Address) ||
+		(req.Port != nil && *req.Port != existing.Port) {
+		h.writeError(w, http.StatusBadRequest,
+			"service, address and port identify a server and cannot be changed; delete the server and create a new one")
+		return
 	}
-	if req.Address != nil {
-		existing.Address = *req.Address
-	}
-	if req.Port != nil {
-		existing.Port = *req.Port
-	}
-	if req.Protocol != nil {
-		existing.Protocol = *req.Protocol
-	}
-	if req.Weight != nil {
-		existing.Weight = *req.Weight
-	}
-	if req.Priority != nil {
-		existing.Priority = *req.Priority
-	}
-	if req.Region != nil {
-		existing.Region = *req.Region
-	}
-	if req.Enabled != nil {
-		existing.Enabled = *req.Enabled
-	}
-	if req.Description != nil {
-		existing.Description = *req.Description
-	}
-	if req.Tags != nil {
-		existing.Tags = req.Tags
-	}
-	if req.Metadata != nil {
-		existing.Metadata = req.Metadata
-	}
-	if req.HealthCheck != nil {
-		existing.HealthCheck = req.HealthCheck
-	}
-	existing.UpdatedAt = time.Now().UTC()
 
-	if err := h.provider.UpdateServer(id, *existing); err != nil {
-		h.logger.Error("failed to update server", "id", id, "error", err)
-		h.writeError(w, http.StatusInternalServerError, "failed to update server: "+err.Error())
+	server, err := h.provider.UpdateServer(id, ServerUpdate{
+		Weight:      req.Weight,
+		Region:      req.Region,
+		Priority:    req.Priority,
+		Enabled:     req.Enabled,
+		HealthCheck: req.HealthCheck,
+	})
+	if err != nil {
+		h.writeProviderError(w, err, "update server")
 		return
 	}
 
 	h.logger.Info("server updated", "id", id)
-	h.writeJSON(w, http.StatusOK, ServerResponse{Server: *existing})
+	h.writeJSON(w, http.StatusOK, ServerResponse{Server: *server})
 }
 
 // deleteServer handles DELETE /api/v1/servers/{id}.
@@ -390,12 +435,7 @@ func (h *ServerHandlers) deleteServer(w http.ResponseWriter, r *http.Request, id
 	}
 
 	if err := h.provider.DeleteServer(id); err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			h.writeError(w, http.StatusNotFound, "server not found")
-			return
-		}
-		h.logger.Error("failed to delete server", "id", id, "error", err)
-		h.writeError(w, http.StatusInternalServerError, "failed to delete server: "+err.Error())
+		h.writeProviderError(w, err, "delete server")
 		return
 	}
 
@@ -412,38 +452,48 @@ func (h *ServerHandlers) handleServerHealthCheck(w http.ResponseWriter, r *http.
 
 	switch r.Method {
 	case http.MethodGet:
-		config, err := h.provider.GetServerHealthCheck(serverID)
+		check, err := h.provider.GetServerHealthCheck(serverID)
 		if err != nil {
-			h.writeError(w, http.StatusNotFound, "server not found: "+err.Error())
+			h.writeProviderError(w, err, "get health check")
 			return
 		}
 		h.writeJSON(w, http.StatusOK, ServerHealthCheckResponse{
 			ServerID:    serverID,
-			HealthCheck: *config,
+			HealthCheck: *check,
 		})
 
 	case http.MethodPut, http.MethodPatch:
-		var config ServerHealthCheck
-		if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		var req ServerHealthCheckRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			h.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 			return
 		}
 
-		if err := h.provider.UpdateServerHealthCheck(serverID, config); err != nil {
-			h.logger.Error("failed to update health check", "server_id", serverID, "error", err)
-			h.writeError(w, http.StatusInternalServerError, "failed to update health check: "+err.Error())
+		// PUT replaces the server's health check, PATCH changes the given fields.
+		check, err := h.provider.UpdateServerHealthCheck(serverID, req, r.Method == http.MethodPut)
+		if err != nil {
+			h.writeProviderError(w, err, "update health check")
 			return
 		}
 
 		h.logger.Info("server health check updated", "server_id", serverID)
 		h.writeJSON(w, http.StatusOK, ServerHealthCheckResponse{
 			ServerID:    serverID,
-			HealthCheck: config,
+			HealthCheck: *check,
 		})
 
 	default:
 		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// writeProviderError answers with the status a provider error maps to.
+func (h *ServerHandlers) writeProviderError(w http.ResponseWriter, err error, action string) {
+	status, message := errorStatus(err, action)
+	if status >= http.StatusInternalServerError {
+		h.logger.Error("server API request failed", "action", action, "status", status, "error", err)
+	}
+	h.writeError(w, status, message)
 }
 
 // writeJSON writes a JSON response with the given status code.

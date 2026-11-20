@@ -22,6 +22,8 @@ This guide covers common issues and their solutions for Agent and Overwatch mode
 - `dig` returns `status: SERVFAIL`
 - No IP addresses in DNS response
 
+SERVFAIL means one thing: the domain has servers of the queried address family (IPv4 for A, IPv6 for AAAA) and none of them is usable right now. A domain with no server of that family at all is not SERVFAIL; see [DNS Queries Return No Records](#dns-queries-return-no-records-noerror-with-an-empty-answer).
+
 **Possible Causes:**
 
 1. **All backend servers unhealthy**
@@ -46,11 +48,15 @@ This guide covers common issues and their solutions for Agent and Overwatch mode
    journalctl -u opengslb | grep -i "validation\|error"
    ```
 
+If an answer that may be dead is better than no answer, set `dns.return_last_healthy: true`. The server then answers from the configured servers while all of them are unhealthy and counts those answers in `opengslb_dns_last_healthy_answers_total`.
+
 ### DNS Queries Return NXDOMAIN
 
 **Symptoms:**
 - `dig` returns `status: NXDOMAIN`
 - Domain exists in configuration but not resolved
+
+NXDOMAIN means the name is inside a zone this Overwatch serves and nothing exists at or below it. The response carries the zone SOA in the authority section, and resolvers cache it for the SOA's negative TTL (`soa.negative_ttl`, 60 seconds by default).
 
 **Possible Causes:**
 
@@ -60,12 +66,57 @@ This guide covers common issues and their solutions for Agent and Overwatch mode
    curl http://localhost:8080/api/v1/health/servers | jq '.servers[].domain' | sort -u
    ```
 
-2. **Domain name mismatch** (trailing dot, case sensitivity)
-   - DNS queries include trailing dot: `app.example.com.`
-   - Configuration should not include trailing dot: `app.example.com`
+2. **Domain name mismatch**
+   - Compare the queried name with the configured domain name label by label. Case does not matter (`APP.Example.COM` finds `app.example.com`) and neither does a trailing dot.
 
-3. **No servers in domain's regions**
-   - Check that the domain references valid regions with servers
+3. **The domain was created a moment ago**
+   - A resolver that asked for the name before it existed keeps the NXDOMAIN for up to the negative TTL. Query the Overwatch directly (`dig @overwatch-ip name`) to tell a cached answer from a current one.
+
+A domain that exists but has no servers is not NXDOMAIN: it gets an empty answer (next section).
+
+### DNS Queries Return No Records (NOERROR with an Empty Answer)
+
+**Symptoms:**
+- `dig` returns `status: NOERROR` with `ANSWER: 0` and an SOA record in the authority section
+
+The name exists but has no record of the queried type.
+
+**Possible Causes:**
+
+1. **No server of the queried address family**: an AAAA query for a domain that has only IPv4 servers, or an A query for a domain that has only IPv6 servers. This is the correct answer; dual-stack clients use the family that did resolve.
+2. **No servers in the domain's regions**: check that the domain references regions with servers whose `service` is the domain name.
+3. **A record type OpenGSLB does not serve**: TXT, MX, CNAME, HTTPS, ANY and every other type except A and AAAA (and SOA and NS at a zone apex) get an empty answer.
+4. **The name is only a parent of a domain**: `eu.gslb.example.com` has no records of its own when only `app.eu.gslb.example.com` is configured.
+
+### DNS Queries Return REFUSED
+
+**Symptoms:**
+- `dig` returns `status: REFUSED`, without the `aa` flag
+
+The name is outside every zone this Overwatch serves. OpenGSLB is authoritative-only and does not recurse, so it refuses names it is not responsible for (for example `www.google.com`).
+
+**Possible Causes:**
+
+1. **A client or resolver uses the Overwatch as its recursive resolver.** Point clients at a recursive resolver and delegate (or forward) only the GSLB zone to the Overwatches.
+2. **The zone is not listed in `dns.zones`.** Without the zone, only the configured domains themselves and names beneath them are served; a query for another name under the same parent is refused. Add the zone:
+   ```yaml
+   dns:
+     zones:
+       - gslb.example.com
+   ```
+3. **Zone transfer**: AXFR and IXFR are always refused.
+
+### DNS Responses Are Truncated
+
+**Symptoms:**
+- `dig` prints `;; Truncated, retrying in TCP mode.`
+- Resolver logs show TCP retries
+
+A UDP response is limited to the size the client advertises with EDNS (512 bytes without EDNS) and to `dns.max_udp_size` (1232 by default). A larger response is sent with the TC bit and the client asks again over TCP. A and AAAA answers hold one record and always fit; a large NS record set at a zone apex may not.
+
+**Solutions:**
+- Make sure TCP port 53 is reachable from your resolvers, not only UDP.
+- Raise `dns.max_udp_size` (up to 4096) only if the path between resolvers and Overwatch carries packets of that size without fragmentation.
 
 ### High DNS Query Latency
 

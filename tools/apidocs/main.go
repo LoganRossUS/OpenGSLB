@@ -52,7 +52,7 @@ func run(specPath, outPath string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", specPath, err)
 	}
-	if err := os.WriteFile(outPath, res.Markdown, 0o644); err != nil {
+	if err := os.WriteFile(outPath, res.Markdown, 0o644); err != nil { // #nosec G306 -- docs/api.md is a tracked documentation file
 		return err
 	}
 	fmt.Printf("wrote %s: %d operations, %d schemas\n", outPath, res.Operations, res.Schemas)

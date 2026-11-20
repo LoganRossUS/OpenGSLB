@@ -43,6 +43,33 @@ jobs:
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
 
+      # Build the image into the local Docker daemon first so it can be
+      # scanned. Nothing has been pushed at this point.
+      - name: Build Docker image for scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: opengslb:scan
+          cache-from: type=gha
+
+      # Fails the job, and so skips the push below, when the image contains a
+      # HIGH or CRITICAL vulnerability: in an Alpine package or in the Go
+      # binary (standard library and modules). To accept a finding that cannot
+      # be fixed yet, list its ID in a .trivyignore file at the repository
+      # root with a comment that gives the reason.
+      # The action is pinned to a commit because it has no moving major tag.
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: opengslb:scan
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          format: table
+
+      # Same build inputs as the scanned image; the layers come from the
+      # build cache of the step above.
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:

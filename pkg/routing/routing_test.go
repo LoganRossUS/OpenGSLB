@@ -119,3 +119,29 @@ func TestSimpleServerPool(t *testing.T) {
 		t.Errorf("expected 2 servers, got %d", len(result))
 	}
 }
+
+// Routers that decide by client address declare it, so that the DNS handler
+// can set the EDNS Client Subnet scope of the response. The others must not.
+func TestClientAwareRouters(t *testing.T) {
+	aware := []Router{
+		NewGeoRouter(GeoRouterConfig{}),
+		NewLearnedLatencyRouter(LearnedLatencyRouterConfig{}),
+	}
+	for _, r := range aware {
+		ca, ok := r.(ClientAware)
+		if !ok || !ca.UsesClientIP() {
+			t.Errorf("%s router must implement ClientAware and report true", r.Algorithm())
+		}
+	}
+
+	unaware := []Router{
+		NewRoundRobinRouter(),
+		NewWeightedRouter(),
+		NewFailoverRouter(),
+	}
+	for _, r := range unaware {
+		if ca, ok := r.(ClientAware); ok && ca.UsesClientIP() {
+			t.Errorf("%s router does not use the client address", r.Algorithm())
+		}
+	}
+}

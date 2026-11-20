@@ -25,8 +25,10 @@ See [LICENSE](LICENSE) for full terms.
 - **A and AAAA Records**: Full IPv4 and IPv6 support with automatic address family filtering
 - **UDP and TCP**: Handles both transport protocols
 - **Configurable TTL**: Per-domain TTL settings with global default fallback
-- **Authoritative Responses**: Returns proper NXDOMAIN, SERVFAIL, and NOERROR responses
-- **DNSSEC**: Automatic key management with zone signing and DS record generation
+- **Authoritative Responses**: Case-insensitive lookups that echo the querier's spelling (0x20-safe), NXDOMAIN and empty NOERROR answers with the zone SOA for negative caching (RFC 2308), REFUSED for names outside the served zones, SERVFAIL only when every server of the queried address family is down
+- **Zone Apex Records**: SOA and NS at each zone apex, configurable per zone in `dns.zones` with defaults derived from the node identity
+- **EDNS(0)**: OPT record in the response when the query has one, UDP responses limited to the requester's size and capped at 1232 bytes by default, truncation with the TC bit and full answers over TCP
+- **DNSSEC** (in development, not active): the signing code exists but is not connected to the DNS server yet. Responses are unsigned; see [docs/configuration.md](docs/configuration.md#overwatch-dnssec-settings)
 
 ### Routing Algorithms
 - **Round-Robin**: Even distribution across healthy servers with per-domain rotation
@@ -84,8 +86,12 @@ docker run -d \
   -p 53:53/tcp \
   -p 9090:9090 \
   -v $(pwd)/config.yaml:/etc/opengslb/config.yaml \
+  -v opengslb-data:/var/lib/opengslb \
   ghcr.io/loganrossus/opengslb:latest
 ```
+
+The `opengslb-data` volume keeps the overwatch store (domains and servers created through the API) or the
+agent certificate when the container is replaced. See the [Docker guide](docs/docker.md#persistent-data).
 
 ### Test It
 
@@ -199,7 +205,6 @@ Full documentation is available at **[docs.opengslb.org](https://docs.opengslb.o
 - ✅ HTTP and TCP health checks
 - ✅ Predictive health monitoring (CPU, memory, error rate)
 - ✅ Agent-Overwatch distributed architecture
-- ✅ DNSSEC support with automatic key management
 - ✅ Server management CRUD API
 - ✅ Multi-file configuration with includes
 - ✅ Prometheus metrics and structured logging
@@ -228,6 +233,10 @@ Full documentation is available at **[docs.opengslb.org](https://docs.opengslb.o
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and workflow.
+
+## Security
+
+To report a vulnerability, follow [SECURITY.md](SECURITY.md). Please do not open a public issue for security problems.
 
 ## Support the Project
 

@@ -210,7 +210,7 @@ func (id *Identity) generateCredentials(certPath, keyPath string) error {
 	}
 
 	// Write certificate file
-	if err := os.WriteFile(certPath, certPEM, 0644); err != nil {
+	if err := os.WriteFile(certPath, certPEM, 0644); err != nil { // #nosec G306 -- a certificate is public; the private key below is written 0600
 		return fmt.Errorf("failed to write certificate: %w", err)
 	}
 

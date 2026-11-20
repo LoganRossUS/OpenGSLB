@@ -12,6 +12,7 @@ package overwatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -160,6 +161,78 @@ type Backend struct {
 	// HealthCheckType is the type of health check to use for validation (http, tcp).
 	// v1.1.1: Added to fix latency routing fallback to round-robin when using TCP health checks.
 	HealthCheckType string `json:"health_check_type,omitempty"`
+
+	// HealthCheck holds the validation settings set for this one backend
+	// through the API. nil, or a zero field in it, means the node-wide
+	// validation settings apply.
+	HealthCheck *BackendHealthCheck `json:"health_check,omitempty"`
+
+	// Disabled is the administrative state set through the API (enabled=false).
+	// A disabled backend stays registered and keeps being validated, but it is
+	// not answered in DNS. It is stored inverted so that records written before
+	// the field existed read as enabled.
+	Disabled bool `json:"disabled,omitempty"`
+
+	// Priority is an operator-assigned ordering hint set through the API. It is
+	// stored and returned; no routing algorithm reads it.
+	Priority int `json:"priority,omitempty"`
+}
+
+// BackendHealthCheck is the validation check of one backend, set through the
+// API. Every zero value means "use the node-wide setting"
+// (overwatch.validation in the configuration file).
+type BackendHealthCheck struct {
+	// Disabled turns external validation off for this backend. The backend is
+	// then healthy unless an agent, an override or draining says otherwise.
+	Disabled bool `json:"disabled,omitempty"`
+	// Type is http, https or tcp. Empty means the backend's HealthCheckType.
+	Type string `json:"type,omitempty"`
+	// Path is the request path of an http or https check. Empty means "/".
+	Path string `json:"path,omitempty"`
+	// Host is the Host header and TLS server name of an http or https check.
+	Host string `json:"host,omitempty"`
+	// Interval is the time between two checks of this backend.
+	Interval time.Duration `json:"interval,omitempty"`
+	// Timeout is the time one check may take.
+	Timeout time.Duration `json:"timeout,omitempty"`
+	// HealthyThreshold is the number of consecutive passing checks before the
+	// validation verdict turns healthy.
+	HealthyThreshold int `json:"healthy_threshold,omitempty"`
+	// UnhealthyThreshold is the number of consecutive failed checks before the
+	// validation verdict turns unhealthy.
+	UnhealthyThreshold int `json:"unhealthy_threshold,omitempty"`
+}
+
+// Errors returned by the registry so that callers can tell the cases apart
+// with errors.Is.
+var (
+	// ErrBackendExists is returned when a backend is registered a second time.
+	ErrBackendExists = errors.New("backend already exists")
+	// ErrBackendNotFound is returned when a backend is not in the registry.
+	ErrBackendNotFound = errors.New("backend not found")
+)
+
+// APIBackend describes a backend registered through the API.
+type APIBackend struct {
+	Service     string
+	Address     string
+	Port        int
+	Weight      int
+	Region      string
+	Priority    int
+	Disabled    bool
+	HealthCheck *BackendHealthCheck
+}
+
+// CheckType returns the scheme the validator uses for this backend.
+func (b *Backend) CheckType() string {
+	if b.HealthCheck != nil && b.HealthCheck.Type != "" {
+		return b.HealthCheck.Type
+	}
+	if b.HealthCheckType != "" {
+		return b.HealthCheckType
+	}
+	return "http" // Default to HTTP for backwards compatibility
 }
 
 // RegistryConfig configures the backend registry.
@@ -207,7 +280,10 @@ type Registry struct {
 	config   RegistryConfig
 	store    store.Store
 	backends map[string]*Backend // key: "service:address:port"
-	mu       sync.RWMutex
+	// byEndpoint indexes the same backends by address and port for the DNS
+	// query path. It is maintained by putBackend and removeBackend.
+	byEndpoint map[endpointKey][]*Backend
+	mu         sync.RWMutex
 
 	// Callbacks
 	onStatusChange func(backend *Backend, oldStatus, newStatus BackendStatus)
@@ -236,6 +312,8 @@ func NewRegistry(cfg RegistryConfig, st store.Store) *Registry {
 		backends: make(map[string]*Backend),
 		ctx:      ctx,
 		cancel:   cancel,
+
+		byEndpoint: make(map[endpointKey][]*Backend),
 	}
 }
 
@@ -297,7 +375,7 @@ func (r *Registry) Register(agentID, region, service, address string, port, weig
 			AgentLastSeen:   now,
 			EffectiveStatus: StatusHealthy,
 		}
-		r.backends[key] = backend
+		r.putBackend(key, backend)
 		r.config.Logger.Info("backend registered",
 			"service", service,
 			"address", address,
@@ -371,7 +449,7 @@ func (r *Registry) RegisterStatic(service, address string, port, weight int, reg
 			EffectiveStatus: StatusHealthy, // Assume healthy until validated
 			HealthCheckType: healthCheckType,
 		}
-		r.backends[key] = backend
+		r.putBackend(key, backend)
 		r.config.Logger.Info("static backend registered",
 			"service", service,
 			"address", address,
@@ -423,23 +501,38 @@ func (r *Registry) RegisterStatic(service, address string, port, weight int, reg
 // RegisterAPI registers a backend via API call.
 // v1.1.0: API-registered servers use same validation as agent and static servers.
 func (r *Registry) RegisterAPI(service, address string, port, weight int, region string) error {
+	return r.RegisterAPIBackend(APIBackend{
+		Service: service,
+		Address: address,
+		Port:    port,
+		Weight:  weight,
+		Region:  region,
+	})
+}
+
+// RegisterAPIBackend registers a backend created through the API, with its
+// administrative state and its own health check. It returns an error that
+// wraps ErrBackendExists when the backend is already registered.
+func (r *Registry) RegisterAPIBackend(spec APIBackend) error {
 	r.mu.Lock()
 
-	key := backendKey(service, address, port)
+	key := backendKey(spec.Service, spec.Address, spec.Port)
 
 	// Check if already exists
 	if _, exists := r.backends[key]; exists {
 		r.mu.Unlock()
-		return fmt.Errorf("server already exists: %s", key)
+		return fmt.Errorf("%w: %s", ErrBackendExists, key)
 	}
 
 	now := time.Now()
 	backend := &Backend{
-		Service:         service,
-		Address:         address,
-		Port:            port,
-		Weight:          weight,
-		Region:          region,
+		Service:         spec.Service,
+		Address:         spec.Address,
+		Port:            spec.Port,
+		Weight:          spec.Weight,
+		Region:          spec.Region,
+		Priority:        spec.Priority,
+		Disabled:        spec.Disabled,
 		Source:          SourceAPI, // v1.1.0: Mark as API-registered
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -448,8 +541,12 @@ func (r *Registry) RegisterAPI(service, address string, port, weight int, region
 		AgentLastSeen:   now,           // Initialize to prevent immediate staleness
 		EffectiveStatus: StatusHealthy, // Assume healthy until validated
 	}
+	if spec.HealthCheck != nil {
+		hc := *spec.HealthCheck
+		backend.HealthCheck = &hc
+	}
 
-	r.backends[key] = backend
+	r.putBackend(key, backend)
 	r.computeEffectiveStatus(backend)
 	newStatus := backend.EffectiveStatus
 
@@ -464,10 +561,10 @@ func (r *Registry) RegisterAPI(service, address string, port, weight int, region
 	}
 
 	r.config.Logger.Info("API backend registered",
-		"service", service,
-		"address", address,
-		"port", port,
-		"region", region,
+		"service", spec.Service,
+		"address", spec.Address,
+		"port", spec.Port,
+		"region", spec.Region,
 		"source", "api",
 	)
 
@@ -482,6 +579,85 @@ func (r *Registry) RegisterAPI(service, address string, port, weight int, region
 	return nil
 }
 
+// Modify applies fn to a registered backend and returns the result. fn runs
+// under the registry lock and may change the weight, region, priority,
+// administrative state and health check; when it returns an error nothing is
+// changed. The status-change callback is called after every successful
+// modification, also when the effective status is the same, so that listeners
+// (the DNS registry) pick up a new weight, region or administrative state.
+// It returns an error that wraps ErrBackendNotFound for an unknown backend.
+func (r *Registry) Modify(service, address string, port int, fn func(b *Backend) error) (*Backend, error) {
+	r.mu.Lock()
+
+	key := backendKey(service, address, port)
+	backend, exists := r.backends[key]
+	if !exists {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("%w: %s", ErrBackendNotFound, key)
+	}
+
+	// Work on a copy so that a failing fn leaves the backend untouched.
+	updated := *backend
+	if backend.HealthCheck != nil {
+		hc := *backend.HealthCheck
+		updated.HealthCheck = &hc
+	}
+	if err := fn(&updated); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
+
+	// The identity and the bookkeeping of a backend are not for fn to change.
+	updated.Service, updated.Address, updated.Port = backend.Service, backend.Address, backend.Port
+	updated.Source, updated.CreatedAt = backend.Source, backend.CreatedAt
+	updated.UpdatedAt = time.Now()
+
+	oldStatus := backend.EffectiveStatus
+	if updated.Region != backend.Region {
+		// The health gauge is labeled by region: drop the old series.
+		metrics.DeleteBackendHealthy(backend.Service, backend.Region, backend.Address, backend.Port)
+	}
+	if updated.HealthCheck != nil && updated.HealthCheck.Disabled {
+		// No validation for this backend any more: forget the last verdict.
+		updated.ValidationHealthy = nil
+		updated.ValidationError = ""
+		updated.ValidationConsecutivePasses = 0
+		updated.ValidationConsecutiveFails = 0
+	}
+	*backend = updated
+	r.computeEffectiveStatus(backend)
+	newStatus := backend.EffectiveStatus
+
+	// Make a copy for the callback and the caller
+	backendCopy := *backend
+	result := *backend
+
+	// Persist to store
+	if r.store != nil {
+		if err := r.persistBackend(backend); err != nil {
+			r.config.Logger.Warn("failed to persist backend", "key", key, "error", err)
+		}
+	}
+
+	r.config.Logger.Info("backend modified",
+		"service", service,
+		"address", address,
+		"port", port,
+		"weight", backend.Weight,
+		"region", backend.Region,
+		"disabled", backend.Disabled,
+	)
+
+	// Release lock before calling callback
+	r.mu.Unlock()
+
+	if r.onStatusChange != nil {
+		r.onStatusChange(&backendCopy, oldStatus, newStatus)
+	}
+
+	return &result, nil
+}
+
 // Update updates an existing backend's weight and/or region.
 // v1.1.0: Supports updating backends registered via API or static config.
 func (r *Registry) Update(service, address string, port, weight int, region string) error {
@@ -491,7 +667,7 @@ func (r *Registry) Update(service, address string, port, weight int, region stri
 	backend, exists := r.backends[key]
 	if !exists {
 		r.mu.Unlock()
-		return fmt.Errorf("backend %s not found", key)
+		return fmt.Errorf("%w: %s", ErrBackendNotFound, key)
 	}
 
 	// Update fields
@@ -541,14 +717,14 @@ func (r *Registry) Deregister(service, address string, port int) error {
 	backend, exists := r.backends[key]
 	if !exists {
 		r.mu.Unlock()
-		return fmt.Errorf("backend %s not found", key)
+		return fmt.Errorf("%w: %s", ErrBackendNotFound, key)
 	}
 
 	// Make a copy before deletion
 	backendCopy := *backend
 	oldStatus := backend.EffectiveStatus
 
-	delete(r.backends, key)
+	r.removeBackend(key)
 	metrics.DeleteBackendHealthy(backend.Service, backend.Region, backend.Address, backend.Port)
 
 	r.config.Logger.Info("backend deregistered",
@@ -633,12 +809,24 @@ func (r *Registry) UpdateValidationWithLatency(service, address string, port int
 // at 1 (the default) the latest probe is the verdict, so a backend leaves DNS
 // on the first failed probe and returns on the first passing one.
 func (r *Registry) applyValidationResult(backend *Backend, healthy bool) {
+	successThreshold := r.config.ValidationSuccessThreshold
+	failureThreshold := r.config.ValidationFailureThreshold
+	if hc := backend.HealthCheck; hc != nil {
+		// A backend with its own health check may carry its own thresholds.
+		if hc.HealthyThreshold > 0 {
+			successThreshold = hc.HealthyThreshold
+		}
+		if hc.UnhealthyThreshold > 0 {
+			failureThreshold = hc.UnhealthyThreshold
+		}
+	}
+
 	if healthy {
 		backend.ValidationConsecutiveFails = 0
-		if backend.ValidationConsecutivePasses < r.config.ValidationSuccessThreshold {
+		if backend.ValidationConsecutivePasses < successThreshold {
 			backend.ValidationConsecutivePasses++
 		}
-		if backend.ValidationConsecutivePasses >= r.config.ValidationSuccessThreshold {
+		if backend.ValidationConsecutivePasses >= successThreshold {
 			verdict := true
 			backend.ValidationHealthy = &verdict
 		}
@@ -646,10 +834,10 @@ func (r *Registry) applyValidationResult(backend *Backend, healthy bool) {
 	}
 
 	backend.ValidationConsecutivePasses = 0
-	if backend.ValidationConsecutiveFails < r.config.ValidationFailureThreshold {
+	if backend.ValidationConsecutiveFails < failureThreshold {
 		backend.ValidationConsecutiveFails++
 	}
-	if backend.ValidationConsecutiveFails >= r.config.ValidationFailureThreshold {
+	if backend.ValidationConsecutiveFails >= failureThreshold {
 		verdict := false
 		backend.ValidationHealthy = &verdict
 	}
@@ -890,13 +1078,15 @@ func (r *Registry) IsHealthy(address string, port int) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// Search for backend by address:port (service-agnostic for DNS)
-	for _, backend := range r.backends {
-		if backend.Address == address && backend.Port == port {
-			return backend.EffectiveStatus == StatusHealthy
+	// Look the backend up by address:port (service-agnostic for DNS). With
+	// several services at one endpoint, all of them must be healthy.
+	list := r.byEndpoint[endpointKey{address: address, port: port}]
+	for _, backend := range list {
+		if backend.EffectiveStatus != StatusHealthy {
+			return false
 		}
 	}
-	return false
+	return len(list) > 0
 }
 
 // LatencyInfo contains latency information for a backend.
@@ -916,9 +1106,11 @@ func (r *Registry) GetLatency(address string, port int) LatencyInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// Search for backend by address:port (service-agnostic for DNS)
-	for _, backend := range r.backends {
-		if backend.Address == address && backend.Port == port {
+	// Look the backend up by address:port (service-agnostic for DNS). With
+	// several services at one endpoint, the first one, in order of service
+	// name, that has latency samples is used.
+	for _, backend := range r.byEndpoint[endpointKey{address: address, port: port}] {
+		if backend.LatencySamples > 0 {
 			return LatencyInfo{
 				SmoothedLatency: backend.SmoothedLatency,
 				Samples:         backend.LatencySamples,
@@ -1035,9 +1227,12 @@ func (r *Registry) checkStaleBackends() {
 
 	for key, backend := range r.backends {
 		// v1.1.1: Skip staleness check for static servers - they don't have agent heartbeats
-		// Static servers are defined in config and validated externally, not via agent gossip
-		if backend.Source == SourceStatic {
-			// Still recompute effective status for static servers (validation results, overrides)
+		// Static servers are defined in config and validated externally, not via agent gossip.
+		// The same holds for servers created through the API: nothing ever refreshes
+		// their AgentLastSeen, so treating them as agent backends removed every
+		// API-created server remove_after (default 5 minutes) after its creation.
+		if backend.Source == SourceStatic || backend.Source == SourceAPI {
+			// Still recompute effective status for these servers (validation results, overrides)
 			oldStatus := backend.EffectiveStatus
 			r.computeEffectiveStatus(backend)
 			if oldStatus != backend.EffectiveStatus && r.onStatusChange != nil {
@@ -1082,7 +1277,7 @@ func (r *Registry) checkStaleBackends() {
 	// Remove expired backends
 	for _, key := range toRemove {
 		backend := r.backends[key]
-		delete(r.backends, key)
+		r.removeBackend(key)
 		metrics.DeleteBackendHealthy(backend.Service, backend.Region, backend.Address, backend.Port)
 
 		r.config.Logger.Info("stale backend removed",
@@ -1144,7 +1339,7 @@ func (r *Registry) loadFromStore() error {
 		}
 
 		key := backendKey(backend.Service, backend.Address, backend.Port)
-		r.backends[key] = &backend
+		r.putBackend(key, &backend)
 
 		// Recompute effective status
 		r.computeEffectiveStatus(&backend)

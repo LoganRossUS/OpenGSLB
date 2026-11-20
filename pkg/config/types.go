@@ -275,12 +275,14 @@ type StaleConfig struct {
 
 // DNSSECConfig defines DNSSEC signing settings.
 type DNSSECConfig struct {
-	// Enabled controls whether DNSSEC is active
-	// Default: true (secure by default)
+	// Enabled asks for DNSSEC signing. Signing is not active in this build:
+	// when true, the overwatch logs a warning at startup and serves unsigned
+	// responses. Default: false.
 	Enabled bool `yaml:"enabled"`
 
-	// SecurityAcknowledgment is REQUIRED if Enabled=false
-	// Must contain specific text acknowledging security implications
+	// SecurityAcknowledgment was required by earlier releases to set
+	// Enabled to false. It is still accepted, so existing configuration
+	// files load, and is ignored.
 	SecurityAcknowledgment string `yaml:"security_acknowledgment"`
 
 	// Algorithm is the DNSSEC signing algorithm
@@ -311,10 +313,20 @@ type DNSSECKeySyncConfig struct {
 
 // DNSConfig defines the DNS server settings (overwatch mode).
 type DNSConfig struct {
-	ListenAddress     string   `yaml:"listen_address"`
-	DefaultTTL        int      `yaml:"default_ttl"`
-	ReturnLastHealthy bool     `yaml:"return_last_healthy"`
-	Zones             []string `yaml:"zones"`
+	ListenAddress     string `yaml:"listen_address"`
+	DefaultTTL        int    `yaml:"default_ttl"`
+	ReturnLastHealthy bool   `yaml:"return_last_healthy"`
+
+	// Zones lists the zones this overwatch is authoritative for. Each entry is
+	// a zone name or a mapping with SOA and NS settings (see Zone).
+	Zones []Zone `yaml:"zones"`
+
+	// MaxUDPSize is the largest DNS response sent over UDP, in bytes, and the
+	// UDP payload size advertised in EDNS responses. A requester that
+	// advertises less gets less. Larger answers are truncated (TC bit) and
+	// the client retries over TCP.
+	// Default: 1232 (DNS Flag Day 2020). Allowed: 512 to 4096.
+	MaxUDPSize int `yaml:"max_udp_size"`
 }
 
 // Region defines a geographic region with its servers and health check configuration.

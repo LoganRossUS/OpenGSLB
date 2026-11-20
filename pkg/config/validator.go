@@ -172,13 +172,11 @@ func (c *Config) validateOverwatchMode() error {
 		return fmt.Errorf("overwatch.gossip: %w", err)
 	}
 
-	// DNSSEC validation
-	if !c.Overwatch.DNSSEC.Enabled {
-		expectedAck := "I understand that disabling DNSSEC removes cryptographic authentication of DNS responses and allows DNS spoofing attacks against my zones"
-		if c.Overwatch.DNSSEC.SecurityAcknowledgment != expectedAck {
-			return fmt.Errorf("dnssec: to disable DNSSEC, security_acknowledgment must be set to: %q", expectedAck)
-		}
-	}
+	// DNSSEC: signing is not active in this build (see warnDNSSECNotActive in
+	// cmd/opengslb), so neither value of overwatch.dnssec.enabled needs an
+	// acknowledgment. overwatch.dnssec.security_acknowledgment is still
+	// parsed, so that configurations written for earlier releases load, and
+	// is ignored.
 
 	// Validation thresholds (0 means "use the default", applied by Parse)
 	if c.Overwatch.Validation.FailureThreshold < 0 {
@@ -248,7 +246,109 @@ func (c *Config) validateDNS() error {
 		return fmt.Errorf("default_ttl must be non-negative")
 	}
 
+	// 0 means "use the default" (applied by Parse and Load).
+	if c.DNS.MaxUDPSize != 0 && (c.DNS.MaxUDPSize < MinMaxUDPSize || c.DNS.MaxUDPSize > MaxMaxUDPSize) {
+		return fmt.Errorf("max_udp_size must be between %d and %d (got %d)", MinMaxUDPSize, MaxMaxUDPSize, c.DNS.MaxUDPSize)
+	}
+
+	if err := c.validateZones(); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// maxDNSSeconds is the largest value of a TTL or SOA timer (RFC 2181
+// section 8: 2^31 - 1 seconds).
+const maxDNSSeconds = 1<<31 - 1
+
+// TTLSeconds converts a TTL held as an int, as configuration files and API
+// requests carry it, to the unsigned 32-bit value DNS records use. Values
+// outside the range of RFC 2181 section 8 are limited to it (a negative TTL
+// becomes 0, one above 2^31 - 1 becomes 2^31 - 1) instead of wrapping around.
+func TTLSeconds(seconds int) uint32 {
+	if seconds <= 0 {
+		return 0
+	}
+	if seconds > maxDNSSeconds {
+		return maxDNSSeconds
+	}
+	return uint32(seconds)
+}
+
+// validateZones validates dns.zones: names, SOA fields and NS sets.
+func (c *Config) validateZones() error {
+	seen := make(map[string]bool, len(c.DNS.Zones))
+
+	for i, zone := range c.DNS.Zones {
+		prefix := fmt.Sprintf("zones[%d]", i)
+
+		if zone.Name == "" {
+			return fmt.Errorf("%s.name is required", prefix)
+		}
+		if zone.Name == "." {
+			return fmt.Errorf("%s: the root zone cannot be served", prefix)
+		}
+		if !validDNSName(zone.Name) {
+			return fmt.Errorf("%s.name %q is not a valid DNS name", prefix, zone.Name)
+		}
+		canonical := canonicalDNSName(zone.Name)
+		if seen[canonical] {
+			return fmt.Errorf("%s: duplicate zone %q", prefix, zone.Name)
+		}
+		seen[canonical] = true
+
+		seconds := []struct {
+			field string
+			value int
+		}{
+			{"ttl", zone.TTL},
+			{"soa.refresh", zone.SOA.Refresh},
+			{"soa.retry", zone.SOA.Retry},
+			{"soa.expire", zone.SOA.Expire},
+			{"soa.negative_ttl", zone.SOA.NegativeTTL},
+		}
+		for _, s := range seconds {
+			if s.value < 0 || s.value > maxDNSSeconds {
+				return fmt.Errorf("%s.%s must be between 0 and %d seconds (got %d)", prefix, s.field, maxDNSSeconds, s.value)
+			}
+		}
+
+		if zone.SOA.PrimaryNS != "" && !validDNSName(zone.SOA.PrimaryNS) {
+			return fmt.Errorf("%s.soa.primary_ns %q is not a valid DNS name", prefix, zone.SOA.PrimaryNS)
+		}
+		if zone.SOA.Contact != "" {
+			if _, err := MailboxToDNSName(zone.SOA.Contact); err != nil {
+				return fmt.Errorf("%s.soa.contact: %w", prefix, err)
+			}
+		}
+
+		seenNS := make(map[string]bool, len(zone.Nameservers))
+		for j, ns := range zone.Nameservers {
+			if ns == "" {
+				return fmt.Errorf("%s.nameservers[%d] is empty", prefix, j)
+			}
+			if !validDNSName(ns) {
+				return fmt.Errorf("%s.nameservers[%d] %q is not a valid DNS name", prefix, j, ns)
+			}
+			nsCanonical := canonicalDNSName(ns)
+			if seenNS[nsCanonical] {
+				return fmt.Errorf("%s.nameservers[%d]: duplicate nameserver %q", prefix, j, ns)
+			}
+			seenNS[nsCanonical] = true
+		}
+	}
+
+	return nil
+}
+
+// canonicalDNSName lower-cases a DNS name and adds the trailing dot.
+func canonicalDNSName(name string) string {
+	name = strings.ToLower(name)
+	if !strings.HasSuffix(name, ".") {
+		name += "."
+	}
+	return name
 }
 
 // validateRegions validates region configurations.

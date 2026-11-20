@@ -262,13 +262,16 @@ func (h *AuditHandlers) handleExport(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/json"
 		filename = "audit-logs.json"
 	default:
+		// The requested format is not copied into the header.
 		contentType = "application/octet-stream"
-		filename = "audit-logs." + format
+		filename = "audit-logs.bin"
 	}
 
 	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
 	w.WriteHeader(http.StatusOK)
+	// #nosec G705 -- served as a download with an explicit non-HTML content type and nosniff
 	if _, err := w.Write(data); err != nil {
 		h.logger.Error("failed to write export data", "error", err)
 	}

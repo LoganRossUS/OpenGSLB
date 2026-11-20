@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"type\":\"heartbeat\",\"agent_id\":\"agent-evil\",\"region\":\"eu-west-1\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"payload\":{\"backends\":[{\"service\":\"weighted.fuzz.example\",\"address\":\"10.6.6.1\",\"port\":80,\"weight\":5e18,\"healthy\":true},{\"service\":\"weighted.fuzz.example\",\"address\":\"10.6.6.2\",\"port\":80,\"weight\":5e18,\"healthy\":true}]}}")

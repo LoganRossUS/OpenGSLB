@@ -79,16 +79,18 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Create UDP server
 	s.udpServer = &dns.Server{
-		Addr:    s.address,
-		Net:     "udp",
-		Handler: s.handler,
+		Addr:          s.address,
+		Net:           "udp",
+		Handler:       s.handler,
+		MsgAcceptFunc: acceptMsg,
 	}
 
 	// Create TCP server
 	s.tcpServer = &dns.Server{
-		Addr:    s.address,
-		Net:     "tcp",
-		Handler: s.handler,
+		Addr:          s.address,
+		Net:           "tcp",
+		Handler:       s.handler,
+		MsgAcceptFunc: acceptMsg,
 	}
 
 	errChan := make(chan error, 2)
@@ -119,6 +121,35 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = s.Shutdown(context.Background())
 		return err
 	}
+}
+
+// acceptMsg decides from the header of an incoming message whether the
+// handler gets to see it. It replaces the default of the DNS library, which
+// answers every message without exactly one question (FORMERR) and every
+// opcode other than QUERY and NOTIFY (NOTIMP) itself, with a bare header: no
+// question section and, for a request with EDNS, no OPT record, which RFC
+// 6891 section 6.1.1 requires in every response to such a request.
+//
+// Those requests now reach the handler, which gives the same response codes
+// and builds the response like any other. Two protections of the default are
+// kept: responses are never answered, and a message whose header announces
+// more records than a query can have is rejected before it is parsed.
+func acceptMsg(dh dns.Header) dns.MsgAcceptAction {
+	const qrBit = 1 << 15
+	if dh.Bits&qrBit != 0 {
+		return dns.MsgIgnore
+	}
+	// At most one question; one record each in the answer section (NOTIFY
+	// carries an SOA) and the authority section (IXFR carries an SOA); OPT
+	// and TSIG in the additional section.
+	if dh.Qdcount <= 1 && dh.Ancount <= 1 && dh.Nscount <= 1 && dh.Arcount <= 2 {
+		return dns.MsgAccept
+	}
+	// Too many records to parse. A dynamic update normally looks like this.
+	if opcode := int(dh.Bits>>11) & 0xF; opcode != dns.OpcodeQuery && opcode != dns.OpcodeNotify {
+		return dns.MsgRejectNotImplemented
+	}
+	return dns.MsgReject
 }
 
 // Shutdown gracefully stops the DNS server.

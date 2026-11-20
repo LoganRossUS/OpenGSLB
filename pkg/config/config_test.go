@@ -476,20 +476,36 @@ func TestValidate_OverwatchGossipEncryptionKeyWrongLength(t *testing.T) {
 }
 
 // =============================================================================
-// DNSSEC Tests (ADR-015: Enabled by Default, nested under Overwatch)
+// DNSSEC Tests (nested under Overwatch; signing is not active in this build)
 // =============================================================================
 
-func TestValidate_DNSSECDisabledRequiresAcknowledgment(t *testing.T) {
+// DNSSEC signing is not active in this build, so turning it off (or leaving
+// it out) must not need an acknowledgment of what is lost.
+func TestValidate_DNSSECDisabledNeedsNoAcknowledgment(t *testing.T) {
 	cfg := validOverwatchConfig()
 	cfg.Overwatch.DNSSEC.Enabled = false
-	cfg.Overwatch.DNSSEC.SecurityAcknowledgment = "" // Missing acknowledgment
+	cfg.Overwatch.DNSSEC.SecurityAcknowledgment = ""
 
-	err := cfg.Validate()
-	if err == nil {
-		t.Error("expected error for disabled DNSSEC without acknowledgment")
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled DNSSEC without an acknowledgment must validate, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "security_acknowledgment") {
-		t.Errorf("expected acknowledgment error, got: %v", err)
+}
+
+// Configurations written for earlier releases carry the acknowledgment, in
+// its exact required wording or any other. They must keep loading.
+func TestValidate_DNSSECAcknowledgmentIsAcceptedAndIgnored(t *testing.T) {
+	for _, ack := range []string{
+		"I understand that disabling DNSSEC removes cryptographic authentication of DNS responses and allows DNS spoofing attacks against my zones",
+		"some other text",
+	} {
+		for _, enabled := range []bool{false, true} {
+			cfg := validOverwatchConfig()
+			cfg.Overwatch.DNSSEC.Enabled = enabled
+			cfg.Overwatch.DNSSEC.SecurityAcknowledgment = ack
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("enabled=%v ack=%q: unexpected error: %v", enabled, ack, err)
+			}
+		}
 	}
 }
 
@@ -1425,5 +1441,23 @@ func TestValidate_OverwatchValidationThresholdNegative(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "success_threshold") {
 		t.Errorf("expected success_threshold error, got: %v", err)
+	}
+}
+
+func TestTTLSeconds(t *testing.T) {
+	for _, tc := range []struct {
+		in   int
+		want uint32
+	}{
+		{-1, 0},
+		{0, 0},
+		{30, 30},
+		{1<<31 - 1, 1<<31 - 1},
+		{1 << 31, 1<<31 - 1},
+		{1<<32 + 1, 1<<31 - 1}, // wrapped to 1 before
+	} {
+		if got := TTLSeconds(tc.in); got != tc.want {
+			t.Errorf("TTLSeconds(%d) = %d, want %d", tc.in, got, tc.want)
+		}
 	}
 }

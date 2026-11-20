@@ -7,7 +7,7 @@ This document provides a comprehensive security checklist for hardening OpenGSLB
 OpenGSLB is designed with security in mind:
 - Mandatory gossip encryption
 - TOFU (Trust On First Use) agent authentication
-- DNSSEC enabled by default
+- DNSSEC signing is in development and not active in this release
 - API access controls
 
 This checklist ensures you've configured all security features properly.
@@ -109,11 +109,7 @@ This checklist ensures you've configured all security features properly.
 
 ### TLS/SSL
 
-- [ ] **DNSSEC enabled**
-  ```yaml
-  dnssec:
-    enabled: true
-  ```
+- [ ] **No DS records published for the GSLB zones** (DNSSEC signing is in development and not active; `dnssec.enabled: true` only logs a warning)
 
 - [ ] **HTTPS for API** (if using reverse proxy)
   - Terminate TLS at load balancer
@@ -316,6 +312,8 @@ This checklist ensures you've configured all security features properly.
   ```
 
 ## DNSSEC Security
+
+> **DNSSEC status: in development, not active.** The signing code (`pkg/dnssec`) is not connected to the DNS server in this release. With `overwatch.dnssec.enabled: true` the overwatch logs a warning at startup and serves unsigned responses: no RRSIG or DNSKEY records, no keys are generated, and the `/api/v1/dnssec/*` endpoints answer 404. Do not publish DS records for a zone served by OpenGSLB. The DNSSEC material on this page describes the intended behavior and does not apply yet.
 
 - [ ] **DNSSEC enabled**
   - Not disabled without documented reason

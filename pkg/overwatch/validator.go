@@ -29,6 +29,10 @@ type ValidatorConfig struct {
 
 	// Logger for validator operations.
 	Logger *slog.Logger
+
+	// tick is how often the validation loop looks for backends that are due.
+	// Zero means the smaller of CheckInterval and one second. Tests set it.
+	tick time.Duration
 }
 
 // DefaultValidatorConfig returns sensible defaults.
@@ -53,7 +57,19 @@ type Validator struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
+
+	// schedMu guards the schedule of the validation loop.
+	schedMu sync.Mutex
+	// lastProbe is when the loop last started a probe of a backend.
+	lastProbe map[string]time.Time
+	// inFlight holds the backends whose probe has not returned yet.
+	inFlight map[string]bool
+	// sem limits the number of concurrent probes started by the loop.
+	sem chan struct{}
 }
+
+// maxConcurrentValidations is the number of probes that run at the same time.
+const maxConcurrentValidations = 10
 
 // NewValidator creates a new external health validator.
 func NewValidator(cfg ValidatorConfig, registry *Registry, checker health.Checker) *Validator {
@@ -61,9 +77,12 @@ func NewValidator(cfg ValidatorConfig, registry *Registry, checker health.Checke
 		cfg.Logger = slog.Default()
 	}
 	return &Validator{
-		config:   cfg,
-		registry: registry,
-		checker:  checker,
+		config:    cfg,
+		registry:  registry,
+		checker:   checker,
+		lastProbe: make(map[string]time.Time),
+		inFlight:  make(map[string]bool),
+		sem:       make(chan struct{}, maxConcurrentValidations),
 	}
 }
 
@@ -133,14 +152,18 @@ func (v *Validator) ValidateBackend(service, address string, port int) error {
 	return nil
 }
 
-// validationLoop runs periodic validation of all backends.
+// validationLoop probes every backend when it is due. A backend is due when
+// its interval has passed since its last probe: its own interval when one was
+// set through the API, the node-wide CheckInterval otherwise. A backend that
+// has never been probed is due at once, so a server created at runtime gets
+// its first verdict at the next tick.
 func (v *Validator) validationLoop() {
 	defer v.wg.Done()
 
 	// Run initial validation
-	v.validateAllBackends()
+	v.validateDueBackends()
 
-	ticker := time.NewTicker(v.config.CheckInterval)
+	ticker := time.NewTicker(v.tickInterval())
 	defer ticker.Stop()
 
 	for {
@@ -148,12 +171,116 @@ func (v *Validator) validationLoop() {
 		case <-v.ctx.Done():
 			return
 		case <-ticker.C:
-			v.validateAllBackends()
+			v.validateDueBackends()
 		}
 	}
 }
 
-// validateAllBackends validates all registered backends.
+// tickInterval is how often the loop looks for due backends.
+func (v *Validator) tickInterval() time.Duration {
+	if v.config.tick > 0 {
+		return v.config.tick
+	}
+	tick := time.Second
+	if v.config.CheckInterval > 0 && v.config.CheckInterval < tick {
+		tick = v.config.CheckInterval
+	}
+	return tick
+}
+
+// intervalFor returns the probe interval of a backend.
+func (v *Validator) intervalFor(backend *Backend) time.Duration {
+	if backend.HealthCheck != nil && backend.HealthCheck.Interval > 0 {
+		return backend.HealthCheck.Interval
+	}
+	return v.config.CheckInterval
+}
+
+// timeoutFor returns the probe timeout of a backend.
+func (v *Validator) timeoutFor(backend *Backend) time.Duration {
+	if backend.HealthCheck != nil && backend.HealthCheck.Timeout > 0 {
+		return backend.HealthCheck.Timeout
+	}
+	return v.config.CheckTimeout
+}
+
+// checkDisabled reports whether validation is turned off for a backend.
+func checkDisabled(backend *Backend) bool {
+	return backend.HealthCheck != nil && backend.HealthCheck.Disabled
+}
+
+// validateDueBackends starts a probe for every backend that is due. It does
+// not wait for the probes: a probe that runs into its timeout must not delay
+// the probes of other backends. A backend whose previous probe has not
+// returned is skipped, so one backend is never probed twice at once.
+func (v *Validator) validateDueBackends() {
+	backends := v.registry.GetAllBackends()
+	now := time.Now()
+
+	v.schedMu.Lock()
+	// Forget backends that are gone.
+	known := make(map[string]bool, len(backends))
+	for _, backend := range backends {
+		known[backendKey(backend.Service, backend.Address, backend.Port)] = true
+	}
+	for key := range v.lastProbe {
+		if !known[key] {
+			delete(v.lastProbe, key)
+		}
+	}
+
+	var due []*Backend
+	for _, backend := range backends {
+		// Note: stale backends are probed too. External validation can
+		// "recover" a backend whose agent is gone while the service still runs
+		// (ADR-015: Overwatch validation takes precedence over staleness).
+		if checkDisabled(backend) {
+			continue
+		}
+		key := backendKey(backend.Service, backend.Address, backend.Port)
+		if v.inFlight[key] {
+			continue
+		}
+		if last, probed := v.lastProbe[key]; probed && now.Sub(last) < v.intervalFor(backend) {
+			continue
+		}
+		v.lastProbe[key] = now
+		v.inFlight[key] = true
+		due = append(due, backend)
+	}
+	v.schedMu.Unlock()
+
+	if len(due) == 0 {
+		return
+	}
+	v.config.Logger.Debug("starting validation probes", "due", len(due), "backends", len(backends))
+
+	for _, backend := range due {
+		v.wg.Add(1)
+		go func(b *Backend) {
+			defer v.wg.Done()
+			key := backendKey(b.Service, b.Address, b.Port)
+			defer func() {
+				v.schedMu.Lock()
+				delete(v.inFlight, key)
+				v.schedMu.Unlock()
+			}()
+
+			// Limit the number of concurrent probes.
+			select {
+			case v.sem <- struct{}{}:
+			case <-v.ctx.Done():
+				return
+			}
+			defer func() { <-v.sem }()
+
+			v.validateSingleBackend(b)
+		}(backend)
+	}
+}
+
+// validateAllBackends validates all registered backends once and waits for
+// the results. It is used for an explicit "validate now" request.
 // Note: Stale backends are NOT skipped. External validation can "recover" a
 // stale backend if the agent is unavailable but the backend service is still healthy.
 // This aligns with ADR-015's health authority hierarchy where Overwatch validation
@@ -167,8 +294,7 @@ func (v *Validator) validateAllBackends() {
 	v.config.Logger.Debug("starting validation cycle", "backends", len(backends))
 
 	// Use a semaphore to limit concurrent validations
-	const maxConcurrent = 10
-	sem := make(chan struct{}, maxConcurrent)
+	sem := make(chan struct{}, maxConcurrentValidations)
 	var wg sync.WaitGroup
 
 	for _, backend := range backends {
@@ -177,6 +303,9 @@ func (v *Validator) validateAllBackends() {
 		// - Agent process crashed but backend service is still running
 		// - Network partition between agent and overwatch
 		// - Agent temporarily unavailable
+		if checkDisabled(backend) {
+			continue
+		}
 		wg.Add(1)
 		sem <- struct{}{}
 
@@ -193,25 +322,35 @@ func (v *Validator) validateAllBackends() {
 
 // validateSingleBackend validates a single backend.
 func (v *Validator) validateSingleBackend(backend *Backend) {
+	if checkDisabled(backend) {
+		return
+	}
+
 	// Use context.Background() if v.ctx is nil (for direct ValidateNow calls)
+	v.mu.RLock()
 	baseCtx := v.ctx
+	v.mu.RUnlock()
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(baseCtx, v.config.CheckTimeout)
+	timeout := v.timeoutFor(backend)
+	ctx, cancel := context.WithTimeout(baseCtx, timeout)
 	defer cancel()
 
-	// Build the check target using backend's configured health check type
+	// Build the check target. A backend with its own health check (set
+	// through the API) is probed with it; any other backend with its
+	// configured check type and the node-wide timeout.
 	// v1.1.1: Use HealthCheckType from backend to fix latency routing with TCP health checks
-	scheme := backend.HealthCheckType
-	if scheme == "" {
-		scheme = "http" // Default to HTTP for backwards compatibility
-	}
+	scheme := backend.CheckType()
 	target := health.Target{
 		Address: backend.Address,
 		Port:    backend.Port,
 		Scheme:  scheme,
-		Timeout: v.config.CheckTimeout,
+		Timeout: timeout,
+	}
+	if hc := backend.HealthCheck; hc != nil && scheme != "tcp" {
+		target.Path = hc.Path
+		target.Host = hc.Host
 	}
 
 	// Perform the health check
@@ -230,6 +369,12 @@ func (v *Validator) validateSingleBackend(backend *Backend) {
 	var validationErr string
 	if result.Error != nil {
 		validationErr = result.Error.Error()
+	}
+
+	// The check may have been turned off or the backend removed while the
+	// probe was running. A verdict that arrives after that is dropped.
+	if current, ok := v.registry.GetBackend(backend.Service, backend.Address, backend.Port); !ok || checkDisabled(current) {
+		return
 	}
 
 	// Update the registry with validation result including latency
