@@ -1,0 +1,6062 @@
+# OpenGSLB Overwatch REST API contract.
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
+#
+# Single source of truth for the API. Edit this file first, then the Go handler,
+# then the Overlord client. See docs/api-alignment.md.
+
+openapi: 3.1.0
+info:
+  title: OpenGSLB Overwatch API
+  version: 1.0.0
+  description: |-
+    REST API served by an OpenGSLB overwatch node (`pkg/api`, routes in `pkg/api/server.go`).
+
+    This file is the single source of truth for the API. `docs/api.md` is generated from it, the
+    contract test (`cmd/opengslb/api_contract_test.go`) validates the running server against it, and the
+    Overlord portal generates its client types from it.
+
+    It describes what the binary does today, including behavior that is wrong. Operations carry an
+    `x-status` extension when they are not fully real:
+
+    | x-status | Meaning |
+    |----------|---------|
+    | *(absent)* | Real: backed by live node state. |
+    | `stub` | Returns placeholder, hard-coded or always-empty data. |
+    | `not-implemented` | The handler exists but its provider always fails, so no success response is ever returned. |
+    | `unavailable` | Registered, but a dependency is never wired by `cmd/opengslb`, so it always answers 503. |
+    | `unwired` | The handler exists but `cmd/opengslb` never attaches it, so the path answers 404. |
+    | `broken` | Unreachable because of a routing defect. |
+
+    There is no authentication and no TLS. Access control is an IP allowlist (`api.allowed_networks`,
+    loopback only by default); a rejected client gets 403 with the plain-text body `Forbidden`.
+
+    Errors are `{"error": string, "code": int}`. Timestamps are RFC 3339. A Go zero time is serialized as
+    `0001-01-01T00:00:00Z` rather than omitted.
+  license:
+    name: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
+servers:
+- url: http://localhost:8080
+  description: Overwatch API listener (`api.address`).
+tags:
+- name: Discovery
+- name: Probes
+- name: Health
+- name: Domains
+- name: Servers
+- name: Regions
+- name: Overrides
+- name: Geo
+- name: Overwatch
+- name: Nodes
+- name: Gossip
+- name: Audit
+- name: Metrics
+- name: Config
+- name: Routing
+- name: DNSSEC
+paths:
+  /api:
+    get:
+      operationId: getApiRoot
+      tags:
+      - Discovery
+      summary: List API versions
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIVersionResponse'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/health:
+    get:
+      operationId: getSimpleHealth
+      tags:
+      - Discovery
+      summary: Simple health check
+      description: Handler exists and `pkg/api/server.go` registers the route only when the handler is attached;
+        `cmd/opengslb` never attaches it, so the running binary answers 404.
+      x-status: unwired
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleHealthResponse'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1:
+    get:
+      operationId: getV1Root
+      tags:
+      - Discovery
+      summary: List v1 endpoint groups
+      description: Also the catch-all for any unregistered `/api/v1/...` path, which returns 404 `not found`.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIDiscoveryResponse'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/health:
+    get:
+      operationId: getHealthRoot
+      tags:
+      - Discovery
+      summary: List health endpoints
+      description: Discovery listing only. This is not a health or status document.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIDiscoveryResponse'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/geo:
+    get:
+      operationId: getGeoRoot
+      tags:
+      - Discovery
+      summary: List geolocation endpoints
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIDiscoveryResponse'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/overwatch:
+    get:
+      operationId: getOverwatchRoot
+      tags:
+      - Discovery
+      summary: List overwatch endpoints
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIDiscoveryResponse'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/cluster:
+    get:
+      operationId: getClusterRoot
+      tags:
+      - Discovery
+      summary: List cluster endpoints
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIDiscoveryResponse'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/version:
+    get:
+      operationId: getVersion
+      tags:
+      - Discovery
+      summary: Build and version information
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/live:
+    get:
+      operationId: getLive
+      tags:
+      - Probes
+      summary: Liveness probe
+      description: Not subject to the IP allowlist.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveResponse'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/ready:
+    get:
+      operationId: getReady
+      tags:
+      - Probes
+      summary: Readiness probe
+      description: Not subject to the IP allowlist.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          description: Dependency not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+  /api/v1/health/servers:
+    get:
+      operationId: getHealthServers
+      tags:
+      - Health
+      summary: Health of every health-checked server
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/health/regions:
+    get:
+      operationId: getHealthRegions
+      tags:
+      - Health
+      summary: Health aggregated by region
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegionsResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/v1/overwatch/backends:
+    get:
+      operationId: listOverwatchBackends
+      tags:
+      - Overwatch
+      summary: List backends in the registry
+      parameters:
+      - name: service
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: region
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Effective status: healthy, unhealthy or stale.'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendsResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/overwatch/backends/{service}/{address}/{port}/override:
+    post:
+      operationId: setBackendOverride
+      tags:
+      - Overwatch
+      summary: Force a backend healthy or unhealthy
+      description: The `X-User` request header is recorded as the override author (default `api`).
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: address
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: port
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackendOverrideRequest'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendOverrideResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+    delete:
+      operationId: clearBackendOverride
+      tags:
+      - Overwatch
+      summary: Clear a backend override
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: address
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: port
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendOverrideResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/overwatch/stats:
+    get:
+      operationId: getOverwatchStats
+      tags:
+      - Overwatch
+      summary: Backend statistics
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/overwatch/validate:
+    post:
+      operationId: triggerValidation
+      tags:
+      - Overwatch
+      summary: Trigger external validation now
+      description: With `service`, `address` and `port` all set, validates one backend; otherwise all backends.
+      parameters:
+      - name: service
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: address
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: port
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/overwatch/latency:
+    get:
+      operationId: getLatencyTable
+      tags:
+      - Overwatch
+      summary: Learned latency table (ADR-017)
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LatencyTableResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+    post:
+      operationId: injectLatency
+      tags:
+      - Overwatch
+      summary: Inject a latency sample (test aid)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LatencyInjectRequest'
+      responses:
+        '201':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LatencyInjectResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/overwatch/agents:
+    get:
+      operationId: listAgentCerts
+      tags:
+      - Overwatch
+      summary: List pinned agent certificates
+      description: '`cmd/opengslb` never calls `SetAgentAuth`, so the running binary always answers 503 `agent auth
+        not configured`.'
+      x-status: unavailable
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentCertsResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/overwatch/agents/expiring:
+    get:
+      operationId: listExpiringAgentCerts
+      tags:
+      - Overwatch
+      summary: List agent certificates close to expiry
+      description: '`cmd/opengslb` never calls `SetAgentAuth`, so the running binary always answers 503 `agent auth
+        not configured`.'
+      x-status: unavailable
+      parameters:
+      - name: threshold_days
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Default 30.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentsExpiringResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/overwatch/agents/{agent_id}:
+    get:
+      operationId: getAgentCert
+      tags:
+      - Overwatch
+      summary: Get one pinned agent certificate
+      description: '`cmd/opengslb` never calls `SetAgentAuth`, so the running binary always answers 503 `agent auth
+        not configured`.'
+      x-status: unavailable
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentCertResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    delete:
+      operationId: deleteAgentCert
+      tags:
+      - Overwatch
+      summary: Delete a pinned agent certificate
+      description: '`cmd/opengslb` never calls `SetAgentAuth`, so the running binary always answers 503 `agent auth
+        not configured`.'
+      x-status: unavailable
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/overwatch/agents/{agent_id}/revoke:
+    post:
+      operationId: revokeAgentCert
+      tags:
+      - Overwatch
+      summary: Revoke an agent certificate
+      description: '`cmd/opengslb` never calls `SetAgentAuth`, so the running binary always answers 503 `agent auth
+        not configured`.'
+      x-status: unavailable
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokeRequest'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/cluster/status:
+    get:
+      operationId: getClusterStatus
+      tags:
+      - Overwatch
+      summary: Cluster status for deployment validation
+      description: '`cmd/opengslb` never calls `SetClusterProvider`, so `overwatch.node_id` is empty and `overwatch.uptime_seconds`
+        and `gossip_members` are always 0. Static (config-file) backends appear as one agent with an empty `agent_id`.'
+      parameters:
+      - name: expected_agents
+        in: query
+        required: false
+        schema:
+          type: string
+        description: When set, cluster_healthy is false if fewer agents are healthy.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterStatusResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/overrides:
+    get:
+      operationId: listOverrides
+      tags:
+      - Overrides
+      summary: List external health overrides
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverridesListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/overrides/{service}/{address}:
+    get:
+      operationId: getOverride
+      tags:
+      - Overrides
+      summary: Get one override
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: address
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Override'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+    put:
+      operationId: setOverride
+      tags:
+      - Overrides
+      summary: Set an override
+      description: '`{address}` is stored as given; it is not checked against known servers.'
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: address
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OverrideRequest'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverrideResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      operationId: clearOverride
+      tags:
+      - Overrides
+      summary: Clear an override
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: address
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: No content.
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/v1/dnssec:
+    get:
+      operationId: getDnssecRoot
+      tags:
+      - DNSSEC
+      summary: DNSSEC status (alias of /dnssec/status)
+      description: Handler exists and `pkg/api/server.go` registers the route only when the handler is attached;
+        `cmd/opengslb` never attaches it, so the running binary answers 404.
+      x-status: unwired
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSSECStatusResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/dnssec/status:
+    get:
+      operationId: getDnssecStatus
+      tags:
+      - DNSSEC
+      summary: DNSSEC status
+      description: Handler exists and `pkg/api/server.go` registers the route only when the handler is attached;
+        `cmd/opengslb` never attaches it, so the running binary answers 404.
+      x-status: unwired
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSSECStatusResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/dnssec/ds:
+    get:
+      operationId: getDnssecDs
+      tags:
+      - DNSSEC
+      summary: DS records for the parent zone
+      description: Handler exists and `pkg/api/server.go` registers the route only when the handler is attached;
+        `cmd/opengslb` never attaches it, so the running binary answers 404.
+      x-status: unwired
+      parameters:
+      - name: zone
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DSResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/dnssec/keys:
+    get:
+      operationId: getDnssecKeys
+      tags:
+      - DNSSEC
+      summary: DNSSEC keys
+      description: Handler exists and `pkg/api/server.go` registers the route only when the handler is attached;
+        `cmd/opengslb` never attaches it, so the running binary answers 404.
+      x-status: unwired
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSSECKeysResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/dnssec/sync:
+    post:
+      operationId: triggerDnssecSync
+      tags:
+      - DNSSEC
+      summary: Trigger key sync
+      description: Handler exists and `pkg/api/server.go` registers the route only when the handler is attached;
+        `cmd/opengslb` never attaches it, so the running binary answers 404.
+      x-status: unwired
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSSECSyncResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+  /api/v1/geo/mappings:
+    get:
+      operationId: listGeoMappings
+      tags:
+      - Geo
+      summary: List custom CIDR-to-region mappings
+      description: Registered only when `overwatch.geolocation.database_path` is configured; otherwise 404.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoMappingsResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+    put:
+      operationId: addGeoMapping
+      tags:
+      - Geo
+      summary: Add a custom mapping
+      description: Registered only when `overwatch.geolocation.database_path` is configured; otherwise 404. Mappings
+        added here are held in memory only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeoMappingRequest'
+      responses:
+        '201':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoMappingResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    post:
+      operationId: addGeoMappingPost
+      tags:
+      - Geo
+      summary: Add a custom mapping (same as PUT)
+      description: Registered only when `overwatch.geolocation.database_path` is configured; otherwise 404.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeoMappingRequest'
+      responses:
+        '201':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoMappingResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/geo/mappings/{cidr}:
+    delete:
+      operationId: deleteGeoMapping
+      tags:
+      - Geo
+      summary: Remove a custom mapping
+      description: Registered only when `overwatch.geolocation.database_path` is configured; otherwise 404. `{cidr}`
+        must be URL-encoded (`10.0.0.0%2F8`).
+      parameters:
+      - name: cidr
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: No content.
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/geo/test:
+    get:
+      operationId: testGeoIp
+      tags:
+      - Geo
+      summary: Resolve an IP to a region
+      description: Registered only when `overwatch.geolocation.database_path` is configured; otherwise 404.
+      parameters:
+      - name: ip
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Required.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoTestResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/domains:
+    get:
+      operationId: listDomains
+      tags:
+      - Domains
+      summary: List domains
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+    post:
+      operationId: createDomain
+      tags:
+      - Domains
+      summary: Create a domain
+      description: A duplicate name returns 500, not 409. The response omits `id`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DomainCreateRequest'
+      responses:
+        '201':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/domains/{name}:
+    get:
+      operationId: getDomain
+      tags:
+      - Domains
+      summary: Get a domain
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+    put:
+      operationId: updateDomain
+      tags:
+      - Domains
+      summary: Update a domain (PUT and PATCH are both partial updates)
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DomainUpdateRequest'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    patch:
+      operationId: patchDomain
+      tags:
+      - Domains
+      summary: Update a domain (PUT and PATCH are both partial updates)
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DomainUpdateRequest'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    delete:
+      operationId: deleteDomain
+      tags:
+      - Domains
+      summary: Delete an API-created domain
+      description: Config-file domains cannot be deleted and return 500.
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: No content.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/domains/{name}/backends:
+    get:
+      operationId: listDomainBackends
+      tags:
+      - Domains
+      summary: List a domain's backends
+      description: Returns 404 `domain not found` for an API-created domain that has no backends yet.
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainBackendsResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+    post:
+      operationId: addDomainBackend
+      tags:
+      - Domains
+      summary: Add a backend to a domain
+      description: An unknown domain returns 500, not 404.
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DomainBackendCreateRequest'
+      responses:
+        '201':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainBackendResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/domains/{name}/backends/{id}:
+    delete:
+      operationId: removeDomainBackend
+      tags:
+      - Domains
+      summary: Remove a backend from a domain
+      description: 'Unreachable today: `HandleDomains` splits the path into at most two parts, so `backends/{id}`
+        never matches `backends` and every request returns 404 `endpoint not found`. The handler behind it (`removeDomainBackend`)
+        would return 204.'
+      x-status: broken
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/servers:
+    get:
+      operationId: listServers
+      tags:
+      - Servers
+      summary: List servers
+      parameters:
+      - name: region
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: enabled
+        in: query
+        required: false
+        schema:
+          type: string
+        description: true or false
+      - name: healthy
+        in: query
+        required: false
+        schema:
+          type: string
+        description: true or false
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+    post:
+      operationId: createServer
+      tags:
+      - Servers
+      summary: Register a server
+      description: The response omits `id`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServerCreateRequest'
+      responses:
+        '201':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/servers/{id}:
+    get:
+      operationId: getServer
+      tags:
+      - Servers
+      summary: Get a server
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+    put:
+      operationId: updateServer
+      tags:
+      - Servers
+      summary: Update a server (PUT and PATCH are both partial updates)
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServerUpdateRequest'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    patch:
+      operationId: patchServer
+      tags:
+      - Servers
+      summary: Update a server (PUT and PATCH are both partial updates)
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServerUpdateRequest'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    delete:
+      operationId: deleteServer
+      tags:
+      - Servers
+      summary: Delete a server
+      description: An id that is not `service:address:port` returns 500.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: No content.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/servers/{id}/health-check:
+    get:
+      operationId: getServerHealthCheck
+      tags:
+      - Servers
+      summary: Get a server's health check
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerHealthCheckResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+    put:
+      operationId: updateServerHealthCheck
+      tags:
+      - Servers
+      summary: Replace a server's health check
+      description: An unknown server returns 500, not 404.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServerHealthCheck'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerHealthCheckResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    patch:
+      operationId: patchServerHealthCheck
+      tags:
+      - Servers
+      summary: Replace a server's health check
+      description: An unknown server returns 500, not 404.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServerHealthCheck'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerHealthCheckResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/regions:
+    get:
+      operationId: listRegions
+      tags:
+      - Regions
+      summary: List regions
+      parameters:
+      - name: enabled
+        in: query
+        required: false
+        schema:
+          type: string
+        description: true or false
+      - name: continent
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegionListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+    post:
+      operationId: createRegion
+      tags:
+      - Regions
+      summary: Create a region
+      description: The response omits `id`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegionCreateRequest'
+      responses:
+        '201':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegionResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/regions/{id}:
+    get:
+      operationId: getRegion
+      tags:
+      - Regions
+      summary: Get a region
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegionResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+    put:
+      operationId: updateRegion
+      tags:
+      - Regions
+      summary: Update an API-created region (PUT and PATCH are both partial updates)
+      description: Config-file regions cannot be updated and return 500.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegionUpdateRequest'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegionResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    patch:
+      operationId: patchRegion
+      tags:
+      - Regions
+      summary: Update an API-created region (PUT and PATCH are both partial updates)
+      description: Config-file regions cannot be updated and return 500.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegionUpdateRequest'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegionResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    delete:
+      operationId: deleteRegion
+      tags:
+      - Regions
+      summary: Delete an API-created region
+      description: Config-file regions cannot be deleted and return 500.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: No content.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/nodes/overwatch:
+    get:
+      operationId: listOverwatchNodes
+      tags:
+      - Nodes
+      summary: List overwatch nodes
+      description: 'Backed by `StubNodeProvider`: the data is placeholder, not real node state. `/api/v1/nodes`
+        without a trailing segment is not registered and answers 301 to `/api/v1/nodes/`, which returns 404.'
+      x-status: stub
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: region
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverwatchNodeListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/nodes/overwatch/{id}:
+    get:
+      operationId: getOverwatchNode
+      tags:
+      - Nodes
+      summary: Get an overwatch node
+      description: 'Backed by `StubNodeProvider`: the data is placeholder, not real node state. The only id is `local`.'
+      x-status: stub
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverwatchNodeResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/nodes/agent:
+    get:
+      operationId: listAgentNodes
+      tags:
+      - Nodes
+      summary: List agent nodes
+      description: 'Backed by `StubNodeProvider`: the data is placeholder, not real node state.'
+      x-status: stub
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: region
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentNodeListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+    post:
+      operationId: registerAgentNode
+      tags:
+      - Nodes
+      summary: Register an agent node
+      description: Backed by `StubNodeProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentRegisterRequest'
+      responses:
+        '201':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentNodeResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/nodes/agent/{id}:
+    get:
+      operationId: getAgentNode
+      tags:
+      - Nodes
+      summary: Get an agent node
+      description: 'Backed by `StubNodeProvider`: the data is placeholder, not real node state.'
+      x-status: stub
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentNodeResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+    delete:
+      operationId: deregisterAgentNode
+      tags:
+      - Nodes
+      summary: Deregister an agent node
+      description: Backed by `StubNodeProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: No content.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/nodes/agent/{id}/certificate:
+    get:
+      operationId: getAgentCertificate
+      tags:
+      - Nodes
+      summary: Get an agent's certificate
+      description: Backed by `StubNodeProvider`, which always returns `not implemented`. Surfaces as 404.
+      x-status: not-implemented
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentCertificateResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+    post:
+      operationId: reissueAgentCertificate
+      tags:
+      - Nodes
+      summary: Reissue an agent's certificate
+      description: Backed by `StubNodeProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '201':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentCertificateResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    delete:
+      operationId: revokeAgentCertificate
+      tags:
+      - Nodes
+      summary: Revoke an agent's certificate
+      description: Backed by `StubNodeProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: No content.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/gossip/nodes:
+    get:
+      operationId: listGossipNodes
+      tags:
+      - Gossip
+      summary: List gossip members
+      description: 'Backed by `StubGossipProvider`: the data is placeholder, not real node state. `/api/v1/gossip`
+        without a trailing segment is not registered and answers 301 to `/api/v1/gossip/`, which returns 404.'
+      x-status: stub
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: region
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GossipNodeListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/gossip/nodes/{id}:
+    get:
+      operationId: getGossipNode
+      tags:
+      - Gossip
+      summary: Get a gossip member
+      description: 'Backed by `StubGossipProvider`: the data is placeholder, not real node state.'
+      x-status: stub
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GossipNodeResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/gossip/config:
+    get:
+      operationId: getGossipConfig
+      tags:
+      - Gossip
+      summary: Get gossip configuration
+      description: 'Backed by `StubGossipProvider`: the data is placeholder, not real node state. The values are
+        hard-coded and do not reflect the node''s configuration.'
+      x-status: stub
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GossipConfigResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    put:
+      operationId: updateGossipConfig
+      tags:
+      - Gossip
+      summary: Update gossip configuration
+      description: Backed by `StubGossipProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GossipConfig'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GossipConfigResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    patch:
+      operationId: patchGossipConfig
+      tags:
+      - Gossip
+      summary: Update gossip configuration
+      description: Backed by `StubGossipProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GossipConfig'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GossipConfigResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/gossip/generate-key:
+    post:
+      operationId: generateGossipKey
+      tags:
+      - Gossip
+      summary: Generate a random 32-byte gossip key
+      description: Generates a key and returns it. It is not stored or applied.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GossipKeyResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/v1/audit-logs:
+    get:
+      operationId: listAuditLogs
+      tags:
+      - Audit
+      summary: List audit entries
+      description: 'Backed by `StubAuditProvider`: the data is placeholder, not real node state. Always empty.'
+      x-status: stub
+      parameters:
+      - name: start_time
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: end_time
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: actions
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: resources
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: actors
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: actor_types
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: search
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: sort_by
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: sort_order
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/audit-logs/stats:
+    get:
+      operationId: getAuditStats
+      tags:
+      - Audit
+      summary: Audit statistics
+      description: 'Backed by `StubAuditProvider`: the data is placeholder, not real node state.'
+      x-status: stub
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditStatsResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/audit-logs/export:
+    get:
+      operationId: exportAuditLogs
+      tags:
+      - Audit
+      summary: Export audit entries
+      description: 'Backed by `StubAuditProvider`: the data is placeholder, not real node state. The body is always
+        `[]`, including for `format=csv`.'
+      x-status: stub
+      parameters:
+      - name: format
+        in: query
+        required: false
+        schema:
+          type: string
+        description: json (default) or csv
+      - name: start_time
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: end_time
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: actions
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: resources
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: actors
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: actor_types
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: search
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: sort_by
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: sort_order
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Export file.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditEntry'
+            text/csv:
+              schema:
+                type: string
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/audit-logs/{id}:
+    get:
+      operationId: getAuditEntry
+      tags:
+      - Audit
+      summary: Get an audit entry
+      description: 'Backed by `StubAuditProvider`: the data is placeholder, not real node state. Always 404.'
+      x-status: not-implemented
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEntryResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/metrics:
+    get:
+      operationId: getMetricsRoot
+      tags:
+      - Metrics
+      summary: Metrics overview (alias of /metrics/overview)
+      description: JSON only. Prometheus text metrics are served by the separate metrics listener, not here.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsOverviewResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/metrics/overview:
+    get:
+      operationId: getMetricsOverview
+      tags:
+      - Metrics
+      summary: Metrics overview
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsOverviewResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/metrics/history:
+    get:
+      operationId: getMetricsHistory
+      tags:
+      - Metrics
+      summary: Metrics history
+      description: No time-series store exists; `data_points` is always empty.
+      x-status: stub
+      parameters:
+      - name: start_time
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: end_time
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: duration
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: metrics
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: resolution
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: node_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: region_id
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsHistoryResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/metrics/nodes/{id}:
+    get:
+      operationId: getNodeMetrics
+      tags:
+      - Metrics
+      summary: Metrics for a node
+      description: '`{id}` is echoed back; any value returns this process''s metrics.'
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeMetricsResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/metrics/regions/{id}:
+    get:
+      operationId: getRegionMetrics
+      tags:
+      - Metrics
+      summary: Metrics for a region
+      description: An unknown region returns 200 with zero counts.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegionMetricsResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/metrics/routing:
+    get:
+      operationId: getRoutingStats
+      tags:
+      - Metrics
+      summary: Routing statistics
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutingStatsResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/preferences:
+    get:
+      operationId: getPreferences
+      tags:
+      - Config
+      summary: Get dashboard preferences
+      description: Returns fixed defaults.
+      x-status: stub
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreferencesResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    put:
+      operationId: updatePreferences
+      tags:
+      - Config
+      summary: Update dashboard preferences
+      description: Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Preferences'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreferencesResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    patch:
+      operationId: patchPreferences
+      tags:
+      - Config
+      summary: Update dashboard preferences
+      description: Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Preferences'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreferencesResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/config:
+    get:
+      operationId: getConfigRoot
+      tags:
+      - Config
+      summary: System configuration (alias of /config/system)
+      description: Only `mode` is real. `version` is the constant `1.0.0` (not the build version) and `node_id`,
+        `region`, `build_info` and `start_time` are empty.
+      x-status: stub
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemConfigResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/config/system:
+    get:
+      operationId: getSystemConfig
+      tags:
+      - Config
+      summary: System configuration
+      description: Only `mode` is real. `version` is the constant `1.0.0` (not the build version) and `node_id`,
+        `region`, `build_info` and `start_time` are empty.
+      x-status: stub
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemConfigResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/config/dns:
+    get:
+      operationId: getDnsConfig
+      tags:
+      - Config
+      summary: Get dns configuration
+      description: Only `listen_address` and `default_ttl` are populated.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfigResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    put:
+      operationId: updateDnsConfig
+      tags:
+      - Config
+      summary: Update dns configuration
+      description: Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DNSConfig'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfigResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    patch:
+      operationId: patchDnsConfig
+      tags:
+      - Config
+      summary: Update dns configuration
+      description: Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DNSConfig'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSConfigResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/config/health-check:
+    get:
+      operationId: getHealthCheckConfig
+      tags:
+      - Config
+      summary: Get health-check configuration
+      description: Only part of the document is populated from configuration.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheckConfigResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    put:
+      operationId: updateHealthCheckConfig
+      tags:
+      - Config
+      summary: Update health-check configuration
+      description: Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HealthCheckConfig'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheckConfigResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    patch:
+      operationId: patchHealthCheckConfig
+      tags:
+      - Config
+      summary: Update health-check configuration
+      description: Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HealthCheckConfig'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheckConfigResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/config/logging:
+    get:
+      operationId: getLoggingConfig
+      tags:
+      - Config
+      summary: Get logging configuration
+      description: Only `level` and `format` are populated.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoggingConfigResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    put:
+      operationId: updateLoggingConfig
+      tags:
+      - Config
+      summary: Update logging configuration
+      description: Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoggingConfig'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoggingConfigResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+    patch:
+      operationId: patchLoggingConfig
+      tags:
+      - Config
+      summary: Update logging configuration
+      description: Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
+      x-status: not-implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoggingConfig'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoggingConfigResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/routing/algorithms:
+    get:
+      operationId: listRoutingAlgorithms
+      tags:
+      - Routing
+      summary: List routing algorithms
+      description: 'Backed by `StubRoutingProvider`: the data is placeholder, not real node state. The list is hard-coded.
+        `/api/v1/routing` without a trailing segment is not registered and answers 301 to `/api/v1/routing/`, which
+        returns 404.'
+      x-status: stub
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlgorithmListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/routing/algorithms/{id}:
+    get:
+      operationId: getRoutingAlgorithm
+      tags:
+      - Routing
+      summary: Get a routing algorithm
+      description: 'Backed by `StubRoutingProvider`: the data is placeholder, not real node state.'
+      x-status: stub
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlgorithmResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/routing/test:
+    post:
+      operationId: testRouting
+      tags:
+      - Routing
+      summary: Test a routing decision
+      description: 'Backed by `StubRoutingProvider`: the data is placeholder, not real node state. It does not run
+        the router; `decision` is always `no_healthy_backend`.'
+      x-status: stub
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoutingTestRequest'
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutingTestResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/routing/decisions:
+    get:
+      operationId: listRoutingDecisions
+      tags:
+      - Routing
+      summary: Recent routing decisions
+      description: 'Backed by `StubRoutingProvider`: the data is placeholder, not real node state. Always empty.'
+      x-status: stub
+      parameters:
+      - name: start_time
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: end_time
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: domain
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: algorithm
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: region
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: outcome
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutingDecisionListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/v1/routing/flows:
+    get:
+      operationId: listRoutingFlows
+      tags:
+      - Routing
+      summary: Traffic flows
+      description: 'Backed by `StubRoutingProvider`: the data is placeholder, not real node state. Always empty.'
+      x-status: stub
+      parameters:
+      - name: start_time
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: end_time
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: source_region
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: dest_region
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/Error405'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+components:
+  responses:
+    Forbidden:
+      description: 'Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain
+        text `Forbidden`.'
+      content:
+        text/plain:
+          schema:
+            type: string
+    Error400:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Error404:
+      description: Not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Error405:
+      description: Method not allowed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Error500:
+      description: Internal error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Error503:
+      description: Dependency not configured.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    APIDiscoveryResponse:
+      type: object
+      required:
+      - endpoints
+      - generated_at
+      additionalProperties: false
+      properties:
+        endpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/APIEndpoint'
+        generated_at:
+          type: string
+          format: date-time
+    APIEndpoint:
+      type: object
+      required:
+      - path
+      - description
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+        description:
+          type: string
+        methods:
+          type: array
+          items:
+            type: string
+    APIVersionResponse:
+      type: object
+      required:
+      - versions
+      - generated_at
+      additionalProperties: false
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/APIEndpoint'
+        generated_at:
+          type: string
+          format: date-time
+    ActorActivityCount:
+      type: object
+      required:
+      - actor
+      - count
+      additionalProperties: false
+      properties:
+        actor:
+          type: string
+        count:
+          type: integer
+    AgentCertResponse:
+      type: object
+      required:
+      - agent_id
+      - fingerprint
+      - region
+      - first_seen
+      - last_seen
+      - not_after
+      - revoked
+      - revoked_at
+      - expires_in_hours
+      additionalProperties: false
+      properties:
+        agent_id:
+          type: string
+        fingerprint:
+          type: string
+        region:
+          type: string
+        first_seen:
+          type: string
+          format: date-time
+        last_seen:
+          type: string
+          format: date-time
+        not_after:
+          type: string
+          format: date-time
+        revoked:
+          type: boolean
+        revoked_at:
+          type: string
+          format: date-time
+        revoked_reason:
+          type: string
+        expires_in_hours:
+          type: integer
+    AgentCertificate:
+      type: object
+      required:
+      - agent_id
+      - serial
+      - not_before
+      - not_after
+      - fingerprint
+      - status
+      - issued_at
+      additionalProperties: false
+      properties:
+        agent_id:
+          type: string
+        serial:
+          type: string
+        not_before:
+          type: string
+          format: date-time
+        not_after:
+          type: string
+          format: date-time
+        fingerprint:
+          type: string
+        status:
+          type: string
+        issued_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+    AgentCertificateResponse:
+      type: object
+      required:
+      - certificate
+      additionalProperties: false
+      properties:
+        certificate:
+          $ref: '#/components/schemas/AgentCertificate'
+    AgentCertsResponse:
+      type: object
+      required:
+      - agents
+      - total
+      - revoked
+      - expiring
+      - generated_at
+      additionalProperties: false
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCertResponse'
+        total:
+          type: integer
+        revoked:
+          type: integer
+        expiring:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    AgentNode:
+      type: object
+      required:
+      - id
+      - name
+      - address
+      - port
+      - region
+      - status
+      - version
+      - uptime_seconds
+      - last_seen
+      - checks_total
+      - checks_per_sec
+      - active_checks
+      - target_count
+      - registered_at
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        port:
+          type: integer
+        region:
+          type: string
+        status:
+          type: string
+        version:
+          type: string
+        uptime_seconds:
+          type: integer
+        last_seen:
+          type: string
+          format: date-time
+        checks_total:
+          type: integer
+        checks_per_sec:
+          type: number
+        active_checks:
+          type: integer
+        target_count:
+          type: integer
+        certificate_expiry:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        registered_at:
+          type: string
+          format: date-time
+    AgentNodeListResponse:
+      type: object
+      required:
+      - nodes
+      - total
+      - generated_at
+      additionalProperties: false
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentNode'
+        total:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    AgentNodeResponse:
+      type: object
+      required:
+      - node
+      additionalProperties: false
+      properties:
+        node:
+          $ref: '#/components/schemas/AgentNode'
+    AgentRegisterRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        address:
+          type: string
+        port:
+          type: integer
+        region:
+          type: string
+        version:
+          type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+      - name
+      - address
+    AgentsExpiringResponse:
+      type: object
+      required:
+      - expiring
+      - count
+      - threshold_days
+      - generated_at
+      additionalProperties: false
+      properties:
+        expiring:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCertResponse'
+        count:
+          type: integer
+        threshold_days:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    AlgorithmListResponse:
+      type: object
+      required:
+      - algorithms
+      - total
+      - generated_at
+      additionalProperties: false
+      properties:
+        algorithms:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingAlgorithm'
+        total:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    AlgorithmResponse:
+      type: object
+      required:
+      - algorithm
+      additionalProperties: false
+      properties:
+        algorithm:
+          $ref: '#/components/schemas/RoutingAlgorithm'
+    AuditEntry:
+      type: object
+      required:
+      - id
+      - timestamp
+      - action
+      - resource
+      - actor
+      - actor_type
+      - status
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        action:
+          type: string
+        resource:
+          type: string
+        resource_id:
+          type: string
+        actor:
+          type: string
+        actor_type:
+          type: string
+        actor_ip:
+          type: string
+        status:
+          type: string
+        details:
+          type: object
+          additionalProperties: {}
+        before:
+          type: object
+          additionalProperties: {}
+        after:
+          type: object
+          additionalProperties: {}
+        duration_ms:
+          type: integer
+        request_id:
+          type: string
+    AuditEntryResponse:
+      type: object
+      required:
+      - entry
+      additionalProperties: false
+      properties:
+        entry:
+          $ref: '#/components/schemas/AuditEntry'
+    AuditListResponse:
+      type: object
+      required:
+      - entries
+      - total
+      - limit
+      - offset
+      - generated_at
+      additionalProperties: false
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEntry'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    AuditStats:
+      type: object
+      required:
+      - total_entries
+      - entries_last_24h
+      - entries_last_7d
+      - by_action
+      - by_resource
+      - by_status
+      - by_actor_type
+      - top_actors
+      - retention_days
+      additionalProperties: false
+      properties:
+        total_entries:
+          type: integer
+        entries_last_24h:
+          type: integer
+        entries_last_7d:
+          type: integer
+        by_action:
+          type:
+          - object
+          - 'null'
+          additionalProperties:
+            type: integer
+          description: Serialized as null when the Go slice/map is nil.
+        by_resource:
+          type:
+          - object
+          - 'null'
+          additionalProperties:
+            type: integer
+          description: Serialized as null when the Go slice/map is nil.
+        by_status:
+          type:
+          - object
+          - 'null'
+          additionalProperties:
+            type: integer
+          description: Serialized as null when the Go slice/map is nil.
+        by_actor_type:
+          type:
+          - object
+          - 'null'
+          additionalProperties:
+            type: integer
+          description: Serialized as null when the Go slice/map is nil.
+        top_actors:
+          type:
+          - array
+          - 'null'
+          items:
+            $ref: '#/components/schemas/ActorActivityCount'
+          description: Serialized as null when the Go slice/map is nil.
+        retention_days:
+          type: integer
+        oldest_entry:
+          type: string
+          format: date-time
+        newest_entry:
+          type: string
+          format: date-time
+    AuditStatsResponse:
+      type: object
+      required:
+      - stats
+      - generated_at
+      additionalProperties: false
+      properties:
+        stats:
+          $ref: '#/components/schemas/AuditStats'
+        generated_at:
+          type: string
+          format: date-time
+    BackendOverrideRequest:
+      type: object
+      properties:
+        healthy:
+          type: boolean
+        reason:
+          type: string
+    BackendOverrideResponse:
+      type: object
+      required:
+      - success
+      - message
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+    BackendResponse:
+      type: object
+      required:
+      - service
+      - address
+      - port
+      - weight
+      - agent_id
+      - region
+      - effective_status
+      - authority
+      - agent_healthy
+      - agent_last_seen
+      - validation_consecutive_passes
+      - validation_consecutive_fails
+      additionalProperties: false
+      properties:
+        service:
+          type: string
+        address:
+          type: string
+        port:
+          type: integer
+        weight:
+          type: integer
+        agent_id:
+          type: string
+        region:
+          type: string
+        effective_status:
+          type: string
+        authority:
+          type: string
+        agent_healthy:
+          type: boolean
+        agent_last_seen:
+          type: string
+          format: date-time
+        validation_healthy:
+          type: boolean
+        validation_last_check:
+          type: string
+          format: date-time
+        validation_error:
+          type: string
+        validation_consecutive_passes:
+          type: integer
+        validation_consecutive_fails:
+          type: integer
+        override_status:
+          type: boolean
+        override_reason:
+          type: string
+        override_by:
+          type: string
+        override_at:
+          type: string
+          format: date-time
+    BackendServer:
+      type: object
+      required:
+      - name
+      - address
+      - port
+      - protocol
+      - weight
+      - priority
+      - region
+      - enabled
+      - healthy
+      - created_at
+      - updated_at
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        port:
+          type: integer
+        protocol:
+          type: string
+        weight:
+          type: integer
+        priority:
+          type: integer
+        region:
+          type: string
+        enabled:
+          type: boolean
+        healthy:
+          type: boolean
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        health_check:
+          $ref: '#/components/schemas/ServerHealthCheck'
+        status:
+          $ref: '#/components/schemas/ServerStatus'
+      description: '`id` has the form `{service}:{address}:{port}`.'
+    BackendsResponse:
+      type: object
+      required:
+      - backends
+      - generated_at
+      additionalProperties: false
+      properties:
+        backends:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackendResponse'
+        generated_at:
+          type: string
+          format: date-time
+    BuildInfo:
+      type: object
+      required:
+      - version
+      - git_commit
+      - build_date
+      - go_version
+      additionalProperties: false
+      properties:
+        version:
+          type: string
+        git_commit:
+          type: string
+        build_date:
+          type: string
+        go_version:
+          type: string
+    CPUStats:
+      type: object
+      required:
+      - used_percent
+      - system_percent
+      - user_percent
+      - idle_percent
+      - cores
+      additionalProperties: false
+      properties:
+        used_percent:
+          type: number
+        system_percent:
+          type: number
+        user_percent:
+          type: number
+        idle_percent:
+          type: number
+        cores:
+          type: integer
+    ClusterAgentStatus:
+      type: object
+      required:
+      - agent_id
+      - region
+      - status
+      - last_seen
+      - backend_count
+      additionalProperties: false
+      properties:
+        agent_id:
+          type: string
+        region:
+          type: string
+        status:
+          type: string
+        last_seen:
+          type: string
+          format: date-time
+        backend_count:
+          type: integer
+    ClusterBackendSummary:
+      type: object
+      required:
+      - total
+      - healthy
+      - unhealthy
+      - stale
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+        healthy:
+          type: integer
+        unhealthy:
+          type: integer
+        stale:
+          type: integer
+    ClusterNodeStatus:
+      type: object
+      required:
+      - node_id
+      - status
+      - uptime_seconds
+      additionalProperties: false
+      properties:
+        node_id:
+          type: string
+        status:
+          type: string
+        uptime_seconds:
+          type: integer
+    ClusterStatusResponse:
+      type: object
+      required:
+      - cluster_healthy
+      - overwatch
+      - agents
+      - healthy_agents
+      - gossip_members
+      - backend_summary
+      - generated_at
+      additionalProperties: false
+      properties:
+        cluster_healthy:
+          type: boolean
+        overwatch:
+          $ref: '#/components/schemas/ClusterNodeStatus'
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClusterAgentStatus'
+        expected_agents:
+          type: integer
+        healthy_agents:
+          type: integer
+        gossip_members:
+          type: integer
+        backend_summary:
+          $ref: '#/components/schemas/ClusterBackendSummary'
+        generated_at:
+          type: string
+          format: date-time
+    DNSConfig:
+      type: object
+      required:
+      - listen_address
+      - listen_port
+      - enable_tcp
+      - enable_udp
+      - enable_dot
+      - enable_doh
+      - max_udp_size
+      - default_ttl
+      - min_ttl
+      - max_ttl
+      - negative_ttl
+      - cache_enabled
+      - cache_size
+      - recursion_enabled
+      - rate_limit_enabled
+      - rate_limit_qps
+      additionalProperties: false
+      properties:
+        listen_address:
+          type: string
+        listen_port:
+          type: integer
+        enable_tcp:
+          type: boolean
+        enable_udp:
+          type: boolean
+        enable_dot:
+          type: boolean
+        enable_doh:
+          type: boolean
+        dot_port:
+          type: integer
+        doh_port:
+          type: integer
+        max_udp_size:
+          type: integer
+        default_ttl:
+          type: integer
+        min_ttl:
+          type: integer
+        max_ttl:
+          type: integer
+        negative_ttl:
+          type: integer
+        cache_enabled:
+          type: boolean
+        cache_size:
+          type: integer
+        recursion_enabled:
+          type: boolean
+        forwarders:
+          type: array
+          items:
+            type: string
+        rate_limit_enabled:
+          type: boolean
+        rate_limit_qps:
+          type: integer
+    DNSConfigResponse:
+      type: object
+      required:
+      - config
+      additionalProperties: false
+      properties:
+        config:
+          $ref: '#/components/schemas/DNSConfig'
+    DNSSECKeysResponse:
+      type: object
+      required:
+      - enabled
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/KeyPair'
+    DNSSECStatusResponse:
+      type: object
+      required:
+      - enabled
+      - sync
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/KeyInfo'
+        sync:
+          $ref: '#/components/schemas/SyncStatus'
+    DNSSECSyncResponse:
+      type: object
+      required:
+      - status
+      - message
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+        message:
+          type: string
+    DSRecord:
+      type: object
+      required:
+      - zone
+      - key_tag
+      - algorithm
+      - digest_type
+      - digest
+      - ds_record
+      - created_at
+      additionalProperties: false
+      properties:
+        zone:
+          type: string
+        key_tag:
+          type: integer
+        algorithm:
+          type: integer
+        digest_type:
+          type: integer
+        digest:
+          type: string
+        ds_record:
+          type: string
+        created_at:
+          type: string
+    DSResponse:
+      type: object
+      required:
+      - enabled
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        message:
+          type: string
+        ds_records:
+          type: array
+          items:
+            $ref: '#/components/schemas/DSRecord'
+    Domain:
+      type: object
+      required:
+      - name
+      - ttl
+      - routing_policy
+      - dnssec_enabled
+      - enabled
+      - created_at
+      - updated_at
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        ttl:
+          type: integer
+        routing_policy:
+          type: string
+        health_check_id:
+          type: string
+        dnssec_enabled:
+          type: boolean
+        enabled:
+          type: boolean
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        backend_count:
+          type: integer
+        healthy_backends:
+          type: integer
+        settings:
+          $ref: '#/components/schemas/DomainSettings'
+    DomainBackend:
+      type: object
+      required:
+      - id
+      - address
+      - port
+      - weight
+      - priority
+      - region
+      - healthy
+      - enabled
+      - last_check
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        address:
+          type: string
+        port:
+          type: integer
+        weight:
+          type: integer
+        priority:
+          type: integer
+        region:
+          type: string
+        healthy:
+          type: boolean
+        enabled:
+          type: boolean
+        last_check:
+          type: string
+          format: date-time
+      description: '`id` has the form `{domain}:{address}:{port}`.'
+    DomainBackendCreateRequest:
+      type: object
+      properties:
+        address:
+          type: string
+        port:
+          type: integer
+        weight:
+          type: integer
+        priority:
+          type: integer
+        region:
+          type: string
+        enabled:
+          type: boolean
+      required:
+      - address
+      - port
+      description: A `health_check` object in the body is silently ignored.
+    DomainBackendResponse:
+      type: object
+      required:
+      - backend
+      additionalProperties: false
+      properties:
+        backend:
+          $ref: '#/components/schemas/DomainBackend'
+    DomainBackendsResponse:
+      type: object
+      required:
+      - backends
+      - total
+      - generated_at
+      additionalProperties: false
+      properties:
+        backends:
+          type: array
+          items:
+            $ref: '#/components/schemas/DomainBackend'
+        total:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    DomainCreateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        ttl:
+          type: integer
+        routing_policy:
+          type: string
+        dnssec_enabled:
+          type: boolean
+        enabled:
+          type: boolean
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        settings:
+          $ref: '#/components/schemas/DomainSettings'
+      required:
+      - name
+      description: Only `routing_policy` selects the algorithm. A `routing_algorithm` or `regions` field is silently
+        ignored (the domain is then created as round-robin).
+    DomainListResponse:
+      type: object
+      required:
+      - domains
+      - total
+      - generated_at
+      additionalProperties: false
+      properties:
+        domains:
+          type: array
+          items:
+            $ref: '#/components/schemas/Domain'
+        total:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    DomainResponse:
+      type: object
+      required:
+      - domain
+      additionalProperties: false
+      properties:
+        domain:
+          $ref: '#/components/schemas/Domain'
+    DomainSettings:
+      type: object
+      required:
+      - geo_routing_enabled
+      - failover_enabled
+      - failover_threshold
+      - load_balancing_method
+      additionalProperties: false
+      properties:
+        geo_routing_enabled:
+          type: boolean
+        failover_enabled:
+          type: boolean
+        failover_threshold:
+          type: integer
+        load_balancing_method:
+          type: string
+    DomainUpdateRequest:
+      type: object
+      properties:
+        ttl:
+          type: integer
+        routing_policy:
+          type: string
+        dnssec_enabled:
+          type: boolean
+        enabled:
+          type: boolean
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        settings:
+          $ref: '#/components/schemas/DomainSettings'
+    EDNS:
+      type: object
+      additionalProperties: false
+      properties:
+        client_subnet:
+          type: string
+        source_scope:
+          type: integer
+    ErrorResponse:
+      type: object
+      required:
+      - error
+      - code
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+        code:
+          type: integer
+    FlowListResponse:
+      type: object
+      required:
+      - flows
+      - total
+      - generated_at
+      additionalProperties: false
+      properties:
+        flows:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrafficFlow'
+        total:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    GeoMappingRequest:
+      type: object
+      properties:
+        cidr:
+          type: string
+        region:
+          type: string
+        comment:
+          type: string
+      required:
+      - cidr
+      - region
+    GeoMappingResponse:
+      type: object
+      required:
+      - cidr
+      - region
+      - source
+      additionalProperties: false
+      properties:
+        cidr:
+          type: string
+        region:
+          type: string
+        comment:
+          type: string
+        source:
+          type: string
+    GeoMappingsResponse:
+      type: object
+      required:
+      - mappings
+      - generated_at
+      additionalProperties: false
+      properties:
+        mappings:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeoMappingResponse'
+        generated_at:
+          type: string
+          format: date-time
+    GeoTestResponse:
+      type: object
+      required:
+      - ip
+      - region
+      - match_type
+      additionalProperties: false
+      properties:
+        ip:
+          type: string
+        region:
+          type: string
+        match_type:
+          type: string
+        matched_cidr:
+          type: string
+        comment:
+          type: string
+        country:
+          type: string
+        continent:
+          type: string
+    GossipConfig:
+      type: object
+      required:
+      - enabled
+      - bind_address
+      - bind_port
+      - cluster_name
+      - encryption_enabled
+      - retransmit_mult
+      - gossip_interval_ms
+      - probe_interval_ms
+      - probe_timeout_ms
+      - suspicion_mult
+      - suspicion_max_timeout_mult
+      - push_pull_interval_ms
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        bind_address:
+          type: string
+        bind_port:
+          type: integer
+        advertise_address:
+          type: string
+        advertise_port:
+          type: integer
+        cluster_name:
+          type: string
+        encryption_enabled:
+          type: boolean
+        encryption_key:
+          type: string
+        retransmit_mult:
+          type: integer
+        gossip_interval_ms:
+          type: integer
+        probe_interval_ms:
+          type: integer
+        probe_timeout_ms:
+          type: integer
+        suspicion_mult:
+          type: integer
+        suspicion_max_timeout_mult:
+          type: integer
+        push_pull_interval_ms:
+          type: integer
+        seeds:
+          type: array
+          items:
+            type: string
+    GossipConfigResponse:
+      type: object
+      required:
+      - config
+      additionalProperties: false
+      properties:
+        config:
+          $ref: '#/components/schemas/GossipConfig'
+    GossipKeyResponse:
+      type: object
+      required:
+      - key
+      - algorithm
+      - bits
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        algorithm:
+          type: string
+        bits:
+          type: integer
+    GossipNode:
+      type: object
+      required:
+      - id
+      - name
+      - address
+      - port
+      - status
+      - state
+      - region
+      - version
+      - rtt_ms
+      - last_seen
+      - joined_at
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        port:
+          type: integer
+        status:
+          type: string
+        state:
+          type: string
+        region:
+          type: string
+        datacenter:
+          type: string
+        version:
+          type: string
+        rtt_ms:
+          type: integer
+        last_seen:
+          type: string
+          format: date-time
+        joined_at:
+          type: string
+          format: date-time
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+    GossipNodeListResponse:
+      type: object
+      required:
+      - nodes
+      - total
+      - healthy
+      - generated_at
+      additionalProperties: false
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/GossipNode'
+        total:
+          type: integer
+        healthy:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    GossipNodeResponse:
+      type: object
+      required:
+      - node
+      additionalProperties: false
+      properties:
+        node:
+          $ref: '#/components/schemas/GossipNode'
+    HealthCheckConfig:
+      type: object
+      required:
+      - default_interval_seconds
+      - default_timeout_seconds
+      - healthy_threshold
+      - unhealthy_threshold
+      - max_concurrent_checks
+      - enable_passive_checks
+      - default_protocol
+      - tcp_connect_timeout_ms
+      - http_follow_redirects
+      - http_max_redirects
+      - retry_enabled
+      - retry_count
+      - retry_delay_ms
+      additionalProperties: false
+      properties:
+        default_interval_seconds:
+          type: integer
+        default_timeout_seconds:
+          type: integer
+        healthy_threshold:
+          type: integer
+        unhealthy_threshold:
+          type: integer
+        max_concurrent_checks:
+          type: integer
+        enable_passive_checks:
+          type: boolean
+        default_protocol:
+          type: string
+        tcp_connect_timeout_ms:
+          type: integer
+        http_follow_redirects:
+          type: boolean
+        http_max_redirects:
+          type: integer
+        retry_enabled:
+          type: boolean
+        retry_count:
+          type: integer
+        retry_delay_ms:
+          type: integer
+    HealthCheckConfigResponse:
+      type: object
+      required:
+      - config
+      additionalProperties: false
+      properties:
+        config:
+          $ref: '#/components/schemas/HealthCheckConfig'
+    HealthResponse:
+      type: object
+      required:
+      - servers
+      - generated_at
+      additionalProperties: false
+      properties:
+        servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServerHealthResponse'
+        generated_at:
+          type: string
+          format: date-time
+    KeyInfo:
+      type: object
+      required:
+      - zone
+      - key_tag
+      - algorithm
+      - flags
+      - public_key
+      - created_at
+      - node_id
+      - can_sign
+      - age_seconds
+      additionalProperties: false
+      properties:
+        zone:
+          type: string
+        key_tag:
+          type: integer
+        algorithm:
+          type: string
+        flags:
+          type: integer
+        public_key:
+          type: string
+        created_at:
+          type: string
+        node_id:
+          type: string
+        can_sign:
+          type: boolean
+        age_seconds:
+          type: integer
+    KeyPair:
+      type: object
+      required:
+      - zone
+      - algorithm
+      - flags
+      - key_tag
+      - public_key
+      - created_at
+      - node_id
+      additionalProperties: false
+      properties:
+        zone:
+          type: string
+        algorithm:
+          type: string
+        flags:
+          type: integer
+        key_tag:
+          type: integer
+        public_key:
+          type: string
+        private_key:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        node_id:
+          type: string
+    LatencyEntry:
+      type: object
+      required:
+      - subnet
+      - backend
+      - region
+      - ewma_ms
+      - sample_count
+      - last_updated
+      - source
+      additionalProperties: false
+      properties:
+        subnet:
+          type: string
+        backend:
+          type: string
+        region:
+          type: string
+        ewma_ms:
+          type: integer
+        sample_count:
+          type: integer
+        last_updated:
+          type: string
+        source:
+          type: string
+    LatencyInjectRequest:
+      type: object
+      required:
+      - subnet
+      - backend
+      - region
+      properties:
+        subnet:
+          type: string
+        backend:
+          type: string
+        region:
+          type: string
+        latency_ms:
+          type: integer
+        samples:
+          type: integer
+    LatencyInjectResponse:
+      type: object
+      required:
+      - message
+      - subnet
+      - backend
+      - region
+      additionalProperties: false
+      properties:
+        message:
+          type: string
+        subnet:
+          type: string
+        backend:
+          type: string
+        region:
+          type: string
+    LatencyTableResponse:
+      type: object
+      required:
+      - entries
+      - count
+      - subnet_count
+      - generated_at
+      additionalProperties: false
+      properties:
+        entries:
+          type:
+          - array
+          - 'null'
+          items:
+            $ref: '#/components/schemas/LatencyEntry'
+          description: null when the table is empty.
+        count:
+          type: integer
+        subnet_count:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    LiveResponse:
+      type: object
+      required:
+      - alive
+      additionalProperties: false
+      properties:
+        alive:
+          type: boolean
+    LoggingConfig:
+      type: object
+      required:
+      - level
+      - format
+      - output
+      - enable_audit
+      - audit_retention_days
+      additionalProperties: false
+      properties:
+        level:
+          type: string
+        format:
+          type: string
+        output:
+          type: string
+        file_path:
+          type: string
+        max_size_mb:
+          type: integer
+        max_backups:
+          type: integer
+        max_age_days:
+          type: integer
+        compress:
+          type: boolean
+        enable_audit:
+          type: boolean
+        audit_retention_days:
+          type: integer
+    LoggingConfigResponse:
+      type: object
+      required:
+      - config
+      additionalProperties: false
+      properties:
+        config:
+          $ref: '#/components/schemas/LoggingConfig'
+    MemoryStats:
+      type: object
+      required:
+      - used_bytes
+      - available_bytes
+      - total_bytes
+      - percent
+      additionalProperties: false
+      properties:
+        used_bytes:
+          type: integer
+        available_bytes:
+          type: integer
+        total_bytes:
+          type: integer
+        percent:
+          type: number
+    MetricsDataPoint:
+      type: object
+      required:
+      - timestamp
+      - values
+      additionalProperties: false
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        values:
+          type: object
+          additionalProperties:
+            type: number
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+    MetricsHistoryResponse:
+      type: object
+      required:
+      - data_points
+      - total
+      - generated_at
+      additionalProperties: false
+      properties:
+        data_points:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricsDataPoint'
+        total:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    MetricsOverview:
+      type: object
+      required:
+      - timestamp
+      - uptime_seconds
+      - queries_total
+      - queries_per_sec
+      - health_checks_total
+      - health_checks_per_sec
+      - active_domains
+      - active_servers
+      - healthy_servers
+      - unhealthy_servers
+      - active_regions
+      - overwatch_nodes
+      - agent_nodes
+      - dnssec_enabled
+      - gossip_enabled
+      - response_times
+      - error_rate
+      - cache_hit_rate
+      - memory
+      - cpu
+      additionalProperties: false
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        uptime_seconds:
+          type: integer
+        queries_total:
+          type: integer
+        queries_per_sec:
+          type: number
+        health_checks_total:
+          type: integer
+        health_checks_per_sec:
+          type: number
+        active_domains:
+          type: integer
+        active_servers:
+          type: integer
+        healthy_servers:
+          type: integer
+        unhealthy_servers:
+          type: integer
+        active_regions:
+          type: integer
+        overwatch_nodes:
+          type: integer
+        agent_nodes:
+          type: integer
+        dnssec_enabled:
+          type: boolean
+        gossip_enabled:
+          type: boolean
+        response_times:
+          $ref: '#/components/schemas/ResponseTimeStats'
+        error_rate:
+          type: number
+        cache_hit_rate:
+          type: number
+        memory:
+          $ref: '#/components/schemas/MemoryStats'
+        cpu:
+          $ref: '#/components/schemas/CPUStats'
+    MetricsOverviewResponse:
+      type: object
+      required:
+      - overview
+      additionalProperties: false
+      properties:
+        overview:
+          $ref: '#/components/schemas/MetricsOverview'
+    NodeMetrics:
+      type: object
+      required:
+      - node_id
+      - node_type
+      - timestamp
+      - status
+      - uptime_seconds
+      - response_times
+      - error_rate
+      - memory
+      - cpu
+      - connections_active
+      additionalProperties: false
+      properties:
+        node_id:
+          type: string
+        node_type:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: string
+        uptime_seconds:
+          type: integer
+        queries_total:
+          type: integer
+        queries_per_sec:
+          type: number
+        checks_total:
+          type: integer
+        checks_per_sec:
+          type: number
+        response_times:
+          $ref: '#/components/schemas/ResponseTimeStats'
+        error_rate:
+          type: number
+        memory:
+          $ref: '#/components/schemas/MemoryStats'
+        cpu:
+          $ref: '#/components/schemas/CPUStats'
+        connections_active:
+          type: integer
+    NodeMetricsResponse:
+      type: object
+      required:
+      - metrics
+      additionalProperties: false
+      properties:
+        metrics:
+          $ref: '#/components/schemas/NodeMetrics'
+    Override:
+      type: object
+      required:
+      - service
+      - address
+      - healthy
+      - reason
+      - source
+      - created_at
+      additionalProperties: false
+      properties:
+        service:
+          type: string
+        address:
+          type: string
+        healthy:
+          type: boolean
+        reason:
+          type: string
+        source:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        authority:
+          type: string
+    OverrideRequest:
+      type: object
+      properties:
+        healthy:
+          type: boolean
+        reason:
+          type: string
+        source:
+          type: string
+      required:
+      - source
+    OverrideResponse:
+      type: object
+      required:
+      - service
+      - address
+      - healthy
+      - reason
+      - source
+      - created_at
+      - authority
+      additionalProperties: false
+      properties:
+        service:
+          type: string
+        address:
+          type: string
+        healthy:
+          type: boolean
+        reason:
+          type: string
+        source:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        authority:
+          type: string
+    OverridesListResponse:
+      type: object
+      required:
+      - overrides
+      additionalProperties: false
+      properties:
+        overrides:
+          type: array
+          items:
+            $ref: '#/components/schemas/Override'
+    OverwatchNode:
+      type: object
+      required:
+      - id
+      - name
+      - address
+      - port
+      - api_port
+      - region
+      - status
+      - version
+      - uptime_seconds
+      - last_seen
+      - queries_total
+      - queries_per_sec
+      - dnssec_enabled
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        port:
+          type: integer
+        api_port:
+          type: integer
+        region:
+          type: string
+        status:
+          type: string
+        version:
+          type: string
+        uptime_seconds:
+          type: integer
+        last_seen:
+          type: string
+          format: date-time
+        queries_total:
+          type: integer
+        queries_per_sec:
+          type: number
+        dnssec_enabled:
+          type: boolean
+        features:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+    OverwatchNodeListResponse:
+      type: object
+      required:
+      - nodes
+      - total
+      - generated_at
+      additionalProperties: false
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/OverwatchNode'
+        total:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    OverwatchNodeResponse:
+      type: object
+      required:
+      - node
+      additionalProperties: false
+      properties:
+        node:
+          $ref: '#/components/schemas/OverwatchNode'
+    PeerSyncStatus:
+      type: object
+      required:
+      - peer
+      - last_sync
+      - last_success
+      additionalProperties: false
+      properties:
+        peer:
+          type: string
+        last_sync:
+          type: string
+          format: date-time
+        last_success:
+          type: boolean
+        last_error:
+          type: string
+    Preferences:
+      type: object
+      required:
+      - theme
+      - language
+      - timezone
+      - date_format
+      - time_format
+      - refresh_interval_seconds
+      - notifications_enabled
+      - default_view
+      - updated_at
+      additionalProperties: false
+      properties:
+        theme:
+          type: string
+        language:
+          type: string
+        timezone:
+          type: string
+        date_format:
+          type: string
+        time_format:
+          type: string
+        refresh_interval_seconds:
+          type: integer
+        notifications_enabled:
+          type: boolean
+        default_view:
+          type: string
+        custom_settings:
+          type: object
+          additionalProperties:
+            type: string
+        updated_at:
+          type: string
+          format: date-time
+    PreferencesResponse:
+      type: object
+      required:
+      - preferences
+      additionalProperties: false
+      properties:
+        preferences:
+          $ref: '#/components/schemas/Preferences'
+    ReadyResponse:
+      type: object
+      required:
+      - ready
+      - dns_ready
+      - health_ready
+      additionalProperties: false
+      properties:
+        ready:
+          type: boolean
+        message:
+          type: string
+        dns_ready:
+          type: boolean
+        health_ready:
+          type: boolean
+    Region:
+      type: object
+      required:
+      - name
+      - code
+      - enabled
+      - priority
+      - created_at
+      - updated_at
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        code:
+          type: string
+        description:
+          type: string
+        latitude:
+          type: number
+        longitude:
+          type: number
+        continent:
+          type: string
+        countries:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+        priority:
+          type: integer
+        server_count:
+          type: integer
+        healthy_servers:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    RegionCreateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        code:
+          type: string
+        description:
+          type: string
+        latitude:
+          type: number
+        longitude:
+          type: number
+        continent:
+          type: string
+        countries:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+        priority:
+          type: integer
+      required:
+      - name
+      - code
+    RegionHealthResponse:
+      type: object
+      required:
+      - name
+      - total_servers
+      - healthy_count
+      - unhealthy_count
+      - health_percent
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        total_servers:
+          type: integer
+        healthy_count:
+          type: integer
+        unhealthy_count:
+          type: integer
+        health_percent:
+          type: number
+    RegionListResponse:
+      type: object
+      required:
+      - regions
+      - total
+      - generated_at
+      additionalProperties: false
+      properties:
+        regions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Region'
+        total:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    RegionMetrics:
+      type: object
+      required:
+      - region_id
+      - timestamp
+      - total_servers
+      - healthy_servers
+      - queries_total
+      - queries_per_sec
+      - response_times
+      - error_rate
+      - traffic_percent
+      additionalProperties: false
+      properties:
+        region_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        total_servers:
+          type: integer
+        healthy_servers:
+          type: integer
+        queries_total:
+          type: integer
+        queries_per_sec:
+          type: number
+        response_times:
+          $ref: '#/components/schemas/ResponseTimeStats'
+        error_rate:
+          type: number
+        traffic_percent:
+          type: number
+    RegionMetricsResponse:
+      type: object
+      required:
+      - metrics
+      additionalProperties: false
+      properties:
+        metrics:
+          $ref: '#/components/schemas/RegionMetrics'
+    RegionResponse:
+      type: object
+      required:
+      - region
+      additionalProperties: false
+      properties:
+        region:
+          $ref: '#/components/schemas/Region'
+    RegionUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        code:
+          type: string
+        description:
+          type: string
+        latitude:
+          type: number
+        longitude:
+          type: number
+        continent:
+          type: string
+        countries:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+        priority:
+          type: integer
+    RegionsResponse:
+      type: object
+      required:
+      - regions
+      - generated_at
+      additionalProperties: false
+      properties:
+        regions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RegionHealthResponse'
+        generated_at:
+          type: string
+          format: date-time
+    ResponseTimeStats:
+      type: object
+      required:
+      - avg_ms
+      - p50_ms
+      - p95_ms
+      - p99_ms
+      - max_ms
+      additionalProperties: false
+      properties:
+        avg_ms:
+          type: number
+        p50_ms:
+          type: number
+        p95_ms:
+          type: number
+        p99_ms:
+          type: number
+        max_ms:
+          type: number
+    RevokeRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+    RoutingAlgorithm:
+      type: object
+      required:
+      - id
+      - name
+      - description
+      - type
+      - enabled
+      - default
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+        parameters:
+          type: object
+          additionalProperties:
+            type: string
+        enabled:
+          type: boolean
+        default:
+          type: boolean
+    RoutingDecision:
+      type: object
+      required:
+      - id
+      - timestamp
+      - domain
+      - client_ip
+      - algorithm
+      - selected_server
+      - selected_region
+      - decision_time_us
+      - outcome
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        domain:
+          type: string
+        client_ip:
+          type: string
+        client_region:
+          type: string
+        algorithm:
+          type: string
+        selected_server:
+          type: string
+        selected_region:
+          type: string
+        decision_time_us:
+          type: integer
+        outcome:
+          type: string
+    RoutingDecisionListResponse:
+      type: object
+      required:
+      - decisions
+      - total
+      - limit
+      - offset
+      - generated_at
+      additionalProperties: false
+      properties:
+        decisions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingDecision'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    RoutingFactor:
+      type: object
+      required:
+      - name
+      - type
+      - value
+      - weight
+      - impact
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        value:
+          type: string
+        weight:
+          type: number
+        impact:
+          type: string
+    RoutingStats:
+      type: object
+      required:
+      - timestamp
+      - total_decisions
+      - by_algorithm
+      - by_region
+      - by_outcome
+      - geo_routing_hits
+      - failover_events
+      - avg_decision_time_us
+      additionalProperties: false
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        total_decisions:
+          type: integer
+        by_algorithm:
+          type:
+          - object
+          - 'null'
+          additionalProperties:
+            type: integer
+          description: Serialized as null when the Go slice/map is nil.
+        by_region:
+          type:
+          - object
+          - 'null'
+          additionalProperties:
+            type: integer
+          description: Serialized as null when the Go slice/map is nil.
+        by_outcome:
+          type:
+          - object
+          - 'null'
+          additionalProperties:
+            type: integer
+          description: Serialized as null when the Go slice/map is nil.
+        geo_routing_hits:
+          type: integer
+        failover_events:
+          type: integer
+        avg_decision_time_us:
+          type: number
+    RoutingStatsResponse:
+      type: object
+      required:
+      - stats
+      additionalProperties: false
+      properties:
+        stats:
+          $ref: '#/components/schemas/RoutingStats'
+    RoutingTestRequest:
+      type: object
+      properties:
+        domain:
+          type: string
+        client_ip:
+          type: string
+        query_type:
+          type: string
+        edns:
+          $ref: '#/components/schemas/EDNS'
+      required:
+      - domain
+      - client_ip
+    RoutingTestResponse:
+      type: object
+      required:
+      - result
+      additionalProperties: false
+      properties:
+        result:
+          $ref: '#/components/schemas/RoutingTestResult'
+    RoutingTestResult:
+      type: object
+      required:
+      - domain
+      - client_ip
+      - algorithm
+      - factors
+      - decision
+      - decision_time_us
+      - ttl
+      - timestamp
+      additionalProperties: false
+      properties:
+        domain:
+          type: string
+        client_ip:
+          type: string
+        client_region:
+          type: string
+        client_country:
+          type: string
+        algorithm:
+          type: string
+        selected_backend:
+          $ref: '#/components/schemas/SelectedBackend'
+        alternatives:
+          type: array
+          items:
+            $ref: '#/components/schemas/SelectedBackend'
+        factors:
+          type:
+          - array
+          - 'null'
+          items:
+            $ref: '#/components/schemas/RoutingFactor'
+          description: Serialized as null when the Go slice/map is nil.
+        decision:
+          type: string
+        decision_time_us:
+          type: integer
+        ttl:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+    SelectedBackend:
+      type: object
+      required:
+      - address
+      - port
+      - region
+      - weight
+      - priority
+      - healthy
+      additionalProperties: false
+      properties:
+        address:
+          type: string
+        port:
+          type: integer
+        region:
+          type: string
+        weight:
+          type: integer
+        priority:
+          type: integer
+        healthy:
+          type: boolean
+        score:
+          type: number
+    ServerCreateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        address:
+          type: string
+        port:
+          type: integer
+        protocol:
+          type: string
+        weight:
+          type: integer
+        priority:
+          type: integer
+        region:
+          type: string
+        enabled:
+          type: boolean
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        health_check:
+          $ref: '#/components/schemas/ServerHealthCheck'
+      required:
+      - address
+      - port
+      description: The owning domain is taken from `name` or `metadata.service`; a top-level `service` field is
+        ignored. If neither is set the request fails with 500.
+    ServerHealthCheck:
+      type: object
+      required:
+      - enabled
+      - type
+      - interval
+      - timeout
+      - healthy_threshold
+      - unhealthy_threshold
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        type:
+          type: string
+        path:
+          type: string
+        interval:
+          type: integer
+          description: Duration in nanoseconds (Go time.Duration).
+        timeout:
+          type: integer
+          description: Duration in nanoseconds (Go time.Duration).
+        healthy_threshold:
+          type: integer
+        unhealthy_threshold:
+          type: integer
+        expected_status:
+          type: integer
+        expected_body:
+          type: string
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+      description: '`interval` and `timeout` are Go time.Duration values encoded as integer nanoseconds; a string
+        such as "30s" is rejected with 400.'
+    ServerHealthCheckResponse:
+      type: object
+      required:
+      - server_id
+      - health_check
+      additionalProperties: false
+      properties:
+        server_id:
+          type: string
+        health_check:
+          $ref: '#/components/schemas/ServerHealthCheck'
+    ServerHealthResponse:
+      type: object
+      required:
+      - address
+      - port
+      - healthy
+      - status
+      - consecutive_failures
+      - consecutive_successes
+      additionalProperties: false
+      properties:
+        address:
+          type: string
+        port:
+          type: integer
+        region:
+          type: string
+        healthy:
+          type: boolean
+        status:
+          type: string
+        last_check:
+          type: string
+          format: date-time
+        last_healthy:
+          type: string
+          format: date-time
+        consecutive_failures:
+          type: integer
+        consecutive_successes:
+          type: integer
+        last_error:
+          type: string
+        latency_ms:
+          type: number
+    ServerListResponse:
+      type: object
+      required:
+      - servers
+      - total
+      - generated_at
+      additionalProperties: false
+      properties:
+        servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackendServer'
+        total:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+    ServerResponse:
+      type: object
+      required:
+      - server
+      additionalProperties: false
+      properties:
+        server:
+          $ref: '#/components/schemas/BackendServer'
+    ServerStatus:
+      type: object
+      required:
+      - healthy
+      - consecutive_failures
+      - consecutive_successes
+      additionalProperties: false
+      properties:
+        healthy:
+          type: boolean
+        last_check:
+          type: string
+          format: date-time
+        last_healthy:
+          type: string
+          format: date-time
+        consecutive_failures:
+          type: integer
+        consecutive_successes:
+          type: integer
+        last_error:
+          type: string
+        response_time_ms:
+          type: integer
+    ServerUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        address:
+          type: string
+        port:
+          type: integer
+        protocol:
+          type: string
+        weight:
+          type: integer
+        priority:
+          type: integer
+        region:
+          type: string
+        enabled:
+          type: boolean
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        health_check:
+          $ref: '#/components/schemas/ServerHealthCheck'
+    SimpleHealthResponse:
+      type: object
+      required:
+      - status
+      - version
+      - uptime_seconds
+      - timestamp
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+        version:
+          type: string
+        uptime_seconds:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+    StatsResponse:
+      type: object
+      required:
+      - total_backends
+      - healthy_backends
+      - unhealthy_backends
+      - stale_backends
+      - active_overrides
+      - validation_enabled
+      - validated_backends
+      - disagreement_count
+      - active_agents
+      - unique_services
+      - backends_by_service
+      - backends_by_region
+      - generated_at
+      additionalProperties: false
+      properties:
+        total_backends:
+          type: integer
+        healthy_backends:
+          type: integer
+        unhealthy_backends:
+          type: integer
+        stale_backends:
+          type: integer
+        active_overrides:
+          type: integer
+        validation_enabled:
+          type: boolean
+        validated_backends:
+          type: integer
+        disagreement_count:
+          type: integer
+        active_agents:
+          type: integer
+        unique_services:
+          type: integer
+        backends_by_service:
+          type: object
+          additionalProperties:
+            type: integer
+        backends_by_region:
+          type: object
+          additionalProperties:
+            type: integer
+        generated_at:
+          type: string
+          format: date-time
+    SuccessMessage:
+      type: object
+      required:
+      - success
+      - message
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+    SyncStatus:
+      type: object
+      required:
+      - running
+      - poll_interval
+      - peers
+      additionalProperties: false
+      properties:
+        running:
+          type: boolean
+        poll_interval:
+          type: string
+        peers:
+          type:
+          - array
+          - 'null'
+          items:
+            $ref: '#/components/schemas/PeerSyncStatus'
+          description: Serialized as null when the Go slice/map is nil.
+    SystemConfig:
+      type: object
+      required:
+      - version
+      - build_info
+      - mode
+      - node_id
+      - node_name
+      - region
+      - features
+      - start_time
+      additionalProperties: false
+      properties:
+        version:
+          type: string
+        build_info:
+          $ref: '#/components/schemas/BuildInfo'
+        mode:
+          type: string
+        node_id:
+          type: string
+        node_name:
+          type: string
+        region:
+          type: string
+        datacenter:
+          type: string
+        features:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          description: Serialized as null when the Go slice/map is nil.
+        start_time:
+          type: string
+          format: date-time
+        config_path:
+          type: string
+        data_dir:
+          type: string
+    SystemConfigResponse:
+      type: object
+      required:
+      - config
+      additionalProperties: false
+      properties:
+        config:
+          $ref: '#/components/schemas/SystemConfig'
+    TrafficFlow:
+      type: object
+      required:
+      - source_region
+      - destination_region
+      - request_count
+      - bytes_transferred
+      - avg_latency_ms
+      - error_rate
+      - timestamp
+      additionalProperties: false
+      properties:
+        source_region:
+          type: string
+        destination_region:
+          type: string
+        request_count:
+          type: integer
+        bytes_transferred:
+          type: integer
+        avg_latency_ms:
+          type: number
+        error_rate:
+          type: number
+        timestamp:
+          type: string
+          format: date-time
+    VersionResponse:
+      type: object
+      required:
+      - version
+      - go_version
+      - platform
+      - generated_at
+      additionalProperties: false
+      properties:
+        version:
+          type: string
+        go_version:
+          type: string
+        platform:
+          type: string
+        generated_at:
+          type: string
+          format: date-time

@@ -5,6 +5,18 @@ All notable changes to OpenGSLB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`api/openapi.yaml`**: OpenAPI 3.1 description of every REST route registered in `pkg/api/server.go`, written from observed handler behaviour. Operations that are not fully real carry an `x-status` extension (`stub`, `not-implemented`, `unavailable`, `unwired`, `broken`). This file is now the single source of truth for the API.
+- **API contract test** (`cmd/opengslb/api_contract_test.go`, `test/apicontract`): starts a real overwatch in-process, calls every operation in the spec and validates the real responses against it. Runs in `go test ./...` and as its own `API Contract` CI job.
+- **`docs/api-alignment.md`**: per-endpoint status of the overwatch API and of the Overlord portal's use of it, with the mismatches found.
+
+### Fixed
+- **Data race at overwatch start**: `Registry.loadFromStore` wrote the backend map without holding the registry lock while status-change callbacks read it from other goroutines. Found by the contract test under `-race`. No change in behaviour.
+
+---
+
 ## [1.1.10] - 2026-10-25
 
 ### Added

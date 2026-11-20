@@ -42,6 +42,25 @@ jobs:
           name: coverage
           path: coverage.out
 
+  api-contract:
+    name: API Contract
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      # Starts a real overwatch in-process, calls every operation in
+      # api/openapi.yaml and validates the responses against the spec.
+      - name: Validate API responses against api/openapi.yaml
+        run: go test -race -count=1 -run 'TestAPIContract' -v ./cmd/opengslb
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
