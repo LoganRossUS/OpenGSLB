@@ -66,10 +66,22 @@ step "Cloning Overlord ($OVERLORD_REF)"
 if [ -z "${GITHUB_TOKEN:-}" ]; then
   read -rsp "GitHub token with read access to LoganRossUS/Overlord: " GITHUB_TOKEN; echo
 fi
+GITHUB_TOKEN="$(printf '%s' "$GITHUB_TOKEN" | tr -d '[:space:]')"
+[ -n "$GITHUB_TOKEN" ] || die "no token entered"
+# Check the token before cloning, so a bad token gets a clear message.
+status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H 'Accept: application/vnd.github+json' https://api.github.com/repos/LoganRossUS/Overlord)"
+case "$status" in
+  200) ;;
+  401) die "GitHub rejected the token (HTTP 401): it is mistyped, expired or revoked. Use a GitHub token (github_pat_... or ghp_...), not the value of a repository secret you generated yourself." ;;
+  403|404) die "the token is valid but cannot read LoganRossUS/Overlord (HTTP $status). For a fine-grained token: Resource owner LoganRossUS, Repository access includes Overlord, Contents: Read-only." ;;
+  *) die "could not check the token with GitHub (HTTP $status)" ;;
+esac
 auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
-git -c http.extraHeader="Authorization: Basic $auth" clone -q --depth 1 --branch "$OVERLORD_REF" \
+GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c http.extraHeader="Authorization: Basic $auth" \
+  clone -q --depth 1 --branch "$OVERLORD_REF" \
   https://github.com/LoganRossUS/Overlord.git "$WORK/bundle/src/overlord" \
-  || die "could not clone LoganRossUS/Overlord with that token"
+  || die "could not clone LoganRossUS/Overlord (branch $OVERLORD_REF) with that token"
 unset GITHUB_TOKEN auth
 rm -rf "$WORK/bundle/src/overlord/.git"
 tar -czf "$WORK/lab.tgz" -C "$WORK/bundle" .
