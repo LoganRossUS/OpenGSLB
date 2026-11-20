@@ -24,6 +24,11 @@ type LearnedLatencyTable struct {
 	// data maps subnet -> backendKey -> BackendLatency
 	// backendKey is "backend|region" to track each region's latency separately
 	data map[netip.Prefix]map[string]*BackendLatency
+
+	// evictionScans counts the full-table scans made by evictOldest. Each scan
+	// visits every entry while the write lock is held, so their number is the
+	// cost of eviction. Guarded by mu.
+	evictionScans uint64
 }
 
 // LearnedLatencyConfig configures the learned latency table.
@@ -368,6 +373,8 @@ const evictionBatchDivisor = 100
 // evictOldest makes room in a full table by removing the subnets whose data
 // is oldest. Must be called with lock held.
 func (t *LearnedLatencyTable) evictOldest() {
+	t.evictionScans++
+
 	batch := t.config.MaxEntries / evictionBatchDivisor
 	if batch < 1 {
 		batch = 1

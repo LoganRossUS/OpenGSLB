@@ -235,10 +235,10 @@ func TestGossipAgentAuth_AcceptsPlainPEMString(t *testing.T) {
 // goroutine that processes gossip. With the default limit of 100000 subnets a
 // single message held the Overwatch's gossip processing for many seconds.
 //
-// The table here is a fifth of the default size. Before the fix the report
-// below needed 40 million entry visits (seconds); it now needs a few hundred
-// thousand (milliseconds). The time limit is far above the fixed cost so that
-// a loaded CI machine does not trip it.
+// The test counts the scans instead of measuring time, so it gives the same
+// result on a loaded machine and under the race detector. Before the fix the
+// report below made 2000 scans of a 20000 subnet table (40 million entry
+// visits), it now makes 10.
 func TestGossipLatencyReport_FullTableDoesNotStall(t *testing.T) {
 	fuzzSilenceDefaultLogger(t)
 	env := newFuzzGossipEnv(t)
@@ -246,7 +246,9 @@ func TestGossipLatencyReport_FullTableDoesNotStall(t *testing.T) {
 	const (
 		maxEntries = 20000
 		newSubnets = 2000
-		limit      = 1500 * time.Millisecond
+		batch      = maxEntries / evictionBatchDivisor
+		// One scan frees room for batch new subnets.
+		maxScans = (newSubnets + batch - 1) / batch
 	)
 	table := NewLearnedLatencyTable(LearnedLatencyConfig{MaxEntries: maxEntries, Logger: fuzzDiscardLogger()})
 	env.handler.SetLatencyTable(table)
@@ -262,8 +264,19 @@ func TestGossipLatencyReport_FullTableDoesNotStall(t *testing.T) {
 	if got := table.SubnetCount(); got != maxEntries {
 		t.Fatalf("table holds %d subnets after filling, want %d", got, maxEntries)
 	}
-	// The entries of the report must be newer than the ones already stored.
-	time.Sleep(2 * time.Millisecond)
+	// The entries of the report must be newer than the ones already stored,
+	// whatever the resolution of the clock. Age the stored ones.
+	table.mu.Lock()
+	if table.evictionScans != 0 {
+		t.Errorf("filling the table up to its limit made %d eviction scans, want 0", table.evictionScans)
+	}
+	past := time.Now().Add(-time.Minute)
+	for _, backendMap := range table.data {
+		for _, entry := range backendMap {
+			entry.LastUpdated = past
+		}
+	}
+	table.mu.Unlock()
 
 	var report strings.Builder
 	report.WriteString(`{"type":"latency_report","agent_id":"agent-2","region":"eu-west-1","payload":{"backend":"weighted.fuzz.example","subnets":[`)
@@ -275,12 +288,14 @@ func TestGossipLatencyReport_FullTableDoesNotStall(t *testing.T) {
 	}
 	report.WriteString(`]}}`)
 
-	start := time.Now()
 	env.handleRaw(t, report.String())
-	elapsed := time.Since(start)
 
-	if elapsed > limit {
-		t.Errorf("one latency report with %d new subnets took %v on a full table of %d, limit %v", newSubnets, elapsed, maxEntries, limit)
+	table.mu.RLock()
+	scans := table.evictionScans
+	table.mu.RUnlock()
+	if scans > maxScans {
+		t.Errorf("one latency report with %d new subnets made %d full scans of a table of %d subnets, want at most %d",
+			newSubnets, scans, maxEntries, maxScans)
 	}
 	if got := table.SubnetCount(); got > maxEntries {
 		t.Errorf("table holds %d subnets, limit is %d", got, maxEntries)
