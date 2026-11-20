@@ -217,7 +217,7 @@ func applyOverwatchDefaults(cfg *Config) {
 		cfg.Overwatch.Stale.RemoveAfter = DefaultStaleRemoveAfter
 	}
 
-	// DNSSEC defaults (enabled by default per ADR-015)
+	// DNSSEC defaults (enabled itself defaults to false; signing is not active in this build)
 	if cfg.Overwatch.DNSSEC.Algorithm == "" {
 		cfg.Overwatch.DNSSEC.Algorithm = DefaultDNSSECAlgorithm
 	}

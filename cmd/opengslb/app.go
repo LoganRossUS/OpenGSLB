@@ -178,6 +178,7 @@ func (a *Application) initializeOverwatchMode() error {
 		"node_id", a.config.Overwatch.Identity.NodeID,
 		"region", a.config.Overwatch.Identity.Region,
 	)
+	warnDNSSECNotActive(a.logger, a.config)
 
 	// Set config metrics
 	serverCount := 0

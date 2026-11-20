@@ -172,13 +172,11 @@ func (c *Config) validateOverwatchMode() error {
 		return fmt.Errorf("overwatch.gossip: %w", err)
 	}
 
-	// DNSSEC validation
-	if !c.Overwatch.DNSSEC.Enabled {
-		expectedAck := "I understand that disabling DNSSEC removes cryptographic authentication of DNS responses and allows DNS spoofing attacks against my zones"
-		if c.Overwatch.DNSSEC.SecurityAcknowledgment != expectedAck {
-			return fmt.Errorf("dnssec: to disable DNSSEC, security_acknowledgment must be set to: %q", expectedAck)
-		}
-	}
+	// DNSSEC: signing is not active in this build (see warnDNSSECNotActive in
+	// cmd/opengslb), so neither value of overwatch.dnssec.enabled needs an
+	// acknowledgment. overwatch.dnssec.security_acknowledgment is still
+	// parsed, so that configurations written for earlier releases load, and
+	// is ignored.
 
 	// Validation thresholds (0 means "use the default", applied by Parse)
 	if c.Overwatch.Validation.FailureThreshold < 0 {

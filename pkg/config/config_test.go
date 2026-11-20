@@ -476,20 +476,36 @@ func TestValidate_OverwatchGossipEncryptionKeyWrongLength(t *testing.T) {
 }
 
 // =============================================================================
-// DNSSEC Tests (ADR-015: Enabled by Default, nested under Overwatch)
+// DNSSEC Tests (nested under Overwatch; signing is not active in this build)
 // =============================================================================
 
-func TestValidate_DNSSECDisabledRequiresAcknowledgment(t *testing.T) {
+// DNSSEC signing is not active in this build, so turning it off (or leaving
+// it out) must not need an acknowledgment of what is lost.
+func TestValidate_DNSSECDisabledNeedsNoAcknowledgment(t *testing.T) {
 	cfg := validOverwatchConfig()
 	cfg.Overwatch.DNSSEC.Enabled = false
-	cfg.Overwatch.DNSSEC.SecurityAcknowledgment = "" // Missing acknowledgment
+	cfg.Overwatch.DNSSEC.SecurityAcknowledgment = ""
 
-	err := cfg.Validate()
-	if err == nil {
-		t.Error("expected error for disabled DNSSEC without acknowledgment")
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled DNSSEC without an acknowledgment must validate, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "security_acknowledgment") {
-		t.Errorf("expected acknowledgment error, got: %v", err)
+}
+
+// Configurations written for earlier releases carry the acknowledgment, in
+// its exact required wording or any other. They must keep loading.
+func TestValidate_DNSSECAcknowledgmentIsAcceptedAndIgnored(t *testing.T) {
+	for _, ack := range []string{
+		"I understand that disabling DNSSEC removes cryptographic authentication of DNS responses and allows DNS spoofing attacks against my zones",
+		"some other text",
+	} {
+		for _, enabled := range []bool{false, true} {
+			cfg := validOverwatchConfig()
+			cfg.Overwatch.DNSSEC.Enabled = enabled
+			cfg.Overwatch.DNSSEC.SecurityAcknowledgment = ack
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("enabled=%v ack=%q: unexpected error: %v", enabled, ack, err)
+			}
+		}
 	}
 }
 

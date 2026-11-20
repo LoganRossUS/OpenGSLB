@@ -275,12 +275,14 @@ type StaleConfig struct {
 
 // DNSSECConfig defines DNSSEC signing settings.
 type DNSSECConfig struct {
-	// Enabled controls whether DNSSEC is active
-	// Default: true (secure by default)
+	// Enabled asks for DNSSEC signing. Signing is not active in this build:
+	// when true, the overwatch logs a warning at startup and serves unsigned
+	// responses. Default: false.
 	Enabled bool `yaml:"enabled"`
 
-	// SecurityAcknowledgment is REQUIRED if Enabled=false
-	// Must contain specific text acknowledging security implications
+	// SecurityAcknowledgment was required by earlier releases to set
+	// Enabled to false. It is still accepted, so existing configuration
+	// files load, and is ignored.
 	SecurityAcknowledgment string `yaml:"security_acknowledgment"`
 
 	// Algorithm is the DNSSEC signing algorithm
