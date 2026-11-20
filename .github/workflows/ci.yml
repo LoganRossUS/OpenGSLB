@@ -61,6 +61,82 @@ jobs:
       - name: Validate API responses against api/openapi.yaml
         run: go test -race -count=1 -run 'TestAPIContract' -v ./cmd/opengslb
 
+  # Runs the Overlord portal's contract tests against the overwatch built from
+  # this pull request, so a Go or spec change that breaks Overlord fails here.
+  # Overlord is a private repository: this job needs a repository secret
+  # OVERLORD_REPO_TOKEN with read access to LoganRossUS/Overlord. Pull requests
+  # from forks cannot read secrets and skip the job.
+  overlord-contract:
+    name: Overlord Contract
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build overwatch image from this pull request
+        run: docker build -t opengslb:pr .
+
+      # Use the Overlord branch with the same name as this pull request's
+      # branch if it exists, otherwise Overlord's default branch.
+      - name: Resolve paired Overlord branch
+        id: overlord
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          OVERLORD_REPO_TOKEN: ${{ secrets.OVERLORD_REPO_TOKEN }}
+        run: |
+          if [ -z "$OVERLORD_REPO_TOKEN" ]; then
+            echo "::error::Secret OVERLORD_REPO_TOKEN is not set. It must grant read access to LoganRossUS/Overlord."
+            exit 1
+          fi
+          remote="https://x-access-token:${OVERLORD_REPO_TOKEN}@github.com/LoganRossUS/Overlord.git"
+          if git ls-remote --exit-code --heads "$remote" "refs/heads/${HEAD_REF}" > /dev/null 2>&1; then
+            echo "ref=${HEAD_REF}" >> "$GITHUB_OUTPUT"
+            echo "Using paired Overlord branch: ${HEAD_REF}"
+          else
+            echo "ref=" >> "$GITHUB_OUTPUT"
+            echo "No Overlord branch named ${HEAD_REF}; using Overlord's default branch"
+          fi
+
+      - name: Checkout Overlord
+        uses: actions/checkout@v4
+        with:
+          repository: LoganRossUS/Overlord
+          ref: ${{ steps.overlord.outputs.ref }}
+          token: ${{ secrets.OVERLORD_REPO_TOKEN }}
+          path: overlord
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: overlord/package-lock.json
+
+      - name: Install Overlord dependencies
+        working-directory: overlord
+        run: npm ci
+
+      # Type-check Overlord against this pull request's spec, not its vendored copy.
+      - name: Check Overlord against this pull request's spec
+        working-directory: overlord
+        env:
+          OPENGSLB_SPEC: ${{ github.workspace }}/api/openapi.yaml
+        run: |
+          npm run spec:sync
+          npm run spec:generate
+          npm run typecheck
+
+      - name: Run Overlord contract tests against this pull request's overwatch
+        working-directory: overlord
+        env:
+          OPENGSLB_IMAGE: opengslb:pr
+        run: npm run test:contract
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
