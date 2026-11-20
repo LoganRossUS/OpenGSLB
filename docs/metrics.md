@@ -54,6 +54,34 @@ opengslb_dns_query_duration_seconds_sum{domain="app.example.com",status="success
 opengslb_dns_query_duration_seconds_count{domain="app.example.com",status="success"} 1542
 ```
 
+#### `opengslb_dns_last_healthy_answers_total`
+**Type:** Counter  
+**Labels:** `domain`, `type`
+
+Number of answers served under `dns.return_last_healthy: true` while every
+server of the queried address family was unhealthy. In that situation the
+answer is chosen as if all configured servers of the family were healthy, so
+it may point at a server that is down. The counter stays at zero while
+`return_last_healthy` is `false` (those queries are answered SERVFAIL and are
+counted in `opengslb_dns_queries_total{status="SERVFAIL"}`).
+
+| Label | Description |
+|-------|-------------|
+| `domain` | The queried domain name (lower case, with trailing dot) |
+| `type` | DNS query type: `A` or `AAAA` |
+
+Any increase means a domain has no healthy server left and is running in
+"limp mode". Alert on it:
+
+```
+increase(opengslb_dns_last_healthy_answers_total[5m]) > 0
+```
+
+**Example:**
+```
+opengslb_dns_last_healthy_answers_total{domain="app.example.com.",type="A"} 37
+```
+
 ### Health Check Metrics
 
 #### `opengslb_health_check_results_total`

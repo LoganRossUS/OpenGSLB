@@ -623,6 +623,9 @@ func (a *Application) initializeDNSServer() error {
 		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
 		ECSEnabled:     a.config.Overwatch.Geolocation.ECSEnabled, // Demo 4: EDNS Client Subnet for GeoIP
 		Logger:         a.logger,
+
+		// When every server of a name is down, answer anyway (ADR-009).
+		ReturnLastHealthy: a.config.DNS.ReturnLastHealthy,
 	})
 	a.dnsHandler = handler
 	a.logger.Debug("DNS handler created with registry",
@@ -1327,8 +1330,8 @@ func (r *regionMapper) GetServerRegion(address string, port int) string {
 }
 
 // reloadDNSSettings applies the dns section settings that the DNS handler
-// holds outside the registry: the zone table (dns.zones) and the UDP
-// response size cap (dns.max_udp_size).
+// holds outside the registry: the zone table (dns.zones), the UDP response
+// size cap (dns.max_udp_size) and dns.return_last_healthy.
 func (a *Application) reloadDNSSettings(newCfg *config.Config) error {
 	if a.dnsHandler == nil {
 		return nil
@@ -1339,6 +1342,7 @@ func (a *Application) reloadDNSSettings(newCfg *config.Config) error {
 	}
 	a.dnsHandler.SetZones(zones)
 	a.dnsHandler.SetMaxUDPSize(newCfg.DNS.MaxUDPSize)
+	a.dnsHandler.SetReturnLastHealthy(newCfg.DNS.ReturnLastHealthy)
 	return nil
 }
 

@@ -49,6 +49,18 @@ var (
 		},
 		[]string{"domain", "status"},
 	)
+
+	// DNSLastHealthyAnswersTotal counts answers given under
+	// dns.return_last_healthy: every server of the queried address family
+	// was unhealthy and the answer was chosen as if all of them were healthy.
+	DNSLastHealthyAnswersTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "dns_last_healthy_answers_total",
+			Help:      "Total number of DNS answers served with return_last_healthy because every server of the queried address family was unhealthy",
+		},
+		[]string{"domain", "type"},
+	)
 )
 
 // Health check metrics
@@ -322,6 +334,13 @@ var (
 // RecordDNSQuery records a DNS query metric.
 func RecordDNSQuery(domain, queryType, status string) {
 	DNSQueriesTotal.WithLabelValues(domain, queryType, status).Inc()
+}
+
+// RecordLastHealthyAnswer records an answer served under
+// dns.return_last_healthy while every server of the queried address family
+// was unhealthy.
+func RecordLastHealthyAnswer(domain, queryType string) {
+	DNSLastHealthyAnswersTotal.WithLabelValues(domain, queryType).Inc()
 }
 
 // RecordDNSQueryDuration records DNS query processing time.

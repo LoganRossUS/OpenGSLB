@@ -32,6 +32,8 @@ type Handler struct {
 	maxUDPSize    uint16
 	defaultTTL    uint32
 	logger        *slog.Logger
+
+	returnLastHealthy bool
 }
 
 // NewHandler creates a new DNS handler.
@@ -57,6 +59,8 @@ func NewHandler(cfg HandlerConfig) *Handler {
 		maxUDPSize:    clampUDPSize(cfg.MaxUDPSize),
 		defaultTTL:    cfg.DefaultTTL,
 		logger:        logger,
+
+		returnLastHealthy: cfg.ReturnLastHealthy,
 	}
 }
 
@@ -86,6 +90,8 @@ type handlerState struct {
 	dnssecSigner  DNSSECSigner
 	dnssecEnabled bool
 	maxUDPSize    uint16
+
+	returnLastHealthy bool
 }
 
 // state returns a consistent copy of the mutable handler configuration.
@@ -99,6 +105,8 @@ func (h *Handler) state() handlerState {
 		dnssecSigner:  h.dnssecSigner,
 		dnssecEnabled: h.dnssecEnabled,
 		maxUDPSize:    h.maxUDPSize,
+
+		returnLastHealthy: h.returnLastHealthy,
 	}
 }
 
@@ -366,7 +374,8 @@ func (h *Handler) handleApexQuery(m *dns.Msg, q dns.Question, zone *Zone) {
 //     but has no data of this type, which is NOERROR with an empty answer;
 //   - servers of the family are configured and at least one is usable: one of
 //     them is answered;
-//   - servers of the family are configured and none is usable: SERVFAIL.
+//   - servers of the family are configured and none is usable: SERVFAIL, or
+//     with dns.return_last_healthy an answer chosen among all of them.
 //
 // It reports whether the client address decided the answer.
 func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question, qname string, zone *Zone, entry *DomainEntry, clientIP net.IP) (usedClientIP bool) {
@@ -378,10 +387,19 @@ func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question
 	}
 
 	servers := healthyServers(st.health, entry, wantIPv4)
+	lastHealthy := false
 	if len(servers) == 0 {
-		h.logger.Debug("no healthy servers", "domain", qname, "type", dns.TypeToString[q.Qtype])
-		setError(m, dns.RcodeServerFailure)
-		return false
+		if !st.returnLastHealthy {
+			h.logger.Debug("no healthy servers", "domain", qname, "type", dns.TypeToString[q.Qtype])
+			setError(m, dns.RcodeServerFailure)
+			return false
+		}
+		// dns.return_last_healthy: every server of this family is unhealthy.
+		// Answer as if all of them were healthy, so the routing algorithm
+		// picks among the configured servers. A possibly dead address is
+		// preferred over no address at all.
+		servers = healthyServers(nil, entry, wantIPv4)
+		lastHealthy = true
 	}
 
 	// Create context with client IP for geolocation routing
@@ -411,12 +429,16 @@ func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question
 		h.addAAAARecord(m, q, selected, entry.TTL)
 	}
 	metrics.RecordRoutingDecision(qname, entry.Router.Algorithm(), selected.Address)
+	if lastHealthy {
+		metrics.RecordLastHealthyAnswer(qname, dns.TypeToString[q.Qtype])
+	}
 
 	h.logger.Debug("resolved address query",
 		"domain", qname,
 		"type", dns.TypeToString[q.Qtype],
 		"selected", selected.Address,
 		"algorithm", entry.Router.Algorithm(),
+		"last_healthy", lastHealthy,
 	)
 
 	aware, ok := entry.Router.(routing.ClientAware)
@@ -580,6 +602,13 @@ func (h *Handler) SetMaxUDPSize(size int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.maxUDPSize = clampUDPSize(size)
+}
+
+// SetReturnLastHealthy sets dns.return_last_healthy (see HandlerConfig).
+func (h *Handler) SetReturnLastHealthy(enabled bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.returnLastHealthy = enabled
 }
 
 // Zones returns the configured zones with every SOA and NS default resolved.

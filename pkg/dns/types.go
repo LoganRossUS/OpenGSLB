@@ -86,6 +86,11 @@ type HandlerConfig struct {
 	// MaxUDPSize caps the size of UDP responses and is the UDP payload size
 	// advertised in EDNS responses. 0 means DefaultMaxUDPSize.
 	MaxUDPSize int
+
+	// ReturnLastHealthy is dns.return_last_healthy: when every server of the
+	// queried address family is unhealthy, answer as if all of them were
+	// healthy instead of SERVFAIL.
+	ReturnLastHealthy bool
 }
 
 // Limits for the size of UDP responses.
