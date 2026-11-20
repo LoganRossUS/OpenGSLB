@@ -39,6 +39,13 @@ type Agent struct {
 	latencyCollector  latency.Collector
 	latencyAggregator *latency.Aggregator
 
+	// lifecycleMu serializes Start and Stop. A Stop that arrives while Start
+	// is still bringing components up waits for it, so that it stops all of
+	// them and not only the ones that existed when it looked.
+	lifecycleMu sync.Mutex
+
+	// mu guards the fields below and heartbeat, latencyCollector and
+	// latencyAggregator, which Start sets and other goroutines read.
 	mu        sync.RWMutex
 	running   bool
 	stopCh    chan struct{}
@@ -216,7 +223,10 @@ func (a *Agent) Reconfigure(newCfg *config.Config) (ReconfigureResult, error) {
 }
 
 // Start begins agent operations.
-func (a *Agent) Start(ctx context.Context) error {
+func (a *Agent) Start(ctx context.Context) (err error) {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+
 	a.mu.Lock()
 	if a.running {
 		a.mu.Unlock()
@@ -227,6 +237,17 @@ func (a *Agent) Start(ctx context.Context) error {
 	a.stopCh = make(chan struct{})
 	a.doneCh = make(chan struct{})
 	a.mu.Unlock()
+
+	// A start that fails has stopped what it started and left no main loop
+	// behind: the agent is not running, and a later Stop has nothing to wait
+	// for.
+	defer func() {
+		if err != nil {
+			a.mu.Lock()
+			a.running = false
+			a.mu.Unlock()
+		}
+	}()
 
 	a.logger.Info("starting agent",
 		"agent_id", a.identity.AgentID,
@@ -251,7 +272,7 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	// Initialize and start heartbeat
 	if a.gossip != nil {
-		a.heartbeat = NewHeartbeatSender(
+		heartbeat := NewHeartbeatSender(
 			HeartbeatSenderConfig{
 				Interval:        a.config.Agent.Heartbeat.Interval,
 				MissedThreshold: a.config.Agent.Heartbeat.MissedThreshold,
@@ -259,7 +280,10 @@ func (a *Agent) Start(ctx context.Context) error {
 			},
 			a.gossip,
 		)
-		if err := a.heartbeat.Start(ctx, a.identity.AgentID, a.identity.Region, a.backends.BackendCount()); err != nil {
+		a.mu.Lock()
+		a.heartbeat = heartbeat
+		a.mu.Unlock()
+		if err := heartbeat.Start(ctx, a.identity.AgentID, a.identity.Region, a.backends.BackendCount()); err != nil {
 			if stopErr := a.gossip.Stop(); stopErr != nil {
 				a.logger.Error("error stopping gossip", "error", stopErr)
 			}
@@ -287,6 +311,9 @@ func (a *Agent) Start(ctx context.Context) error {
 
 // Stop gracefully shuts down the agent.
 func (a *Agent) Stop(ctx context.Context) error {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+
 	a.mu.Lock()
 	if !a.running {
 		a.mu.Unlock()
@@ -294,6 +321,8 @@ func (a *Agent) Stop(ctx context.Context) error {
 	}
 	a.running = false
 	close(a.stopCh)
+	heartbeat := a.heartbeat
+	latencyCollector := a.latencyCollector
 	a.mu.Unlock()
 
 	a.logger.Info("stopping agent")
@@ -304,13 +333,13 @@ func (a *Agent) Stop(ctx context.Context) error {
 	}
 
 	// Stop heartbeat
-	if a.heartbeat != nil {
-		a.heartbeat.Stop()
+	if heartbeat != nil {
+		heartbeat.Stop()
 	}
 
 	// Stop latency collection (ADR-017)
-	if a.latencyCollector != nil {
-		if err := a.latencyCollector.Close(); err != nil {
+	if latencyCollector != nil {
+		if err := latencyCollector.Close(); err != nil {
 			a.logger.Error("error stopping latency collector", "error", err)
 		}
 	}
@@ -521,8 +550,10 @@ func (a *Agent) startLatencyCollection(ctx context.Context) error {
 		return fmt.Errorf("failed to start latency collector: %w", err)
 	}
 
+	a.mu.Lock()
 	a.latencyCollector = collector
 	a.latencyAggregator = aggregator
+	a.mu.Unlock()
 
 	// Start observation consumer goroutine
 	go a.consumeLatencyObservations(ctx)
@@ -683,11 +714,12 @@ func (a *Agent) Stats() AgentStats {
 	a.mu.RLock()
 	running := a.running
 	startTime := a.startTime
+	heartbeat := a.heartbeat
 	a.mu.RUnlock()
 
 	var heartbeatSent time.Time
-	if a.heartbeat != nil {
-		heartbeatSent = a.heartbeat.LastSent()
+	if heartbeat != nil {
+		heartbeatSent = heartbeat.LastSent()
 	}
 
 	var uptime time.Duration

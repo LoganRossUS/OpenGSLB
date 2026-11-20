@@ -128,6 +128,15 @@ func (e *agentEnv) start() {
 			e.t.Errorf("agent Start: %v", err)
 		}
 	}()
+	// Start runs in the background. Wait until the agent is up, so that a
+	// test that ends at once does not shut down an agent that has not
+	// started yet and then leave it running.
+	eventually(e.t, 10*time.Second, func() string {
+		if e.app.agentInstance == nil || !e.app.agentInstance.Stats().Running {
+			return "agent is not running yet"
+		}
+		return ""
+	})
 	var once sync.Once
 	e.stop = func() {
 		once.Do(func() {

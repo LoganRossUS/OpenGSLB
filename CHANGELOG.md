@@ -74,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`dns.return_last_healthy`** was parsed and never read. When true and every server of the queried family is unhealthy, the answer is now chosen from all configured servers of that family.
 - **Data race between DNS queries and server registration**: registering, deregistering or reweighting a server changed a domain entry that queries were reading. Entries are now replaced, not modified in place.
 - **Routers created by a reload or for API-created domains had no learned latency provider**, so `learned_latency` silently fell back to round-robin for them.
+- **Agent shutdown during startup**: a stop that arrived while the agent was still starting raced with the start, and could leave the heartbeat sender running after the agent reported itself stopped. Start and stop are now serialized. A start that fails no longer leaves the agent marked as running.
 - **TTLs above 2^32 wrapped around** when set through the API (4294967297 became 1). TTLs are limited to 0 to 2^31 - 1.
 - **`agent_auth` gossip messages**: the certificate was not base64-decoded on receipt. This path is not used by the shipped binary today.
 - **`pkg/health` TCP checker tests no longer depend on the host network.** Test-only change.
