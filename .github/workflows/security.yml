@@ -1,0 +1,49 @@
+name: Security
+
+# Runs govulncheck on every pull request and on pushes to main, like the CI
+# workflow, and once a week on a schedule. The weekly run matters because new
+# advisories are published against code that has not changed: a vulnerability
+# in the Go standard library or in a dependency must not wait for the next
+# pull request to be noticed.
+#
+# GitHub runs scheduled workflows on the default branch only (main), so the
+# weekly run scans what is released.
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '23 5 * * 1'  # Mondays 05:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # govulncheck exits non-zero when the code calls a vulnerable symbol,
+      # which fails the job. Vulnerabilities in imported packages or required
+      # modules that the code does not call are printed but do not fail it.
+      # The usual fix for a standard library finding is to raise the "go" line
+      # in go.mod (and the Dockerfile builder image) to the patched release.
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
