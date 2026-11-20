@@ -55,7 +55,7 @@ jobs:
           cat checksums.txt
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           name: OpenGSLB ${{ steps.version.outputs.VERSION }}
           draft: false
