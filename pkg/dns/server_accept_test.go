@@ -17,8 +17,8 @@ import (
 // itself must reach it, so that their responses carry the question and the
 // OPT record (finding 1B #6); the DNS library's own replies carry neither.
 func TestAcceptMsg(t *testing.T) {
-	header := func(opcode int, response bool, qd, an, ns, ar uint16) dns.Header {
-		bits := uint16(opcode) << 11
+	header := func(opcode uint16, response bool, qd, an, ns, ar uint16) dns.Header {
+		bits := opcode << 11
 		if response {
 			bits |= 1 << 15
 		}

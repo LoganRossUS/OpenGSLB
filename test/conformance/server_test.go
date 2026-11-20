@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"sort"
 	"strings"
@@ -213,7 +214,7 @@ func startServer(t *testing.T, mutate func(cfg *config.Config)) *server {
 		Registry:          registry,
 		Zones:             zones,
 		HealthProvider:    staticHealth(unhealthyAddresses),
-		DefaultTTL:        uint32(cfg.DNS.DefaultTTL),
+		DefaultTTL:        ttlSeconds(cfg.DNS.DefaultTTL),
 		ECSEnabled:        cfg.Overwatch.Geolocation.ECSEnabled,
 		MaxUDPSize:        cfg.DNS.MaxUDPSize,
 		ReturnLastHealthy: cfg.DNS.ReturnLastHealthy,
@@ -252,6 +253,18 @@ func startServer(t *testing.T, mutate func(cfg *config.Config)) *server {
 	}
 	t.Fatalf("could not start the DNS server: %v", lastErr)
 	return nil
+}
+
+// ttlSeconds converts a configured TTL to the 32-bit value of a DNS record,
+// limited to the range of a DNS TTL.
+func ttlSeconds(seconds int) uint32 {
+	if seconds < 0 {
+		return 0
+	}
+	if seconds > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return uint32(seconds)
 }
 
 // freeLoopbackAddr returns a 127.0.0.1 address whose port is free for both

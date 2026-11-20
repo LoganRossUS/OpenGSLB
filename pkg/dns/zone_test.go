@@ -145,6 +145,30 @@ func TestNewZoneTable_PrimaryNSFollowsNameservers(t *testing.T) {
 	}
 }
 
+// TestNewZoneTable_SecondsAreLimited checks that timers above the largest
+// DNS TTL (2^31 - 1, RFC 2181 section 8) are limited to it and do not wrap
+// around when converted to 32 bits. The configuration validator rejects such
+// values; the zone table must still be safe when it is built from a
+// configuration that was not validated.
+func TestNewZoneTable_SecondsAreLimited(t *testing.T) {
+	const tooLarge = 1<<32 + 5 // wraps to 5 in 32 bits
+	zone := mustZones(t, "overwatch-1", config.Zone{
+		Name: "gslb.example.com",
+		TTL:  tooLarge,
+		SOA:  config.ZoneSOA{Refresh: tooLarge, Retry: tooLarge, Expire: tooLarge, NegativeTTL: tooLarge},
+	}).Find("gslb.example.com.")
+
+	const maxSeconds = 1<<31 - 1
+	for name, got := range map[string]uint32{
+		"ttl": zone.TTL, "refresh": zone.Refresh, "retry": zone.Retry,
+		"expire": zone.Expire, "negative_ttl": zone.NegativeTTL,
+	} {
+		if got != maxSeconds {
+			t.Errorf("%s = %d, want %d", name, got, maxSeconds)
+		}
+	}
+}
+
 func TestNewZoneTable_Errors(t *testing.T) {
 	for name, zones := range map[string][]config.Zone{
 		"empty name":    {{Name: ""}},

@@ -8,6 +8,7 @@ package dns
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -158,7 +159,7 @@ func NewZoneTable(zones []config.Zone, nodeID string) (*ZoneTable, error) {
 		zone.Implicit = false
 
 		if zc.TTL > 0 {
-			zone.TTL = uint32(zc.TTL)
+			zone.TTL = toSeconds(zc.TTL)
 		}
 		if zc.SOA.Contact != "" {
 			contact, err := config.MailboxToDNSName(zc.SOA.Contact)
@@ -171,16 +172,16 @@ func NewZoneTable(zones []config.Zone, nodeID string) (*ZoneTable, error) {
 			zone.Serial = zc.SOA.Serial
 		}
 		if zc.SOA.Refresh > 0 {
-			zone.Refresh = uint32(zc.SOA.Refresh)
+			zone.Refresh = toSeconds(zc.SOA.Refresh)
 		}
 		if zc.SOA.Retry > 0 {
-			zone.Retry = uint32(zc.SOA.Retry)
+			zone.Retry = toSeconds(zc.SOA.Retry)
 		}
 		if zc.SOA.Expire > 0 {
-			zone.Expire = uint32(zc.SOA.Expire)
+			zone.Expire = toSeconds(zc.SOA.Expire)
 		}
 		if zc.SOA.NegativeTTL > 0 {
-			zone.NegativeTTL = uint32(zc.SOA.NegativeTTL)
+			zone.NegativeTTL = toSeconds(zc.SOA.NegativeTTL)
 		}
 
 		// The NS set and the SOA primary nameserver default to each other:
@@ -322,6 +323,20 @@ func defaultContact(apex string) string {
 	}
 	// The apex is too long to take another label.
 	return "hostmaster.invalid."
+}
+
+// toSeconds converts a configured number of seconds to the 32-bit value a
+// DNS record carries. Values outside 0 to 2^31 - 1, the largest TTL (RFC 2181
+// section 8), are limited to that range instead of wrapping around. The
+// configuration validator rejects them before they get here.
+func toSeconds(seconds int) uint32 {
+	if seconds < 0 {
+		return 0
+	}
+	if seconds > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return uint32(seconds)
 }
 
 // isDomainName reports whether name is a syntactically valid DNS name.

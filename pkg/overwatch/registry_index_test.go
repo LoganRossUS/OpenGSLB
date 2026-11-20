@@ -250,7 +250,7 @@ func TestRegistry_BackendMapWritesGoThroughIndex(t *testing.T) {
 		if file == "registry_index.go" || strings.HasSuffix(file, "_test.go") {
 			continue
 		}
-		src, err := os.ReadFile(file)
+		src, err := os.ReadFile(file) // #nosec G304 -- file names come from a glob of this package's own directory
 		if err != nil {
 			t.Fatal(err)
 		}

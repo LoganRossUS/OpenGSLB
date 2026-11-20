@@ -363,6 +363,8 @@ dns:
 | `soa.negative_ttl` | integer | `60` | SOA MINIMUM (seconds): how long resolvers may cache NXDOMAIN and empty answers (RFC 2308). |
 | `nameservers` | list | the SOA primary nameserver | NS record set at the apex, as host names. It should list the same names as the delegation (NS records) in the parent zone. |
 
+A field that is left out or set to `0` (or to an empty string or list) gets its default. A zone therefore cannot have a `negative_ttl` or `serial` of 0.
+
 **Defaults from the node identity.** When a zone has neither `soa.primary_ns` nor `nameservers`, the primary nameserver (and the single NS record) is derived from `overwatch.identity.node_id`, or from the host name when no node ID is set:
 
 - a node ID that is a host name with at least two labels, such as `overwatch-1.dc1.example.net`, is used as it is;
