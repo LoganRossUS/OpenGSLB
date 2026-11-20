@@ -119,7 +119,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	switch {
 	case q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA:
-		h.handleAddressQuery(st, m, q, qname, entry, clientIP)
+		h.handleAddressQuery(st, m, q, qname, zone, entry, clientIP)
 	case q.Qtype == dns.TypeDNSKEY:
 		h.handleDNSKEYQuery(m, qname, entry)
 	case (q.Qtype == dns.TypeSOA || q.Qtype == dns.TypeNS) && zone != nil && qname == zone.Name:
@@ -167,7 +167,14 @@ func (h *Handler) handleApexQuery(m *dns.Msg, q dns.Question, zone *Zone) {
 }
 
 // handleAddressQuery processes A (IPv4) and AAAA (IPv6) queries.
-func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question, qname string, entry *DomainEntry, clientIP net.IP) {
+//
+// Three outcomes are possible for a registered name:
+//   - no server of the queried address family is configured: the name exists
+//     but has no data of this type, which is NOERROR with an empty answer;
+//   - servers of the family are configured and at least one is usable: one of
+//     them is answered;
+//   - servers of the family are configured and none is usable: SERVFAIL.
+func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question, qname string, zone *Zone, entry *DomainEntry, clientIP net.IP) {
 	if entry == nil {
 		h.logger.Debug("domain not found", "name", qname)
 		m.SetRcode(m, dns.RcodeNameError) // NXDOMAIN
@@ -175,6 +182,12 @@ func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question
 	}
 
 	wantIPv4 := q.Qtype == dns.TypeA
+	if !hasServersOfFamily(entry, wantIPv4) {
+		h.logger.Debug("no servers of the queried address family", "domain", qname, "type", dns.TypeToString[q.Qtype])
+		setNoData(m, zone)
+		return
+	}
+
 	servers := healthyServers(st.health, entry, wantIPv4)
 	if len(servers) == 0 {
 		h.logger.Debug("no healthy servers", "domain", qname, "type", dns.TypeToString[q.Qtype])
@@ -216,6 +229,28 @@ func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question
 		"selected", selected.Address,
 		"algorithm", entry.Router.Algorithm(),
 	)
+}
+
+// setNoData turns m into an empty NOERROR response: the name exists but has
+// no data of the queried type. The zone SOA in the authority section lets
+// resolvers cache the answer (RFC 2308 section 2.2).
+func setNoData(m *dns.Msg, zone *Zone) {
+	m.Rcode = dns.RcodeSuccess
+	m.Answer = nil
+	if zone != nil {
+		m.Ns = []dns.RR{zone.negativeSOA()}
+	}
+}
+
+// hasServersOfFamily reports whether the entry has at least one configured
+// server of the wanted address family, healthy or not.
+func hasServersOfFamily(entry *DomainEntry, wantIPv4 bool) bool {
+	for _, server := range entry.Servers {
+		if (server.Address.To4() != nil) == wantIPv4 {
+			return true
+		}
+	}
+	return false
 }
 
 // healthyServers returns the servers of the entry that belong to the wanted
