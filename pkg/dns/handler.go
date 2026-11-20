@@ -68,7 +68,10 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 
 	q := r.Question[0]
-	qname := q.Name
+	// q.Name keeps the querier's spelling and is echoed in the question and
+	// answer sections (0x20 case randomization depends on that). qname is the
+	// canonical lower-case form used for lookups, metrics and logs.
+	qname := normalizeDomain(q.Name)
 	qtype := dns.TypeToString[q.Qtype]
 
 	// Get client IP for geolocation routing (ECS or source address)

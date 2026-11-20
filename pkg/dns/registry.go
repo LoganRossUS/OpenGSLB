@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/loganrossus/OpenGSLB/pkg/config"
@@ -371,11 +372,17 @@ func (r *Registry) UpdateDomainSettings(name string, ttl uint32, algorithm strin
 	return nil
 }
 
-// normalizeDomain ensures domain names are in a consistent format.
+// normalizeDomain returns the canonical form used as the registry key:
+// lower case with a trailing dot. DNS names compare without regard to case
+// (RFC 1035 section 2.3.3, RFC 4343), so "APP.Example.COM" and
+// "app.example.com." are the same name.
 func normalizeDomain(name string) string {
 	if len(name) == 0 {
 		return name
 	}
+	// strings.ToLower returns its argument unchanged (no allocation) when the
+	// name is already lower case, which is the common case on the query path.
+	name = strings.ToLower(name)
 	if name[len(name)-1] != '.' {
 		return name + "."
 	}
