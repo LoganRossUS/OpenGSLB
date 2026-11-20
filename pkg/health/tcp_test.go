@@ -20,7 +20,10 @@ package health
 
 import (
 	"context"
+	"errors"
 	"net"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -88,19 +91,22 @@ func TestTCPChecker_ConnectionRefused(t *testing.T) {
 }
 
 func TestTCPChecker_Timeout(t *testing.T) {
-	// Use a non-routable IP that will cause connection to hang/timeout
-	// 10.255.255.1 is in TEST-NET range and should not be routable
-	checker := NewTCPChecker()
+	// The connect step stalls until the dial context ends, like a connect to
+	// a host that silently drops packets.
+	var dials atomic.Int32
+	checker := NewTCPChecker(WithDialer(stalledDialer(&dials)))
 	target := Target{
-		Address: "10.255.255.1",
+		Address: "127.0.0.1",
 		Port:    80,
 	}
 
-	// Use a very short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// Use a very short timeout. The clock starts before the context is
+	// created so that elapsed can never be shorter than the timeout.
+	const timeout = 100 * time.Millisecond
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	start := time.Now()
 	result := checker.Check(ctx, target)
 	elapsed := time.Since(start)
 
@@ -108,19 +114,35 @@ func TestTCPChecker_Timeout(t *testing.T) {
 		t.Error("expected unhealthy for timeout")
 	}
 	if result.Error == nil {
-		t.Error("expected error for timeout")
+		t.Fatal("expected error for timeout")
 	}
-	// Should have timed out around 100ms, not hung for seconds
-	if elapsed > 500*time.Millisecond {
+	var netErr net.Error
+	if !errors.As(result.Error, &netErr) || !netErr.Timeout() {
+		t.Errorf("expected a timeout error, got: %v", result.Error)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Errorf("expected exactly 1 connection attempt, got %d", got)
+	}
+	if elapsed < timeout {
+		t.Errorf("check returned after %v, before the %v context timeout", elapsed, timeout)
+	}
+	// Should have timed out around 100ms. A check that ignores the context
+	// only returns when the stalled dial gives up after stalledDialLimit.
+	if elapsed > stalledDialLimit/2 {
 		t.Errorf("check took too long (%v), context timeout may not be working", elapsed)
+	}
+	if result.Latency <= 0 {
+		t.Error("latency should be positive even for failed checks")
 	}
 }
 
 func TestTCPChecker_UnreachableHost(t *testing.T) {
-	checker := NewTCPChecker()
-	// Use a non-routable IP to simulate unreachable host
+	// The connect step fails the way connect(2) does when there is no route
+	// to the host or a router answers with ICMP host unreachable.
+	var dials atomic.Int32
+	checker := NewTCPChecker(WithDialer(failingDialer(&dials, syscall.EHOSTUNREACH)))
 	target := Target{
-		Address: "10.255.255.1", // RFC 5737 - TEST-NET, should be unreachable
+		Address: "127.0.0.1",
 		Port:    80,
 	}
 
@@ -133,7 +155,16 @@ func TestTCPChecker_UnreachableHost(t *testing.T) {
 		t.Error("expected unhealthy for unreachable host")
 	}
 	if result.Error == nil {
-		t.Error("expected error for unreachable host")
+		t.Fatal("expected error for unreachable host")
+	}
+	if !errors.Is(result.Error, syscall.EHOSTUNREACH) {
+		t.Errorf("expected the error to wrap EHOSTUNREACH, got: %v", result.Error)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Errorf("expected exactly 1 connection attempt, got %d", got)
+	}
+	if result.Latency <= 0 {
+		t.Error("latency should be positive even for failed checks")
 	}
 }
 
@@ -239,9 +270,12 @@ func TestTCPChecker_IPv6(t *testing.T) {
 }
 
 func TestTCPChecker_ContextCancellation(t *testing.T) {
-	checker := NewTCPChecker()
+	// The stalled dialer keeps the check off the network. A checker that
+	// ignored the canceled context would stall instead of returning at once.
+	var dials atomic.Int32
+	checker := NewTCPChecker(WithDialer(stalledDialer(&dials)))
 	target := Target{
-		Address: "10.255.255.1", // Non-routable
+		Address: "127.0.0.1",
 		Port:    80,
 	}
 
@@ -250,13 +284,21 @@ func TestTCPChecker_ContextCancellation(t *testing.T) {
 	// Cancel immediately
 	cancel()
 
+	start := time.Now()
 	result := checker.Check(ctx, target)
+	elapsed := time.Since(start)
 
 	if result.Healthy {
 		t.Error("expected unhealthy for canceled context")
 	}
 	if result.Error == nil {
-		t.Error("expected error for canceled context")
+		t.Fatal("expected error for canceled context")
+	}
+	if !errors.Is(result.Error, context.Canceled) {
+		t.Errorf("expected the error to wrap context.Canceled, got: %v", result.Error)
+	}
+	if elapsed > stalledDialLimit/2 {
+		t.Errorf("check took too long (%v), context cancellation may not be working", elapsed)
 	}
 }
 
@@ -395,6 +437,46 @@ func TestManager_TCPChecker_ServerGoesDown(t *testing.T) {
 // =============================================================================
 // Helpers
 // =============================================================================
+
+// stalledDialLimit bounds how long stalledDialer blocks when the dial context
+// never ends, so a checker that drops the context fails the test instead of
+// hanging it.
+const stalledDialLimit = 10 * time.Second
+
+// stalledDialer returns a real net.Dialer whose connection attempts never
+// complete. The ControlContext hook runs after the socket is created and
+// before connect(2); it blocks until the dial context ends and returns the
+// context's error, so no packet is sent. The checker still goes through
+// net.Dialer.DialContext exactly as it does in production, and the outcome
+// does not depend on how the host network treats an unroutable address.
+// dials counts the connection attempts.
+func stalledDialer(dials *atomic.Int32) *net.Dialer {
+	return &net.Dialer{
+		KeepAlive: -1,
+		ControlContext: func(ctx context.Context, _, _ string, _ syscall.RawConn) error {
+			dials.Add(1)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(stalledDialLimit):
+				return errors.New("dial context did not end")
+			}
+		},
+	}
+}
+
+// failingDialer returns a real net.Dialer whose connection attempts fail with
+// err before connect(2) is called, so no packet is sent. dials counts the
+// connection attempts.
+func failingDialer(dials *atomic.Int32, err error) *net.Dialer {
+	return &net.Dialer{
+		KeepAlive: -1,
+		ControlContext: func(context.Context, string, string, syscall.RawConn) error {
+			dials.Add(1)
+			return err
+		},
+	}
+}
 
 func parseTCPListener(listener net.Listener) Target {
 	addr := listener.Addr().(*net.TCPAddr)
