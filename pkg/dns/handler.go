@@ -116,17 +116,35 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	st := h.state()
 	zone, entry := st.resolve(qname)
+	// The apex of a zone exists even when no GSLB domain is registered at it.
+	apex := zone != nil && qname == zone.Name
 
 	switch {
-	case q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA:
+	case q.Qtype == dns.TypeAXFR || q.Qtype == dns.TypeIXFR:
+		// Zone transfers are not implemented. Refuse them: an empty NOERROR
+		// could be mistaken by a secondary for an empty zone.
+		h.logger.Debug("zone transfer refused", "name", qname, "type", qtype)
+		m.SetRcode(m, dns.RcodeRefused)
+		m.Authoritative = false
+	case entry == nil && !apex:
+		h.logger.Debug("domain not found", "name", qname)
+		m.SetRcode(m, dns.RcodeNameError) // NXDOMAIN
+	case (q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA) && entry != nil:
 		h.handleAddressQuery(st, m, q, qname, zone, entry, clientIP)
-	case q.Qtype == dns.TypeDNSKEY:
-		h.handleDNSKEYQuery(m, qname, entry)
-	case (q.Qtype == dns.TypeSOA || q.Qtype == dns.TypeNS) && zone != nil && qname == zone.Name:
+	case (q.Qtype == dns.TypeSOA || q.Qtype == dns.TypeNS) && apex:
 		h.handleApexQuery(m, q, zone)
+	case q.Qtype == dns.TypeDNSKEY && st.dnssecEnabled && st.dnssecSigner != nil:
+		// DNSKEY records are added by the signer during signResponse.
+		// Leave the answer empty and successful for it to fill in.
+		h.logger.Debug("resolved DNSKEY query", "domain", qname)
 	default:
-		h.logger.Debug("unsupported query type", "name", qname, "type", qtype)
-		m.SetRcode(m, dns.RcodeNotImplemented)
+		// The name exists but the server has no data of this type. That is
+		// not an error: NOERROR with an empty answer (RFC 2308 "NODATA").
+		// This covers every type OpenGSLB does not serve (TXT, MX, CNAME,
+		// HTTPS, ANY, DS, ...), SOA and NS below an apex, and address
+		// queries at an apex that is not itself a GSLB domain.
+		h.logger.Debug("no data for query type", "name", qname, "type", qtype)
+		setNoData(m, zone)
 	}
 
 	// Sign the response if DNSSEC is enabled
@@ -175,12 +193,6 @@ func (h *Handler) handleApexQuery(m *dns.Msg, q dns.Question, zone *Zone) {
 //     them is answered;
 //   - servers of the family are configured and none is usable: SERVFAIL.
 func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question, qname string, zone *Zone, entry *DomainEntry, clientIP net.IP) {
-	if entry == nil {
-		h.logger.Debug("domain not found", "name", qname)
-		m.SetRcode(m, dns.RcodeNameError) // NXDOMAIN
-		return
-	}
-
 	wantIPv4 := q.Qtype == dns.TypeA
 	if !hasServersOfFamily(entry, wantIPv4) {
 		h.logger.Debug("no servers of the queried address family", "domain", qname, "type", dns.TypeToString[q.Qtype])
@@ -387,20 +399,6 @@ func (h *Handler) SetZones(zones *ZoneTable) {
 // Zones returns the configured zones with every SOA and NS default resolved.
 func (h *Handler) Zones() []Zone {
 	return h.state().zones.Zones()
-}
-
-// handleDNSKEYQuery processes DNSKEY record queries.
-func (h *Handler) handleDNSKEYQuery(m *dns.Msg, qname string, entry *DomainEntry) {
-	// Check if the domain exists in our registry
-	if entry == nil {
-		h.logger.Debug("domain not found for DNSKEY query", "name", qname)
-		m.SetRcode(m, dns.RcodeNameError) // NXDOMAIN
-		return
-	}
-
-	// DNSKEY records are added by the signer during signResponse
-	// Just mark the query as successful - the signer will add the key
-	h.logger.Debug("resolved DNSKEY query", "domain", qname)
 }
 
 // signResponse signs the DNS response if DNSSEC is enabled.
