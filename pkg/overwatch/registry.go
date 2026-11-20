@@ -1129,6 +1129,13 @@ func (r *Registry) loadFromStore() error {
 		return fmt.Errorf("failed to list backends: %w", err)
 	}
 
+	// Hold the write lock while populating the map. The status-change callback
+	// starts goroutines that read the registry (GetAllBackends), so writing
+	// here without the lock is a data race. Callbacks already run under this
+	// lock everywhere else in the registry.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	for _, pair := range pairs {
 		var backend Backend
 		if err := json.Unmarshal(pair.Value, &backend); err != nil {

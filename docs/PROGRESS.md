@@ -389,7 +389,8 @@ Based on roadmap, future sprints may focus on:
 |----------|-------------|
 | [README.md](../README.md) | Project overview and quick start |
 | [docs/configuration.md](configuration.md) | Full configuration reference |
-| [docs/api.md](api.md) | REST API reference |
+| [docs/api.md](api.md) | REST API reference (generated from `api/openapi.yaml`) |
+| [docs/api-guide.md](api-guide.md) | API access control, configuration and examples |
 | [docs/metrics.md](metrics.md) | Prometheus metrics reference |
 | [docs/docker.md](docker.md) | Docker deployment guide |
 | [docs/testing.md](testing.md) | Testing guide |
