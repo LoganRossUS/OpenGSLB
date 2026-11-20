@@ -248,6 +248,47 @@ func (e *fuzzGossipEnv) queryNoPanic(t *testing.T, name string, qtype uint16) *d
 	return w.last
 }
 
+// routeNoPanic asks the domain's own router to pick among the servers the DNS
+// registry holds for it, which is what the DNS handler does for a query once
+// it has decided to answer. It goes to the router directly so that the result
+// does not depend on how the handler treats zones, EDNS or health. A panic is
+// reported as a test failure. The second result is false when the domain has
+// no servers to choose from.
+func (e *fuzzGossipEnv) routeNoPanic(t *testing.T, name string) (*routing.Server, bool) {
+	t.Helper()
+	entry := e.dnsRegistry.Lookup(dns.Fqdn(name))
+	if entry == nil {
+		t.Fatalf("domain %s is not in the DNS registry", name)
+	}
+	servers := make([]*routing.Server, 0, len(entry.Servers))
+	for _, srv := range entry.Servers {
+		servers = append(servers, &routing.Server{
+			Address: srv.Address.String(),
+			Port:    srv.Port,
+			Weight:  srv.Weight,
+			Region:  srv.Region,
+		})
+	}
+
+	var selected *routing.Server
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("%s router panicked for %s with %d servers: %v", entry.Router.Algorithm(), name, len(servers), r)
+			}
+		}()
+		selected, err = entry.Router.Route(context.Background(), routing.NewSimpleServerPool(servers))
+	}()
+	if err != nil || selected == nil {
+		if len(servers) > 0 {
+			t.Fatalf("%s router selected nothing among %d servers of %s: %v", entry.Router.Algorithm(), len(servers), name, err)
+		}
+		return nil, false
+	}
+	return selected, true
+}
+
 func (e *fuzzGossipEnv) dnsServerCount(name string) int {
 	entry := e.dnsRegistry.Lookup(dns.Fqdn(name))
 	if entry == nil {
