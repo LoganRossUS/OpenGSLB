@@ -1130,6 +1130,12 @@ func (a *Application) reloadOverwatchMode(newCfg *config.Config) error {
 		return fmt.Errorf("failed to reload health manager: %w", err)
 	}
 
+	// The geolocation resolver maps countries and continents to regions from
+	// the regions section, which it was given at startup.
+	if a.geoResolver != nil {
+		a.geoResolver.ReloadRegions(newCfg.Regions)
+	}
+
 	return nil
 }
 

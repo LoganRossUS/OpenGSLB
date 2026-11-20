@@ -834,6 +834,39 @@ func TestRestart_StaticServerRemovedFromConfig(t *testing.T) {
 	}
 }
 
+// TestReload_GeolocationRegionsFollowTheFile: the countries and continents of
+// a region feed the geolocation resolver at startup and must do so on reload.
+func TestReload_GeolocationRegionsFollowTheFile(t *testing.T) {
+	port := liveBackend(t, "127.0.0.1")
+	domains := []reloadDomain{{name: reloadStaticDomain}}
+	servers := []reloadServer{{address: "127.0.0.1", port: port, service: reloadStaticDomain}}
+
+	e := newReloadEnv(t, "")
+	e.geoDB = "../../test/apicontract/testdata/geo-fixture.mmdb"
+	e.writeConfig(domains, servers)
+	e.start()
+
+	regionCountries := func() string {
+		t.Helper()
+		region, ok := e.app.geoResolver.GetRegion("us-east")
+		if !ok {
+			t.Fatal("geolocation resolver does not know region us-east")
+		}
+		return strings.Join(region.Countries, ",")
+	}
+	if got := regionCountries(); got != "US" {
+		t.Fatalf("countries at startup = %q, want US", got)
+	}
+
+	e.countries = []string{"DE", "FR"}
+	e.writeConfig(domains, servers)
+	e.reload()
+
+	if got := regionCountries(); got != "DE,FR" {
+		t.Errorf("countries after reload = %q, want DE,FR", got)
+	}
+}
+
 // TestReload_ReportsSettingsThatNeedARestart: a reload must not report plain
 // success when the file changed a setting that is only read at startup.
 func TestReload_ReportsSettingsThatNeedARestart(t *testing.T) {
