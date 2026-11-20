@@ -248,6 +248,11 @@ func (c *Config) validateDNS() error {
 		return fmt.Errorf("default_ttl must be non-negative")
 	}
 
+	// 0 means "use the default" (applied by Parse and Load).
+	if c.DNS.MaxUDPSize != 0 && (c.DNS.MaxUDPSize < MinMaxUDPSize || c.DNS.MaxUDPSize > MaxMaxUDPSize) {
+		return fmt.Errorf("max_udp_size must be between %d and %d (got %d)", MinMaxUDPSize, MaxMaxUDPSize, c.DNS.MaxUDPSize)
+	}
+
 	if err := c.validateZones(); err != nil {
 		return err
 	}

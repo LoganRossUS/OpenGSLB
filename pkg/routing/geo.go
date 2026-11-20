@@ -196,6 +196,12 @@ func (r *GeoRouter) Algorithm() string {
 	return AlgorithmGeolocation
 }
 
+// UsesClientIP implements ClientAware: the region is chosen from the client
+// address.
+func (r *GeoRouter) UsesClientIP() bool {
+	return true
+}
+
 // SetResolver sets or updates the geo resolver.
 func (r *GeoRouter) SetResolver(resolver *geo.Resolver) {
 	r.mu.Lock()

@@ -213,3 +213,35 @@ func TestMailboxToDNSName(t *testing.T) {
 		}
 	}
 }
+
+func TestParse_MaxUDPSizeDefault(t *testing.T) {
+	cfg, err := Parse([]byte("dns:\n  listen_address: \":53\"\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.DNS.MaxUDPSize != 1232 {
+		t.Errorf("default max_udp_size = %d, want 1232", cfg.DNS.MaxUDPSize)
+	}
+
+	cfg, err = Parse([]byte("dns:\n  max_udp_size: 4096\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.DNS.MaxUDPSize != 4096 {
+		t.Errorf("max_udp_size = %d, want 4096", cfg.DNS.MaxUDPSize)
+	}
+}
+
+func TestValidate_MaxUDPSize(t *testing.T) {
+	for _, size := range []int{0, 512, 1232, 1400, 4096} {
+		if err := validateOverwatchWithDNS(DNSConfig{MaxUDPSize: size}); err != nil {
+			t.Errorf("max_udp_size %d rejected: %v", size, err)
+		}
+	}
+	for _, size := range []int{-1, 1, 511, 4097, 65535} {
+		err := validateOverwatchWithDNS(DNSConfig{MaxUDPSize: size})
+		if err == nil || !strings.Contains(err.Error(), "max_udp_size") {
+			t.Errorf("max_udp_size %d: error = %v, want a max_udp_size error", size, err)
+		}
+	}
+}

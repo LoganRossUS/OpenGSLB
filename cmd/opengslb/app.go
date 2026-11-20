@@ -617,6 +617,7 @@ func (a *Application) initializeDNSServer() error {
 	handler := dns.NewHandler(dns.HandlerConfig{
 		Registry:       registry,
 		Zones:          zones,
+		MaxUDPSize:     a.config.DNS.MaxUDPSize,
 		HealthProvider: healthProvider,
 		LeaderChecker:  nil, // Standalone mode - always serve
 		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
@@ -1326,7 +1327,8 @@ func (r *regionMapper) GetServerRegion(address string, port int) string {
 }
 
 // reloadDNSSettings applies the dns section settings that the DNS handler
-// holds outside the registry: the zone table (dns.zones).
+// holds outside the registry: the zone table (dns.zones) and the UDP
+// response size cap (dns.max_udp_size).
 func (a *Application) reloadDNSSettings(newCfg *config.Config) error {
 	if a.dnsHandler == nil {
 		return nil
@@ -1336,6 +1338,7 @@ func (a *Application) reloadDNSSettings(newCfg *config.Config) error {
 		return err
 	}
 	a.dnsHandler.SetZones(zones)
+	a.dnsHandler.SetMaxUDPSize(newCfg.DNS.MaxUDPSize)
 	return nil
 }
 

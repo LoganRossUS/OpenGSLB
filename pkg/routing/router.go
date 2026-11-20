@@ -40,6 +40,17 @@ type Router interface {
 	Algorithm() string
 }
 
+// ClientAware is an optional interface for routers whose decision depends on
+// the client address in the context (see WithClientIP). The DNS handler uses
+// it to decide the EDNS Client Subnet scope of a response: an answer chosen
+// for the client's subnet is only valid for that subnet, while the answer of
+// any other router is valid for every client (RFC 7871 section 7.2.1).
+type ClientAware interface {
+	// UsesClientIP reports whether Route takes the client address into
+	// account.
+	UsesClientIP() bool
+}
+
 // SimpleServerPool is a basic implementation of ServerPool.
 type SimpleServerPool struct {
 	servers []*Server

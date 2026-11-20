@@ -129,3 +129,47 @@ func TestApplication_ReloadAppliesZones(t *testing.T) {
 		t.Errorf("serial after reload = %d, want 2026112002", got)
 	}
 }
+
+// advertisedUDPSize returns the EDNS UDP payload size the application's DNS
+// handler advertises.
+func advertisedUDPSize(t *testing.T, app *Application) uint16 {
+	t.Helper()
+	q := new(miekg.Msg)
+	q.SetQuestion("app.example.com.", miekg.TypeA)
+	q.SetEdns0(4096, false)
+	w := &recordingResponseWriter{}
+	app.dnsHandler.ServeDNS(w, q)
+	if w.msg == nil {
+		t.Fatal("handler wrote no response")
+	}
+	opt := w.msg.IsEdns0()
+	if opt == nil {
+		t.Fatal("response has no OPT record")
+	}
+	return opt.UDPSize()
+}
+
+// TestApplication_MaxUDPSize checks that dns.max_udp_size reaches the DNS
+// handler at startup (1232 by default) and on reload.
+func TestApplication_MaxUDPSize(t *testing.T) {
+	cfg := loadTestConfig(t, zonesConfigContent)
+	app := NewApplication(cfg, nil)
+	if err := app.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	if got := advertisedUDPSize(t, app); got != 1232 {
+		t.Errorf("default advertised UDP size = %d, want 1232", got)
+	}
+
+	newCfg := loadTestConfig(t, strings.Replace(zonesConfigContent, "default_ttl: 60", "default_ttl: 60\n  max_udp_size: 4096", 1))
+	newCfg.Overwatch.DataDir = cfg.Overwatch.DataDir
+	if newCfg.DNS.MaxUDPSize != 4096 {
+		t.Fatalf("test config did not set max_udp_size: %d", newCfg.DNS.MaxUDPSize)
+	}
+	if err := app.Reload(newCfg); err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+	if got := advertisedUDPSize(t, app); got != 4096 {
+		t.Errorf("advertised UDP size after reload = %d, want 4096", got)
+	}
+}

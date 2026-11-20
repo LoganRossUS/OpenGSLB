@@ -10,6 +10,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -28,6 +29,7 @@ type Handler struct {
 	dnssecSigner  DNSSECSigner
 	dnssecEnabled bool
 	ecsEnabled    bool
+	maxUDPSize    uint16
 	defaultTTL    uint32
 	logger        *slog.Logger
 }
@@ -52,8 +54,25 @@ func NewHandler(cfg HandlerConfig) *Handler {
 		dnssecSigner:  cfg.DNSSECSigner,
 		dnssecEnabled: cfg.DNSSECEnabled,
 		ecsEnabled:    cfg.ECSEnabled,
+		maxUDPSize:    clampUDPSize(cfg.MaxUDPSize),
 		defaultTTL:    cfg.DefaultTTL,
 		logger:        logger,
+	}
+}
+
+// clampUDPSize maps a configured maximum UDP response size to the value the
+// handler uses: 0 selects the default, anything else is limited to the range
+// 512 to 65535.
+func clampUDPSize(size int) uint16 {
+	switch {
+	case size == 0:
+		return DefaultMaxUDPSize
+	case size < minUDPSize:
+		return minUDPSize
+	case size > dns.MaxMsgSize:
+		return dns.MaxMsgSize
+	default:
+		return uint16(size)
 	}
 }
 
@@ -66,6 +85,7 @@ type handlerState struct {
 	health        HealthProvider
 	dnssecSigner  DNSSECSigner
 	dnssecEnabled bool
+	maxUDPSize    uint16
 }
 
 // state returns a consistent copy of the mutable handler configuration.
@@ -78,6 +98,7 @@ func (h *Handler) state() handlerState {
 		health:        h.health,
 		dnssecSigner:  h.dnssecSigner,
 		dnssecEnabled: h.dnssecEnabled,
+		maxUDPSize:    h.maxUDPSize,
 	}
 }
 
@@ -85,61 +106,157 @@ func (h *Handler) state() handlerState {
 // ADR-015: All Overwatch nodes serve DNS independently (no leader check).
 func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	start := time.Now()
+	st := h.state()
 
 	m := new(dns.Msg)
 	m.SetReply(r)
 	// The AA bit is set further down, only once the query name is known to
 	// be inside a zone this server is authoritative for.
 
-	if len(r.Question) == 0 {
+	qname := ""
+	// ecsScope is the EDNS Client Subnet SCOPE PREFIX-LENGTH of the response.
+	// It stays 0 ("valid for every client") unless the client subnet decided
+	// the answer.
+	var ecsScope uint8
+
+	queryOPT := r.IsEdns0()
+	switch {
+	case len(r.Question) == 0:
 		h.logger.Warn("DNS query with no questions")
 		setError(m, dns.RcodeFormatError)
-		h.writeResponse(w, m, start, "FORMERR", "")
-		return
+	case queryOPT != nil && queryOPT.Version() != 0:
+		// RFC 6891 section 6.1.3: an EDNS version the server does not
+		// implement is answered BADVERS. The OPT record added below states
+		// the version it does implement (0).
+		h.logger.Debug("unsupported EDNS version", "version", queryOPT.Version())
+		setError(m, dns.RcodeBadVers)
+	default:
+		q := r.Question[0]
+		// q.Name keeps the querier's spelling and is echoed in the question
+		// and answer sections (0x20 case randomization depends on that).
+		// qname is the canonical lower-case form used for lookups, metrics
+		// and logs.
+		qname = normalizeDomain(q.Name)
+
+		// Client address for geolocation and latency routing: the EDNS
+		// Client Subnet when enabled and usable, else the source address.
+		clientIP, ecs := h.clientAddress(r, w.RemoteAddr())
+
+		h.logger.Debug("DNS query received",
+			"name", qname,
+			"type", dns.TypeToString[q.Qtype],
+			"source", w.RemoteAddr(),
+			"clientIP", clientIP,
+		)
+
+		switch {
+		case r.Opcode != dns.OpcodeQuery:
+			// NOTIFY, UPDATE and the other opcodes are not implemented.
+			h.logger.Debug("unsupported opcode", "name", qname, "opcode", dns.OpcodeToString[r.Opcode])
+			setError(m, dns.RcodeNotImplemented)
+		case q.Qclass != dns.ClassINET:
+			// Only class IN is served. A CH or ANY class query must not be
+			// answered from IN data.
+			h.logger.Debug("query class refused", "name", qname, "class", dns.ClassToString[q.Qclass])
+			setError(m, dns.RcodeRefused)
+		default:
+			if usedClientIP := h.answerQuery(st, m, q, qname, clientIP); usedClientIP && ecs.Usable() {
+				// The answer was chosen for this client subnet and is valid
+				// for exactly the prefix the resolver sent.
+				ecsScope = ecs.SourceNetmask
+			}
+		}
 	}
 
-	q := r.Question[0]
-	// q.Name keeps the querier's spelling and is echoed in the question and
-	// answer sections (0x20 case randomization depends on that). qname is the
-	// canonical lower-case form used for lookups, metrics and logs.
-	qname := normalizeDomain(q.Name)
-	qtype := dns.TypeToString[q.Qtype]
-
-	// Get client IP for geolocation routing (ECS or source address)
-	clientIP := geo.GetClientIP(r, w.RemoteAddr(), h.ecsEnabled)
-
-	h.logger.Debug("DNS query received",
-		"name", qname,
-		"type", qtype,
-		"source", w.RemoteAddr().String(),
-		"clientIP", clientIP,
-	)
-
-	st := h.state()
-
-	switch {
-	case r.Opcode != dns.OpcodeQuery:
-		// NOTIFY, UPDATE and the other opcodes are not implemented.
-		h.logger.Debug("unsupported opcode", "name", qname, "opcode", dns.OpcodeToString[r.Opcode])
-		setError(m, dns.RcodeNotImplemented)
-	case q.Qclass != dns.ClassINET:
-		// Only class IN is served. A CH or ANY class query must not be
-		// answered from IN data.
-		h.logger.Debug("query class refused", "name", qname, "class", dns.ClassToString[q.Qclass])
-		setError(m, dns.RcodeRefused)
-	default:
-		h.answerQuery(st, m, q, qname, clientIP)
+	// RFC 6891 section 6.1.1: the response has an OPT record if and only if
+	// the query had one. It goes in before signing so that a signer can see
+	// the DO bit.
+	if queryOPT != nil {
+		m.Extra = append(m.Extra, h.responseOPT(st, r, queryOPT, ecsScope))
 	}
 
 	// Sign the response if DNSSEC is enabled
 	signed := h.signResponse(st, m)
 
-	status := dns.RcodeToString[signed.Rcode]
-	h.writeResponse(w, signed, start, status, qname)
+	// Fit the response to the transport. Over UDP it must not exceed what
+	// the requester can receive, capped at the configured maximum; whatever
+	// does not fit is dropped and the TC bit tells the client to retry over
+	// TCP. Over TCP the only limit is the 64 KiB of the protocol itself.
+	// Truncate keeps the OPT record (RFC 6891 section 7).
+	signed.Truncate(responseSizeLimit(w.RemoteAddr(), queryOPT, st.maxUDPSize))
+
+	h.writeResponse(w, signed, start, rcodeString(signed), qname)
 }
 
-// answerQuery fills in the response to a class IN query.
-func (h *Handler) answerQuery(st handlerState, m *dns.Msg, q dns.Question, qname string, clientIP net.IP) {
+// clientAddress returns the address that routing decisions are made for and
+// the EDNS Client Subnet of the query. The ECS result is non-nil only when
+// ECS support is enabled.
+func (h *Handler) clientAddress(r *dns.Msg, source net.Addr) (net.IP, *geo.ECSResult) {
+	if !h.ecsEnabled {
+		return geo.GetClientIP(r, source, false), nil
+	}
+	ecs := geo.ParseECS(r)
+	if ecs.Usable() {
+		return ecs.IP, ecs
+	}
+	return geo.GetClientIP(r, source, false), ecs
+}
+
+// responseOPT builds the OPT record of a response to a query with EDNS.
+func (h *Handler) responseOPT(st handlerState, r *dns.Msg, queryOPT *dns.OPT, ecsScope uint8) *dns.OPT {
+	opt := &dns.OPT{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeOPT}}
+	// The size this server is willing to receive and send over UDP.
+	opt.SetUDPSize(st.maxUDPSize)
+	// RFC 3225 section 3: the DO bit of the query is copied to the response.
+	if queryOPT.Do() {
+		opt.SetDo()
+	}
+	// RFC 7871 section 7.2.1: a server with ECS enabled that receives an ECS
+	// option includes one in its response, with FAMILY, SOURCE PREFIX-LENGTH
+	// and ADDRESS as in the query. A server with ECS disabled must not.
+	if h.ecsEnabled {
+		if ecs := geo.ParseECS(r); ecs.Found {
+			opt.Option = append(opt.Option, geo.ECSResponseOption(ecs.Option, ecsScope))
+		}
+	}
+	return opt
+}
+
+// responseSizeLimit returns the largest response, in bytes, that may be sent
+// to the requester.
+func responseSizeLimit(remote net.Addr, queryOPT *dns.OPT, maxUDPSize uint16) int {
+	if remote != nil && remote.Network() == "tcp" {
+		return dns.MaxMsgSize
+	}
+	// Without EDNS a requester accepts 512 bytes (RFC 1035 section 4.2.1).
+	// With EDNS it states its size; values below 512 count as 512 (RFC 6891
+	// section 6.2.5).
+	limit := minUDPSize
+	if queryOPT != nil && int(queryOPT.UDPSize()) > limit {
+		limit = int(queryOPT.UDPSize())
+	}
+	if limit > int(maxUDPSize) {
+		limit = int(maxUDPSize)
+	}
+	return limit
+}
+
+// rcodeString returns the name of the response code for metrics and logs.
+func rcodeString(m *dns.Msg) string {
+	// Rcode 16 is BADVERS in a response with an OPT record (RFC 6891) and
+	// BADSIG in a TSIG record. This server only ever produces the former.
+	if m.Rcode == dns.RcodeBadVers {
+		return "BADVERS"
+	}
+	if s, ok := dns.RcodeToString[m.Rcode]; ok {
+		return s
+	}
+	return "RCODE" + strconv.Itoa(m.Rcode)
+}
+
+// answerQuery fills in the response to a class IN query. It reports whether
+// the client address decided the answer (see routing.ClientAware).
+func (h *Handler) answerQuery(st handlerState, m *dns.Msg, q dns.Question, qname string, clientIP net.IP) (usedClientIP bool) {
 	qtype := dns.TypeToString[q.Qtype]
 
 	zone, entry := st.resolve(qname)
@@ -149,7 +266,7 @@ func (h *Handler) answerQuery(st handlerState, m *dns.Msg, q dns.Question, qname
 		// NXDOMAIN would be a false statement about someone else's name.
 		h.logger.Debug("query outside served zones refused", "name", qname, "type", qtype)
 		setError(m, dns.RcodeRefused)
-		return
+		return false
 	}
 
 	if q.Qtype == dns.TypeAXFR || q.Qtype == dns.TypeIXFR {
@@ -157,7 +274,7 @@ func (h *Handler) answerQuery(st handlerState, m *dns.Msg, q dns.Question, qname
 		// could be mistaken by a secondary for an empty zone.
 		h.logger.Debug("zone transfer refused", "name", qname, "type", qtype)
 		setError(m, dns.RcodeRefused)
-		return
+		return false
 	}
 
 	// Everything below is a statement about data in one of our zones.
@@ -174,7 +291,7 @@ func (h *Handler) answerQuery(st handlerState, m *dns.Msg, q dns.Question, qname
 		m.Rcode = dns.RcodeNameError // NXDOMAIN
 		m.Ns = []dns.RR{zone.negativeSOA()}
 	case (q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA) && entry != nil:
-		h.handleAddressQuery(st, m, q, qname, zone, entry, clientIP)
+		return h.handleAddressQuery(st, m, q, qname, zone, entry, clientIP)
 	case (q.Qtype == dns.TypeSOA || q.Qtype == dns.TypeNS) && apex:
 		h.handleApexQuery(m, q, zone)
 	case q.Qtype == dns.TypeDNSKEY && st.dnssecEnabled && st.dnssecSigner != nil:
@@ -191,6 +308,7 @@ func (h *Handler) answerQuery(st handlerState, m *dns.Msg, q dns.Question, qname
 		h.logger.Debug("no data for query type", "name", qname, "type", qtype)
 		setNoData(m, zone)
 	}
+	return false
 }
 
 // setError turns m into an error response that makes no statement about zone
@@ -249,19 +367,21 @@ func (h *Handler) handleApexQuery(m *dns.Msg, q dns.Question, zone *Zone) {
 //   - servers of the family are configured and at least one is usable: one of
 //     them is answered;
 //   - servers of the family are configured and none is usable: SERVFAIL.
-func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question, qname string, zone *Zone, entry *DomainEntry, clientIP net.IP) {
+//
+// It reports whether the client address decided the answer.
+func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question, qname string, zone *Zone, entry *DomainEntry, clientIP net.IP) (usedClientIP bool) {
 	wantIPv4 := q.Qtype == dns.TypeA
 	if !hasServersOfFamily(entry, wantIPv4) {
 		h.logger.Debug("no servers of the queried address family", "domain", qname, "type", dns.TypeToString[q.Qtype])
 		setNoData(m, zone)
-		return
+		return false
 	}
 
 	servers := healthyServers(st.health, entry, wantIPv4)
 	if len(servers) == 0 {
 		h.logger.Debug("no healthy servers", "domain", qname, "type", dns.TypeToString[q.Qtype])
 		setError(m, dns.RcodeServerFailure)
-		return
+		return false
 	}
 
 	// Create context with client IP for geolocation routing
@@ -282,7 +402,7 @@ func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question
 	if err != nil {
 		h.logger.Error("routing failed", "domain", qname, "error", err)
 		setError(m, dns.RcodeServerFailure)
-		return
+		return false
 	}
 
 	if wantIPv4 {
@@ -298,6 +418,9 @@ func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question
 		"selected", selected.Address,
 		"algorithm", entry.Router.Algorithm(),
 	)
+
+	aware, ok := entry.Router.(routing.ClientAware)
+	return ok && aware.UsesClientIP() && clientIP != nil
 }
 
 // setNoData turns m into an empty NOERROR response: the name exists but has
@@ -449,6 +572,14 @@ func (h *Handler) SetZones(zones *ZoneTable) {
 	defer h.mu.Unlock()
 	h.zones = zones
 	h.logger.Info("DNS handler zones updated", "zones", len(zones.zones))
+}
+
+// SetMaxUDPSize sets the cap on UDP responses, which is also the UDP payload
+// size advertised in EDNS responses. 0 selects DefaultMaxUDPSize.
+func (h *Handler) SetMaxUDPSize(size int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.maxUDPSize = clampUDPSize(size)
 }
 
 // Zones returns the configured zones with every SOA and NS default resolved.
