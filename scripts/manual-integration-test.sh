@@ -6,7 +6,7 @@
 #   - DNS server functionality (A and AAAA records)
 #   - Health check integration (HTTP and TCP)
 #   - Round-robin, Weighted, and Failover load balancing
-#   - NXDOMAIN for unknown domains
+#   - NXDOMAIN for unknown names inside a served zone, REFUSED outside
 #   - SERVFAIL when no healthy servers
 #   - Logging configuration (text and JSON formats)
 #   - Prometheus metrics endpoint
@@ -433,19 +433,35 @@ test_unhealthy_servfail() {
 }
 
 test_nxdomain() {
-    log_test "TEST 3: NXDOMAIN for Unknown Domain"
-    echo "Domain: nonexistent.test"
+    log_test "TEST 3: NXDOMAIN Inside a Served Zone, REFUSED Outside"
+    echo "Domain: nonexistent.healthy.test (below the configured domain healthy.test)"
     echo "Expected: NXDOMAIN status"
     echo ""
-    
-    local status=$(query_dns_status "nonexistent.test")
+
+    # The test configuration has no dns.zones, so every domain is served as
+    # its own zone: a name below healthy.test is inside a served zone.
+    local status=$(query_dns_status "nonexistent.healthy.test")
     echo "  Response: $status"
-    
-    if echo "$status" | grep -q "NXDOMAIN"; then
-        log_info "PASSED: Got NXDOMAIN for unknown domain"
+
+    if ! echo "$status" | grep -q "NXDOMAIN"; then
+        log_error "FAILED: Expected NXDOMAIN, got: $status"
+        return 1
+    fi
+    log_info "PASSED: Got NXDOMAIN for a missing name inside a served zone"
+
+    echo ""
+    echo "Domain: nonexistent.test (outside every served zone)"
+    echo "Expected: REFUSED status"
+    echo ""
+
+    status=$(query_dns_status "nonexistent.test")
+    echo "  Response: $status"
+
+    if echo "$status" | grep -q "REFUSED"; then
+        log_info "PASSED: Got REFUSED for a name outside every served zone"
         return 0
     else
-        log_error "FAILED: Expected NXDOMAIN, got: $status"
+        log_error "FAILED: Expected REFUSED, got: $status"
         return 1
     fi
 }
