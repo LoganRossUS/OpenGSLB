@@ -311,10 +311,13 @@ type DNSSECKeySyncConfig struct {
 
 // DNSConfig defines the DNS server settings (overwatch mode).
 type DNSConfig struct {
-	ListenAddress     string   `yaml:"listen_address"`
-	DefaultTTL        int      `yaml:"default_ttl"`
-	ReturnLastHealthy bool     `yaml:"return_last_healthy"`
-	Zones             []string `yaml:"zones"`
+	ListenAddress     string `yaml:"listen_address"`
+	DefaultTTL        int    `yaml:"default_ttl"`
+	ReturnLastHealthy bool   `yaml:"return_last_healthy"`
+
+	// Zones lists the zones this overwatch is authoritative for. Each entry is
+	// a zone name or a mapping with SOA and NS settings (see Zone).
+	Zones []Zone `yaml:"zones"`
 }
 
 // Region defines a geographic region with its servers and health check configuration.

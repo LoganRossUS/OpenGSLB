@@ -84,7 +84,7 @@ Examples:
 		result := ConfigValidationResult{
 			Valid:       true,
 			Mode:        string(cfg.GetEffectiveMode()),
-			Zones:       cfg.DNS.Zones,
+			Zones:       cfg.DNS.ZoneNames(),
 			RegionCount: len(cfg.Regions),
 			DomainCount: len(cfg.Domains),
 		}
