@@ -264,6 +264,8 @@ External validation allows Overwatch to independently verify agent health claims
 
 The `health_check` block of a region (`path`, `failure_threshold`, `success_threshold`) drives the health manager behind `GET /api/v1/health/regions` and the `health status changed` log lines. In overwatch mode the DNS answer follows the validation verdict, not the health manager, so the two can report different states for a few seconds.
 
+**Per-server health checks:** a server created through the API (`POST /api/v1/servers` or `POST /api/v1/domains/{name}/backends`) can carry its own `health_check`: type (`http`, `https`, `tcp`), path, host, interval, timeout and thresholds. Validation then probes that server with those values; every value that is not set falls back to the settings in this table, and to `GET /` for an `http` check. Each backend is probed when its own interval has passed, a new server gets its first probe within a second, and a slow probe of one backend does not delay the others. When `enabled` is `false` no backend is probed, and a request that sets a health check on a server is refused with `409`. See the [API guide](api-guide.md).
+
 ### Overwatch Stale Settings
 
 Configure when backends are considered stale (no recent heartbeat from agent).
@@ -273,11 +275,22 @@ Configure when backends are considered stale (no recent heartbeat from agent).
 | `threshold` | duration | `30s` | Time without heartbeat before marking stale |
 | `remove_after` | duration | `5m` | Time after which stale backends are removed |
 
+Staleness applies to backends registered by an agent. Servers of the configuration file and servers created through the API have no agent and are never marked stale or removed by these timers.
+
 ### Overwatch Data Directory
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `data_dir` | string | `/var/lib/opengslb` | Directory for persistent data (bbolt database) |
+
+The store, `overwatch.db` in this directory, holds the domains, servers and regions created through the API, agent registrations, overrides and pinned agent certificates. The directory is created when it does not exist. At startup:
+
+- If no store has ever existed there and none can be created (the directory cannot be created or written), the overwatch starts, logs `RUNNING WITHOUT PERSISTENCE` at WARN and serves the domains of the configuration file. API requests that create, change or delete a domain, server or region are answered with `503` and a message that names the directory. Nothing that was stored can be missing in this case, which is why the node starts.
+- If `overwatch.db` exists, or its existence cannot be ruled out, and it cannot be opened (wrong owner, held by another process for more than five seconds, not a bbolt file), the overwatch does not start. Starting without it would silently drop the domains and servers that were created through the API and answer NXDOMAIN for them.
+
+A store written by version 1.1.10 or earlier is migrated when it is opened: backends that were added with `POST /api/v1/domains/{name}/backends` were kept under their own key (`domain_backends/`) and are rewritten as servers (`backends/`). The migration is logged, needs no action and is safe to repeat. An older version does not find the migrated backends where it kept them, so take a copy of `overwatch.db` before the upgrade if a downgrade must stay possible.
+
+The container image creates `/var/lib/opengslb` for its runtime user and declares it a volume; see the [Docker guide](docker.md#persistent-data).
 
 ### Overwatch DNSSEC Settings
 

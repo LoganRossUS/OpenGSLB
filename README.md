@@ -84,8 +84,12 @@ docker run -d \
   -p 53:53/tcp \
   -p 9090:9090 \
   -v $(pwd)/config.yaml:/etc/opengslb/config.yaml \
+  -v opengslb-data:/var/lib/opengslb \
   ghcr.io/loganrossus/opengslb:latest
 ```
+
+The `opengslb-data` volume keeps the overwatch store (domains and servers created through the API) or the
+agent certificate when the container is replaced. See the [Docker guide](docs/docker.md#persistent-data).
 
 ### Test It
 
