@@ -7,8 +7,10 @@
 package overwatch
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/loganrossus/OpenGSLB/pkg/metrics"
 	"github.com/miekg/dns"
@@ -169,5 +171,53 @@ func TestGossip_UnknownMessageTypesShareOneMetricSeries(t *testing.T) {
 
 	if got := counterSeries(t, metrics.GossipMessagesReceivedTotal); got != 3 {
 		t.Errorf("gossip_messages_received_total has %d series after 200 unknown types, heartbeat and deregister, want 3", got)
+	}
+}
+
+// encoding/json writes a []byte field as base64. The decoder used the base64
+// text as if it were the PEM, so no certificate sent by SendAgentAuth could
+// ever be parsed.
+func TestGossipAgentAuth_CertificateSurvivesTheWire(t *testing.T) {
+	fuzzSilenceDefaultLogger(t)
+	env := newFuzzGossipEnv(t)
+
+	certPEM, _, err := generateTestCertificate(fuzzRegion, time.Hour)
+	if err != nil {
+		t.Fatalf("generate certificate: %v", err)
+	}
+
+	// Exactly what MemberlistSender.SendAgentAuth puts on the wire.
+	wire := gossipSeed(t, MessageAgentAuth, AgentAuthPayload{
+		CertificatePEM: certPEM,
+		ServiceToken:   fuzzServiceToken,
+	})
+	env.handleRaw(t, string(wire))
+
+	pinned, err := env.handler.auth.GetPinnedCertificate(context.Background(), fuzzAgentID)
+	if err != nil {
+		t.Fatalf("agent was not pinned after a valid agent_auth message: %v", err)
+	}
+	if string(pinned.CertificatePEM) != string(certPEM) {
+		t.Errorf("pinned certificate differs from the one sent")
+	}
+}
+
+// A sender that puts the PEM text itself in the JSON string keeps working.
+func TestGossipAgentAuth_AcceptsPlainPEMString(t *testing.T) {
+	fuzzSilenceDefaultLogger(t)
+	env := newFuzzGossipEnv(t)
+
+	certPEM, _, err := generateTestCertificate(fuzzRegion, time.Hour)
+	if err != nil {
+		t.Fatalf("generate certificate: %v", err)
+	}
+	wire := gossipSeed(t, MessageAgentAuth, map[string]any{
+		"certificate_pem": string(certPEM),
+		"service_token":   fuzzServiceToken,
+	})
+	env.handleRaw(t, string(wire))
+
+	if _, err := env.handler.auth.GetPinnedCertificate(context.Background(), fuzzAgentID); err != nil {
+		t.Fatalf("agent was not pinned after an agent_auth message with a plain PEM string: %v", err)
 	}
 }

@@ -8,6 +8,7 @@ package overwatch
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"math"
@@ -354,8 +355,15 @@ func (h *GossipHandler) handleAgentAuth(msg GossipMessage) {
 func (h *GossipHandler) parseAgentAuthPayload(m map[string]interface{}) AgentAuthPayload {
 	payload := AgentAuthPayload{}
 
+	// AgentAuthPayload.CertificatePEM is a []byte, which encoding/json puts on
+	// the wire as base64. A PEM block is never valid base64 (it contains '-'),
+	// so a sender that wrote the PEM text itself is still understood.
 	if certPEM, ok := m["certificate_pem"].(string); ok {
-		payload.CertificatePEM = []byte(certPEM)
+		if decoded, err := base64.StdEncoding.DecodeString(certPEM); err == nil {
+			payload.CertificatePEM = decoded
+		} else {
+			payload.CertificatePEM = []byte(certPEM)
+		}
 	}
 	if serviceToken, ok := m["service_token"].(string); ok {
 		payload.ServiceToken = serviceToken
