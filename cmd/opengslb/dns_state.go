@@ -68,7 +68,8 @@ func (a *Application) buildDNSRegistry(cfg *config.Config, tolerateStoreErrors b
 	// honouring the region list of each domain.
 	if a.backendRegistry != nil {
 		for _, b := range a.backendRegistry.GetAllBackends() {
-			if b.Source == overwatch.SourceStatic {
+			// A disabled server stays in the backend registry and out of DNS.
+			if b.Source == overwatch.SourceStatic || b.Disabled {
 				continue
 			}
 			if err := registry.RegisterServer(b.Service, b.Address, b.Port, b.Weight, b.Region); err != nil {

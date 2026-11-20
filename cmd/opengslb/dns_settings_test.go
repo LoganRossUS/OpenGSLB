@@ -121,7 +121,7 @@ func TestApplication_ReloadAppliesZones(t *testing.T) {
 
 	newCfg := loadTestConfig(t, strings.Replace(zonesConfigContent, "serial: 2026112001", "serial: 2026112002", 1))
 	newCfg.Overwatch.DataDir = cfg.Overwatch.DataDir
-	if err := app.Reload(newCfg); err != nil {
+	if _, err := app.Reload(newCfg); err != nil {
 		t.Fatalf("Reload failed: %v", err)
 	}
 
@@ -166,7 +166,7 @@ func TestApplication_MaxUDPSize(t *testing.T) {
 	if newCfg.DNS.MaxUDPSize != 4096 {
 		t.Fatalf("test config did not set max_udp_size: %d", newCfg.DNS.MaxUDPSize)
 	}
-	if err := app.Reload(newCfg); err != nil {
+	if _, err := app.Reload(newCfg); err != nil {
 		t.Fatalf("Reload failed: %v", err)
 	}
 	if got := advertisedUDPSize(t, app); got != 4096 {
@@ -203,7 +203,7 @@ func TestApplication_ReturnLastHealthy(t *testing.T) {
 	enabled := strings.Replace(zonesConfigContent, "default_ttl: 60", "default_ttl: 60\n  return_last_healthy: true", 1)
 	newCfg := loadTestConfig(t, enabled)
 	newCfg.Overwatch.DataDir = cfg.Overwatch.DataDir
-	if err := app.Reload(newCfg); err != nil {
+	if _, err := app.Reload(newCfg); err != nil {
 		t.Fatalf("Reload failed: %v", err)
 	}
 	resp = queryApp(t, app, "app.example.com.", miekg.TypeA)

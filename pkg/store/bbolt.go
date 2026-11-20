@@ -8,9 +8,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -18,6 +20,10 @@ import (
 var (
 	bucketName = []byte("opengslb")
 )
+
+// openLockTimeout is how long NewBboltStore waits for the lock on the
+// database file before it gives up. Tests shorten it.
+var openLockTimeout = 5 * time.Second
 
 // BboltStore implements Store using BoltDB.
 type BboltStore struct {
@@ -36,8 +42,13 @@ type watcherEntry struct {
 
 // NewBboltStore creates a new BboltStore.
 func NewBboltStore(path string) (*BboltStore, error) {
-	db, err := bolt.Open(path, 0600, nil)
+	// Without a timeout bbolt waits forever for the file lock. A second
+	// process on the same file would hang at startup instead of reporting it.
+	db, err := bolt.Open(path, 0600, &bolt.Options{Timeout: openLockTimeout})
 	if err != nil {
+		if errors.Is(err, bolt.ErrTimeout) {
+			return nil, fmt.Errorf("failed to open bolt db %s: it is locked by another process (waited %s): %w", path, openLockTimeout, err)
+		}
 		return nil, fmt.Errorf("failed to open bolt db: %w", err)
 	}
 

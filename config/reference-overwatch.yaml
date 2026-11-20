@@ -179,6 +179,13 @@ overwatch:
   # ---------------------------------------------------------------------------
   # Directory for persistent data (bbolt database for state, keys, etc.)
   # Default: /var/lib/opengslb
+  #
+  # The store (overwatch.db) holds what is created through the API: domains,
+  # servers and regions, plus agent registrations and overrides.
+  # - If the store cannot be created (directory not writable), the overwatch
+  #   starts, logs "RUNNING WITHOUT PERSISTENCE" at WARN and refuses API
+  #   writes with 503.
+  # - If the store exists and cannot be opened, the overwatch does not start.
   data_dir: "/var/lib/opengslb"
 
 # =============================================================================

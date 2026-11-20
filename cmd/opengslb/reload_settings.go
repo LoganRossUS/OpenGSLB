@@ -26,6 +26,10 @@ var reloadableSettings = map[string]bool{
 	"regions":         true, // servers, health checks, geolocation countries and continents
 	"domains":         true,
 	"dns.default_ttl": true, // used when the registry is rebuilt
+	// Applied to the running DNS handler by reloadDNSSettings.
+	"dns.zones":               true,
+	"dns.max_udp_size":        true,
+	"dns.return_last_healthy": true,
 
 	// Agent mode.
 	"agent.backends": true,

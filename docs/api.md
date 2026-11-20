@@ -40,16 +40,30 @@ loopback only by default); a rejected client gets 403 with the plain-text body `
 Errors are `{"error": string, "code": int}`. Timestamps are RFC 3339. A Go zero time is serialized as
 `0001-01-01T00:00:00Z` rather than omitted.
 
+Durations (health-check `interval` and `timeout`) are strings in Go duration syntax with a unit, such as
+`"30s"`, `"500ms"` or `"1m30s"`, the form the configuration file uses. A bare number is rejected with
+400: earlier versions decoded it as nanoseconds while clients meant seconds.
+
+Servers and backends are one model. A server is one backend of one domain: the object returned under
+`/api/v1/servers` and under `/api/v1/domains/{name}/backends` is the same `BackendServer`, whatever
+endpoint created it, and its `service` field is the name of its domain. Its `source` says who owns it:
+`static` (configuration file), `agent` (registered by an agent over gossip) or `api`. Only `api`
+servers can be changed through the API.
+
+Writes need the persistent store (`overwatch.data_dir`). An overwatch that could not create its store
+starts read-only: every request that creates, changes or deletes a domain, server or region is answered
+with 503 and a message that names the directory, and nothing is changed.
+
 ## Operations by status
 
 | Status | Operations |
 |---|---|
-| real | 57 |
-| stub | 22 |
+| real | 63 |
+| stub | 17 |
 | not implemented | 16 |
 | unavailable | 5 |
 | unwired | 6 |
-| broken | 1 |
+| broken | 0 |
 | **Total** | **107** |
 
 ## Contents
@@ -78,7 +92,7 @@ Errors are `{"error": string, "code": int}`. Timestamps are RFC 3339. A Go zero 
   - [`DELETE /api/v1/domains/{name}`](#delete-apiv1domainsname)
   - [`GET /api/v1/domains/{name}/backends`](#get-apiv1domainsnamebackends)
   - [`POST /api/v1/domains/{name}/backends`](#post-apiv1domainsnamebackends)
-  - [`DELETE /api/v1/domains/{name}/backends/{id}`](#delete-apiv1domainsnamebackendsid) (broken)
+  - [`DELETE /api/v1/domains/{name}/backends/{id}`](#delete-apiv1domainsnamebackendsid)
 - [Servers](#servers)
   - [`GET /api/v1/servers`](#get-apiv1servers)
   - [`POST /api/v1/servers`](#post-apiv1servers)
@@ -86,9 +100,9 @@ Errors are `{"error": string, "code": int}`. Timestamps are RFC 3339. A Go zero 
   - [`PUT /api/v1/servers/{id}`](#put-apiv1serversid)
   - [`PATCH /api/v1/servers/{id}`](#patch-apiv1serversid)
   - [`DELETE /api/v1/servers/{id}`](#delete-apiv1serversid)
-  - [`GET /api/v1/servers/{id}/health-check`](#get-apiv1serversidhealth-check) (stub)
-  - [`PUT /api/v1/servers/{id}/health-check`](#put-apiv1serversidhealth-check) (stub)
-  - [`PATCH /api/v1/servers/{id}/health-check`](#patch-apiv1serversidhealth-check) (stub)
+  - [`GET /api/v1/servers/{id}/health-check`](#get-apiv1serversidhealth-check)
+  - [`PUT /api/v1/servers/{id}/health-check`](#put-apiv1serversidhealth-check)
+  - [`PATCH /api/v1/servers/{id}/health-check`](#patch-apiv1serversidhealth-check)
 - [Regions](#regions)
   - [`GET /api/v1/regions`](#get-apiv1regions)
   - [`POST /api/v1/regions`](#post-apiv1regions)
@@ -154,8 +168,8 @@ Errors are `{"error": string, "code": int}`. Timestamps are RFC 3339. A Go zero 
   - [`GET /api/v1/preferences`](#get-apiv1preferences) (stub)
   - [`PUT /api/v1/preferences`](#put-apiv1preferences) (not implemented)
   - [`PATCH /api/v1/preferences`](#patch-apiv1preferences) (not implemented)
-  - [`GET /api/v1/config`](#get-apiv1config) (stub)
-  - [`GET /api/v1/config/system`](#get-apiv1configsystem) (stub)
+  - [`GET /api/v1/config`](#get-apiv1config)
+  - [`GET /api/v1/config/system`](#get-apiv1configsystem)
   - [`GET /api/v1/config/dns`](#get-apiv1configdns)
   - [`PUT /api/v1/config/dns`](#put-apiv1configdns) (not implemented)
   - [`PATCH /api/v1/config/dns`](#patch-apiv1configdns) (not implemented)
@@ -177,7 +191,7 @@ Errors are `{"error": string, "code": int}`. Timestamps are RFC 3339. A Go zero 
   - [`GET /api/v1/dnssec/ds`](#get-apiv1dnssecds) (unwired)
   - [`GET /api/v1/dnssec/keys`](#get-apiv1dnsseckeys) (unwired)
   - [`POST /api/v1/dnssec/sync`](#post-apiv1dnssecsync) (unwired)
-- [Schemas](#schemas) (128)
+- [Schemas](#schemas) (130)
 
 ## Discovery
 
@@ -398,7 +412,7 @@ List domains
 | 200 | Success. | `application/json`: [DomainListResponse](#schema-domainlistresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### POST /api/v1/domains
 
@@ -408,7 +422,7 @@ Create a domain
 
 **Operation ID:** `createDomain`
 
-A duplicate name returns 500, not 409. The response omits `id`.
+The algorithm is named by `routing_algorithm` (`routing_policy` is accepted as a deprecated alias). An unknown algorithm, or two different values in the two fields, returns 400. A name that exists already, in the configuration file or created through the API, returns 409.
 
 **Request body** (required)
 
@@ -422,8 +436,9 @@ A duplicate name returns 500, not 409. The response omits `id`.
 | 400 | Invalid request. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 409 | Conflict: the object exists already, or it is owned by the configuration file or by an agent and cannot be changed through the API. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/domains/{name}
 
@@ -447,16 +462,18 @@ Get a domain
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PUT /api/v1/domains/{name}
 
-Update a domain (PUT and PATCH are both partial updates)
+Update an API-created domain (PUT and PATCH are both partial updates)
 
 **Status:** real. Backed by live node state.
 
 **Operation ID:** `updateDomain`
 
+A domain of the configuration file cannot be changed through the API and returns 409.
+
 **Path parameters**
 
 | Name | Type | Required | Description |
@@ -476,17 +493,20 @@ Update a domain (PUT and PATCH are both partial updates)
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 409 | Conflict: the object exists already, or it is owned by the configuration file or by an agent and cannot be changed through the API. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PATCH /api/v1/domains/{name}
 
-Update a domain (PUT and PATCH are both partial updates)
+Update an API-created domain (PUT and PATCH are both partial updates)
 
 **Status:** real. Backed by live node state.
 
 **Operation ID:** `patchDomain`
 
+A domain of the configuration file cannot be changed through the API and returns 409.
+
 **Path parameters**
 
 | Name | Type | Required | Description |
@@ -506,8 +526,9 @@ Update a domain (PUT and PATCH are both partial updates)
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 409 | Conflict: the object exists already, or it is owned by the configuration file or by an agent and cannot be changed through the API. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### DELETE /api/v1/domains/{name}
 
@@ -517,7 +538,7 @@ Delete an API-created domain
 
 **Operation ID:** `deleteDomain`
 
-Config-file domains cannot be deleted and return 500.
+Deletes the domain and the servers that were created for it through the API. A domain of the configuration file cannot be deleted and returns 409.
 
 **Path parameters**
 
@@ -533,8 +554,9 @@ Config-file domains cannot be deleted and return 500.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 409 | Conflict: the object exists already, or it is owned by the configuration file or by an agent and cannot be changed through the API. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/domains/{name}/backends
 
@@ -544,7 +566,7 @@ List a domain's backends
 
 **Operation ID:** `listDomainBackends`
 
-Returns 404 `domain not found` for an API-created domain that has no backends yet.
+The servers whose `service` is this domain: those of the configuration file, those registered by agents and those created through the API, each with its `source` and the health check in effect. A domain that exists and has no backends returns 200 with an empty list; only an unknown domain returns 404.
 
 **Path parameters**
 
@@ -560,7 +582,7 @@ Returns 404 `domain not found` for an API-created domain that has no backends ye
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### POST /api/v1/domains/{name}/backends
 
@@ -570,7 +592,7 @@ Add a backend to a domain
 
 **Operation ID:** `addDomainBackend`
 
-An unknown domain returns 500, not 404.
+Creates a server (`source: api`) whose `service` is the domain. It is the same operation as `POST /api/v1/servers` with `service` set to the domain name, and the new object is listed under both. The `health_check` is applied to this server. An unknown domain returns 404, an address and port that the domain already has returns 409.
 
 **Path parameters**
 
@@ -589,19 +611,21 @@ An unknown domain returns 500, not 404.
 | 201 | Success. | `application/json`: [DomainBackendResponse](#schema-domainbackendresponse) |
 | 400 | Invalid request. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
+| 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 409 | Conflict: the object exists already, or it is owned by the configuration file or by an agent and cannot be changed through the API. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### DELETE /api/v1/domains/{name}/backends/{id}
 
 Remove a backend from a domain
 
-**Status:** broken. Unreachable because of a routing defect.
+**Status:** real. Backed by live node state.
 
 **Operation ID:** `removeDomainBackend`
 
-Unreachable today: `HandleDomains` splits the path into at most two parts, so `backends/{id}` never matches `backends` and every request returns 404 `endpoint not found`. The handler behind it (`removeDomainBackend`) would return 204.
+Deletes the server. `id` is the server ID, `{domain}:{address}:{port}`, as returned in the backend listing; an ID of another domain returns 404. The server is taken out of DNS answers with the delete. A backend of the configuration file cannot be deleted and returns 409. A backend registered by an agent is deleted, and registered again by the next heartbeat of its agent for as long as the agent runs. It is the same operation as `DELETE /api/v1/servers/{id}`.
 
 **Path parameters**
 
@@ -614,10 +638,13 @@ Unreachable today: `HandleDomains` splits the path into at most two parts, so `b
 
 | Status | Description | Body |
 |---|---|---|
+| 204 | No content. | No body |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 409 | Conflict: the object exists already, or it is owned by the configuration file or by an agent and cannot be changed through the API. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ## Servers
 
@@ -628,6 +655,8 @@ List servers
 **Status:** real. Backed by live node state.
 
 **Operation ID:** `listServers`
+
+Every server the overwatch knows, sorted by `id`, from the configuration file, from agents and created through the API (under `/api/v1/servers` or under `/api/v1/domains/{name}/backends`).
 
 **Query parameters**
 
@@ -644,17 +673,17 @@ List servers
 | 200 | Success. | `application/json`: [ServerListResponse](#schema-serverlistresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### POST /api/v1/servers
 
-Register a server
+Create a server
 
 **Status:** real. Backed by live node state.
 
 **Operation ID:** `createServer`
 
-The response omits `id`.
+Creates a server (`source: api`) for the domain named in `service`. The domain must exist (404 otherwise). The same service, address and port a second time returns 409.
 
 **Request body** (required)
 
@@ -667,9 +696,11 @@ The response omits `id`.
 | 201 | Success. | `application/json`: [ServerResponse](#schema-serverresponse) |
 | 400 | Invalid request. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
+| 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 409 | Conflict: the object exists already, or it is owned by the configuration file or by an agent and cannot be changed through the API. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/servers/{id}
 
@@ -693,16 +724,18 @@ Get a server
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PUT /api/v1/servers/{id}
 
-Update a server (PUT and PATCH are both partial updates)
+Update an API-created server (PUT and PATCH are both partial updates)
 
 **Status:** real. Backed by live node state.
 
 **Operation ID:** `updateServer`
 
+Changes weight, region, priority, the administrative state (`enabled`) and the health check of a server with `source: api`. The change is stored, and reaches DNS answers at once. Only the fields in the body are changed; a `health_check` in the body changes only the health-check fields it names. `service`, `address` and `port` identify the server: a different value returns 400. A server of the configuration file or of an agent returns 409.
+
 **Path parameters**
 
 | Name | Type | Required | Description |
@@ -722,17 +755,20 @@ Update a server (PUT and PATCH are both partial updates)
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 409 | Conflict: the object exists already, or it is owned by the configuration file or by an agent and cannot be changed through the API. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PATCH /api/v1/servers/{id}
 
-Update a server (PUT and PATCH are both partial updates)
+Update an API-created server (PUT and PATCH are both partial updates)
 
 **Status:** real. Backed by live node state.
 
 **Operation ID:** `patchServer`
 
+Changes weight, region, priority, the administrative state (`enabled`) and the health check of a server with `source: api`. The change is stored, and reaches DNS answers at once. Only the fields in the body are changed; a `health_check` in the body changes only the health-check fields it names. `service`, `address` and `port` identify the server: a different value returns 400. A server of the configuration file or of an agent returns 409.
+
 **Path parameters**
 
 | Name | Type | Required | Description |
@@ -752,8 +788,9 @@ Update a server (PUT and PATCH are both partial updates)
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 409 | Conflict: the object exists already, or it is owned by the configuration file or by an agent and cannot be changed through the API. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### DELETE /api/v1/servers/{id}
 
@@ -763,7 +800,7 @@ Delete a server
 
 **Operation ID:** `deleteServer`
 
-An id that is not `service:address:port` returns 500.
+The server is taken out of DNS answers with the delete. An unknown `id`, or one that is not `service:address:port`, returns 404. A server of the configuration file cannot be deleted and returns 409. A server registered by an agent is deleted, and registered again by the next heartbeat of its agent for as long as the agent runs.
 
 **Path parameters**
 
@@ -779,18 +816,19 @@ An id that is not `service:address:port` returns 500.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 409 | Conflict: the object exists already, or it is owned by the configuration file or by an agent and cannot be changed through the API. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/servers/{id}/health-check
 
 Get a server's health check
 
-**Status:** stub. Returns placeholder, hard-coded or always-empty data.
+**Status:** real. Backed by live node state.
 
 **Operation ID:** `getServerHealthCheck`
 
-Returns the same fixed document for every server (http, /health, 3 s interval, 5 s timeout); it does not reflect the check actually in use.
+The health check in effect for the server, the same object as `health_check` in the server. Every field holds the value the overwatch uses, the server's own setting where one was made through the API and the node-wide setting (`overwatch.validation`) otherwise.
 
 **Path parameters**
 
@@ -806,17 +844,17 @@ Returns the same fixed document for every server (http, /health, 3 s interval, 5
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PUT /api/v1/servers/{id}/health-check
 
-Replace a server's health check
+Replace the health check of an API-created server
 
-**Status:** stub. Returns placeholder, hard-coded or always-empty data.
+**Status:** real. Backed by live node state.
 
 **Operation ID:** `updateServerHealthCheck`
 
-A no-op: the body is validated and echoed back but nothing is stored or applied. An unknown server returns 500, not 404.
+Sets the health check of a server with `source: api` to the body. A field that is left out goes back to the node-wide setting. The check is stored and the server is probed with it right away. A server of the configuration file or of an agent returns 409, as does a check on an overwatch whose external validation is turned off.
 
 **Path parameters**
 
@@ -826,7 +864,7 @@ A no-op: the body is validated and echoed back but nothing is stored or applied.
 
 **Request body** (required)
 
-- `application/json`: [ServerHealthCheck](#schema-serverhealthcheck)
+- `application/json`: [ServerHealthCheckRequest](#schema-serverhealthcheckrequest)
 
 **Responses**
 
@@ -835,19 +873,21 @@ A no-op: the body is validated and echoed back but nothing is stored or applied.
 | 200 | Success. | `application/json`: [ServerHealthCheckResponse](#schema-serverhealthcheckresponse) |
 | 400 | Invalid request. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
+| 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 409 | Conflict: the object exists already, or it is owned by the configuration file or by an agent and cannot be changed through the API. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PATCH /api/v1/servers/{id}/health-check
 
-Replace a server's health check
+Change fields of the health check of an API-created server
 
-**Status:** stub. Returns placeholder, hard-coded or always-empty data.
+**Status:** real. Backed by live node state.
 
 **Operation ID:** `patchServerHealthCheck`
 
-A no-op: the body is validated and echoed back but nothing is stored or applied. An unknown server returns 500, not 404.
+Like PUT, except that a field that is left out keeps its value.
 
 **Path parameters**
 
@@ -857,7 +897,7 @@ A no-op: the body is validated and echoed back but nothing is stored or applied.
 
 **Request body** (required)
 
-- `application/json`: [ServerHealthCheck](#schema-serverhealthcheck)
+- `application/json`: [ServerHealthCheckRequest](#schema-serverhealthcheckrequest)
 
 **Responses**
 
@@ -866,9 +906,11 @@ A no-op: the body is validated and echoed back but nothing is stored or applied.
 | 200 | Success. | `application/json`: [ServerHealthCheckResponse](#schema-serverhealthcheckresponse) |
 | 400 | Invalid request. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
+| 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 409 | Conflict: the object exists already, or it is owned by the configuration file or by an agent and cannot be changed through the API. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ## Regions
 
@@ -894,7 +936,7 @@ List regions
 | 200 | Success. | `application/json`: [RegionListResponse](#schema-regionlistresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### POST /api/v1/regions
 
@@ -919,7 +961,7 @@ The response omits `id`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/regions/{id}
 
@@ -943,7 +985,7 @@ Get a region
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PUT /api/v1/regions/{id}
 
@@ -975,7 +1017,7 @@ Config-file regions cannot be updated and return 500.
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PATCH /api/v1/regions/{id}
 
@@ -1007,7 +1049,7 @@ Config-file regions cannot be updated and return 500.
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### DELETE /api/v1/regions/{id}
 
@@ -1034,7 +1076,7 @@ Config-file regions cannot be deleted and return 500.
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ## Overrides
 
@@ -1156,7 +1198,7 @@ Registered only when `overwatch.geolocation.database_path` is configured; otherw
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PUT /api/v1/geo/mappings
 
@@ -1182,7 +1224,7 @@ Registered only when `overwatch.geolocation.database_path` is configured; otherw
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### POST /api/v1/geo/mappings
 
@@ -1208,7 +1250,7 @@ Registered only when `overwatch.geolocation.database_path` is configured; otherw
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### DELETE /api/v1/geo/mappings/{cidr}
 
@@ -1235,7 +1277,7 @@ Registered only when `overwatch.geolocation.database_path` is configured; otherw
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/geo/test
 
@@ -1262,7 +1304,7 @@ Registered only when `overwatch.geolocation.database_path` is configured; otherw
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ## Overwatch
 
@@ -1391,7 +1433,7 @@ With `service`, `address` and `port` all set, validates one backend; otherwise a
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/overwatch/latency
 
@@ -1429,7 +1471,7 @@ Inject a latency sample (test aid)
 | 400 | Invalid request. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/overwatch/agents
 
@@ -1449,7 +1491,7 @@ List pinned agent certificates
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/overwatch/agents/expiring
 
@@ -1475,7 +1517,7 @@ List agent certificates close to expiry
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/overwatch/agents/{agent\_id}
 
@@ -1502,7 +1544,7 @@ Get one pinned agent certificate
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### DELETE /api/v1/overwatch/agents/{agent\_id}
 
@@ -1528,7 +1570,7 @@ Delete a pinned agent certificate
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### POST /api/v1/overwatch/agents/{agent\_id}/revoke
 
@@ -1560,7 +1602,7 @@ Revoke an agent certificate
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/cluster/status
 
@@ -1612,7 +1654,7 @@ Backed by `StubNodeProvider`: the data is placeholder, not real node state. `/ap
 | 200 | Success. | `application/json`: [OverwatchNodeListResponse](#schema-overwatchnodelistresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/nodes/overwatch/{id}
 
@@ -1638,7 +1680,7 @@ Backed by `StubNodeProvider`: the data is placeholder, not real node state. The 
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/nodes/agent
 
@@ -1664,7 +1706,7 @@ Backed by `StubNodeProvider`: the data is placeholder, not real node state.
 | 200 | Success. | `application/json`: [AgentNodeListResponse](#schema-agentnodelistresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### POST /api/v1/nodes/agent
 
@@ -1689,7 +1731,7 @@ Backed by `StubNodeProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/nodes/agent/{id}
 
@@ -1715,7 +1757,7 @@ Backed by `StubNodeProvider`: the data is placeholder, not real node state.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### DELETE /api/v1/nodes/agent/{id}
 
@@ -1742,7 +1784,7 @@ Backed by `StubNodeProvider`, which always returns `not implemented`.
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/nodes/agent/{id}/certificate
 
@@ -1768,7 +1810,7 @@ Backed by `StubNodeProvider`, which always returns `not implemented`. Surfaces a
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### POST /api/v1/nodes/agent/{id}/certificate
 
@@ -1794,7 +1836,7 @@ Backed by `StubNodeProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### DELETE /api/v1/nodes/agent/{id}/certificate
 
@@ -1820,7 +1862,7 @@ Backed by `StubNodeProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ## Gossip
 
@@ -1848,7 +1890,7 @@ Backed by `StubGossipProvider`: the data is placeholder, not real node state. `/
 | 200 | Success. | `application/json`: [GossipNodeListResponse](#schema-gossipnodelistresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/gossip/nodes/{id}
 
@@ -1874,7 +1916,7 @@ Backed by `StubGossipProvider`: the data is placeholder, not real node state.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/gossip/config
 
@@ -1894,7 +1936,7 @@ Backed by `StubGossipProvider`: the data is placeholder, not real node state. Th
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PUT /api/v1/gossip/config
 
@@ -1919,7 +1961,7 @@ Backed by `StubGossipProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PATCH /api/v1/gossip/config
 
@@ -1944,7 +1986,7 @@ Backed by `StubGossipProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### POST /api/v1/gossip/generate-key
 
@@ -2002,7 +2044,7 @@ Backed by `StubAuditProvider`: the data is placeholder, not real node state. Alw
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/audit-logs/stats
 
@@ -2022,7 +2064,7 @@ Backed by `StubAuditProvider`: the data is placeholder, not real node state.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/audit-logs/export
 
@@ -2060,7 +2102,7 @@ Backed by `StubAuditProvider`: the data is placeholder, not real node state. The
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/audit-logs/{id}
 
@@ -2086,7 +2128,7 @@ Backed by `StubAuditProvider`: the data is placeholder, not real node state. Alw
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ## Metrics
 
@@ -2108,7 +2150,7 @@ JSON only. Prometheus text metrics are served by the separate metrics listener, 
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/metrics/overview
 
@@ -2126,7 +2168,7 @@ Metrics overview
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/metrics/history
 
@@ -2158,7 +2200,7 @@ No time-series store exists; `data_points` is always empty.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/metrics/nodes/{id}
 
@@ -2185,7 +2227,7 @@ Metrics for a node
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/metrics/regions/{id}
 
@@ -2212,7 +2254,7 @@ An unknown region returns 200 with zero counts.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/metrics/routing
 
@@ -2230,7 +2272,7 @@ Routing statistics
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ## Config
 
@@ -2252,7 +2294,7 @@ Returns fixed defaults.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PUT /api/v1/preferences
 
@@ -2277,7 +2319,7 @@ Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PATCH /api/v1/preferences
 
@@ -2302,17 +2344,17 @@ Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/config
 
-System configuration (alias of /config/system)
+Node identity and build (alias of /config/system)
 
-**Status:** stub. Returns placeholder, hard-coded or always-empty data.
+**Status:** real. Backed by live node state.
 
 **Operation ID:** `getConfigRoot`
 
-Only `mode` is real. `version` is the constant `1.0.0` (not the build version) and `node_id`, `region`, `build_info` and `start_time` are empty.
+See `GET /api/v1/config/system`.
 
 **Responses**
 
@@ -2322,17 +2364,17 @@ Only `mode` is real. `version` is the constant `1.0.0` (not the build version) a
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/config/system
 
-System configuration
+Node identity and build
 
-**Status:** stub. Returns placeholder, hard-coded or always-empty data.
+**Status:** real. Backed by live node state.
 
 **Operation ID:** `getSystemConfig`
 
-Only `mode` is real. `version` is the constant `1.0.0` (not the build version) and `node_id`, `region`, `build_info` and `start_time` are empty.
+`node_id` and `region` are the identity of the node (`overwatch.identity` in the configuration file; `node_id` falls back to the host name, as it does everywhere else). `version` is the version of the running binary, the same value as `GET /api/v1/version`. `start_time` is when the process started. `data_dir` is the directory of the persistent store and is left out when the node runs without one. `features` is always null and `build_info.build_date` is always empty: neither is recorded.
 
 **Responses**
 
@@ -2342,7 +2384,7 @@ Only `mode` is real. `version` is the constant `1.0.0` (not the build version) a
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/config/dns
 
@@ -2362,7 +2404,7 @@ Only `listen_address` and `default_ttl` are populated.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PUT /api/v1/config/dns
 
@@ -2387,7 +2429,7 @@ Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PATCH /api/v1/config/dns
 
@@ -2412,7 +2454,7 @@ Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/config/health-check
 
@@ -2432,7 +2474,7 @@ Only part of the document is populated from configuration.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PUT /api/v1/config/health-check
 
@@ -2457,7 +2499,7 @@ Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PATCH /api/v1/config/health-check
 
@@ -2482,7 +2524,7 @@ Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/config/logging
 
@@ -2502,7 +2544,7 @@ Only `level` and `format` are populated.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PUT /api/v1/config/logging
 
@@ -2527,7 +2569,7 @@ Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### PATCH /api/v1/config/logging
 
@@ -2552,7 +2594,7 @@ Backed by `ConfigBasedConfigProvider`, which always returns `not implemented`.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ## Routing
 
@@ -2573,7 +2615,7 @@ Backed by `StubRoutingProvider`: the data is placeholder, not real node state. T
 | 200 | Success. | `application/json`: [AlgorithmListResponse](#schema-algorithmlistresponse) |
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/routing/algorithms/{id}
 
@@ -2599,7 +2641,7 @@ Backed by `StubRoutingProvider`: the data is placeholder, not real node state.
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 404 | Not found. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### POST /api/v1/routing/test
 
@@ -2624,7 +2666,7 @@ Backed by `StubRoutingProvider`: the data is placeholder, not real node state. I
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/routing/decisions
 
@@ -2657,7 +2699,7 @@ Backed by `StubRoutingProvider`: the data is placeholder, not real node state. A
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ### GET /api/v1/routing/flows
 
@@ -2686,7 +2728,7 @@ Backed by `StubRoutingProvider`: the data is placeholder, not real node state. A
 | 403 | Client address is not in `api.allowed_networks` (default: loopback only). The body is the plain text `Forbidden`. | `text/plain`: string |
 | 405 | Method not allowed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 | 500 | Internal error. | `application/json`: [ErrorResponse](#schema-errorresponse) |
-| 503 | Dependency not configured. | `application/json`: [ErrorResponse](#schema-errorresponse) |
+| 503 | Dependency not configured. For a request that writes, also returned when the overwatch runs without its persistent store (`overwatch.data_dir` is not writable); the message names the directory and nothing was changed. | `application/json`: [ErrorResponse](#schema-errorresponse) |
 
 ## DNSSEC
 
@@ -3079,27 +3121,27 @@ No other fields are allowed.
 
 ### Schema: BackendServer
 
-`id` has the form `{service}:{address}:{port}`.
+A backend server. The same object is returned under `/api/v1/servers` and under `/api/v1/domains/{name}/backends`.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | no |  |
-| `name` | string | yes |  |
-| `address` | string | yes |  |
+| `id` | string | yes | `{service}:{address}:{port}`. An IPv6 address is written without brackets. |
+| `service` | string | yes | The name of the domain this server answers for. This is the link between a server and its domain. |
+| `name` | string | yes | Deprecated alias of `service`; always the same value. Deprecated. |
+| `address` | string | yes | IPv4 or IPv6 address. |
 | `port` | integer | yes |  |
-| `protocol` | string | yes |  |
+| `protocol` | string | yes | Deprecated. Always `tcp`. The check protocol is `health_check.type`. Deprecated. |
 | `weight` | integer | yes |  |
-| `priority` | integer | yes |  |
+| `priority` | integer | yes | Stored and returned. No routing algorithm reads it. |
 | `region` | string | yes |  |
-| `enabled` | boolean | yes |  |
-| `healthy` | boolean | yes |  |
-| `description` | string | no |  |
-| `tags` | array of string | no |  |
-| `metadata` | map of string to string | no |  |
+| `enabled` | boolean | yes | Administrative state. A server that is not enabled stays registered and is not answered in DNS. |
+| `healthy` | boolean | yes | True when the effective status of the server is healthy. |
+| `source` | string | yes | Who owns the server: `static` is the configuration file, `agent` an agent that registered it over gossip, `api` this API. Only `api` servers can be changed through the API. One of: `static`, `agent`, `api`. |
+| `metadata` | map of string to string | no | Deprecated. Status details as strings (`service`, `source`, `effective_status`, `agent_healthy`, `agent_last_seen`, `validation_check`, `smoothed_latency`), kept for existing clients. Use the typed fields. Deprecated. |
 | `created_at` | string (date-time) | yes |  |
 | `updated_at` | string (date-time) | yes |  |
-| `health_check` | [ServerHealthCheck](#schema-serverhealthcheck) | no |  |
-| `status` | [ServerStatus](#schema-serverstatus) | no |  |
+| `last_check` | string (date-time) | yes | Time of the last health check. The Go zero time when the server was never checked. |
+| `health_check` | [ServerHealthCheck](#schema-serverhealthcheck) | yes |  |
 
 No other fields are allowed.
 
@@ -3276,7 +3318,8 @@ No other fields are allowed.
 | `id` | string | no |  |
 | `name` | string | yes |  |
 | `ttl` | integer | yes |  |
-| `routing_policy` | string | yes |  |
+| `routing_algorithm` | [RoutingAlgorithmName](#schema-routingalgorithmname) | yes |  |
+| `routing_policy` | string | yes | Deprecated alias of `routing_algorithm`; always the same value. It will be removed in a later API version. Deprecated. |
 | `health_check_id` | string | no |  |
 | `dnssec_enabled` | boolean | yes |  |
 | `enabled` | boolean | yes |  |
@@ -3290,42 +3333,25 @@ No other fields are allowed.
 
 No other fields are allowed.
 
-### Schema: DomainBackend
-
-`id` has the form `{domain}:{address}:{port}`.
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `id` | string | yes |  |
-| `address` | string | yes |  |
-| `port` | integer | yes |  |
-| `weight` | integer | yes |  |
-| `priority` | integer | yes |  |
-| `region` | string | yes |  |
-| `healthy` | boolean | yes |  |
-| `enabled` | boolean | yes |  |
-| `last_check` | string (date-time) | yes |  |
-
-No other fields are allowed.
-
 ### Schema: DomainBackendCreateRequest
 
-A `health_check` object in the body is silently ignored.
+A server create request without `service`, which is the domain in the path.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `address` | string | yes |  |
-| `port` | integer | yes |  |
-| `weight` | integer | no |  |
+| `address` | string | yes | IPv4 or IPv6 address. |
+| `port` | integer | yes | Minimum: `1`. Maximum: `65535`. |
+| `weight` | integer | no | Defaults to 1 when left out or 0. Minimum: `0`. Maximum: `1000000`. |
 | `priority` | integer | no |  |
 | `region` | string | no |  |
-| `enabled` | boolean | no |  |
+| `enabled` | boolean | no | Default: `true`. |
+| `health_check` | [ServerHealthCheckRequest](#schema-serverhealthcheckrequest) | no |  |
 
 ### Schema: DomainBackendResponse
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `backend` | [DomainBackend](#schema-domainbackend) | yes |  |
+| `backend` | [BackendServer](#schema-backendserver) | yes |  |
 
 No other fields are allowed.
 
@@ -3333,7 +3359,7 @@ No other fields are allowed.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `backends` | array of [DomainBackend](#schema-domainbackend) | yes |  |
+| `backends` | array of [BackendServer](#schema-backendserver) | yes |  |
 | `total` | integer | yes |  |
 | `generated_at` | string (date-time) | yes |  |
 
@@ -3341,13 +3367,14 @@ No other fields are allowed.
 
 ### Schema: DomainCreateRequest
 
-Only `routing_policy` selects the algorithm. A `routing_algorithm` or `regions` field is silently ignored (the domain is then created as round-robin).
+`routing_algorithm` selects the algorithm and defaults to `round-robin`. Sending both names with different values returns 400. `ttl` defaults to 300. `name` must not contain `:`, `/` or white space. A domain has no `regions` of its own in the API: its regions are those of its servers, and a `regions` field in the body is ignored.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes |  |
 | `ttl` | integer | no |  |
-| `routing_policy` | string | no |  |
+| `routing_algorithm` | [RoutingAlgorithmName](#schema-routingalgorithmname) | no |  |
+| `routing_policy` | string | no | Deprecated alias of `routing_algorithm`, read when `routing_algorithm` is left out. Deprecated. |
 | `dnssec_enabled` | boolean | no |  |
 | `enabled` | boolean | no |  |
 | `description` | string | no |  |
@@ -3388,12 +3415,19 @@ No other fields are allowed.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `ttl` | integer | no |  |
-| `routing_policy` | string | no |  |
+| `routing_algorithm` | [RoutingAlgorithmName](#schema-routingalgorithmname) | no |  |
+| `routing_policy` | string | no | Deprecated alias of `routing_algorithm`, read when `routing_algorithm` is left out. Deprecated. |
 | `dnssec_enabled` | boolean | no |  |
 | `enabled` | boolean | no |  |
 | `description` | string | no |  |
 | `tags` | array of string | no |  |
 | `settings` | [DomainSettings](#schema-domainsettings) | no |  |
+
+### Schema: Duration
+
+A time span as a string in Go duration syntax: one or more numbers, each with a unit (`ms`, `s`, `m`, `h`), such as `"30s"`, `"500ms"` or `"1m30s"`. Responses use whole seconds (`"90s"`) or, for a fraction of a second, whole milliseconds (`"1500ms"`). A bare number is not a duration and is rejected.
+
+Type: string. Pattern: `^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`.
 
 ### Schema: EDNS
 
@@ -4062,6 +4096,12 @@ No other fields are allowed.
 
 No other fields are allowed.
 
+### Schema: RoutingAlgorithmName
+
+The name of a routing algorithm, as in the `routing_algorithm` key of a domain in the configuration file.
+
+Type: string. One of: `round-robin`, `weighted`, `failover`, `geolocation`, `latency`, `learned_latency`.
+
 ### Schema: RoutingDecision
 
 | Field | Type | Required | Description |
@@ -4178,39 +4218,52 @@ No other fields are allowed.
 
 ### Schema: ServerCreateRequest
 
-The owning domain is taken from `name` or `metadata.service`; a top-level `service` field is ignored. If neither is set the request fails with 500.
+`service` is required in effect: a request that names the domain in none of `service`, `metadata.service` and `name` returns 400.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | no |  |
-| `address` | string | yes |  |
-| `port` | integer | yes |  |
-| `protocol` | string | no |  |
-| `weight` | integer | no |  |
+| `service` | string | no | The name of the domain the server belongs to. The domain must exist. |
+| `name` | string | no | Deprecated alias of `service`, read when `service` and `metadata.service` are left out. Deprecated. |
+| `address` | string | yes | IPv4 or IPv6 address. |
+| `port` | integer | yes | Minimum: `1`. Maximum: `65535`. |
+| `weight` | integer | no | Defaults to 1 when left out or 0. Minimum: `0`. Maximum: `1000000`. |
 | `priority` | integer | no |  |
 | `region` | string | no |  |
-| `enabled` | boolean | no |  |
-| `description` | string | no |  |
-| `tags` | array of string | no |  |
-| `metadata` | map of string to string | no |  |
-| `health_check` | [ServerHealthCheck](#schema-serverhealthcheck) | no |  |
+| `enabled` | boolean | no | Default: `true`. |
+| `metadata` | map of string to string | no | Deprecated. Only the key `service` is read, as an alias of the top-level `service`. Deprecated. |
+| `health_check` | [ServerHealthCheckRequest](#schema-serverhealthcheckrequest) | no |  |
 
 ### Schema: ServerHealthCheck
 
-`interval` and `timeout` are Go time.Duration values encoded as integer nanoseconds; a string such as "30s" is rejected with 400.
+The health check in effect for a server. Every field holds the value the overwatch uses.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `enabled` | boolean | yes |  |
-| `type` | string | yes |  |
-| `path` | string | no |  |
-| `interval` | integer | yes | Duration in nanoseconds (Go time.Duration). |
-| `timeout` | integer | yes | Duration in nanoseconds (Go time.Duration). |
-| `healthy_threshold` | integer | yes |  |
-| `unhealthy_threshold` | integer | yes |  |
-| `expected_status` | integer | no |  |
-| `expected_body` | string | no |  |
-| `headers` | map of string to string | no |  |
+| `enabled` | boolean | yes | False when the overwatch does not probe the server, because the check was turned off for it or because external validation is turned off on the node. |
+| `type` | string | yes | One of: `http`, `https`, `tcp`. |
+| `path` | string | no | Request path of an http or https check. Absent for tcp. |
+| `host` | string | no | Host header and TLS server name of an http or https check. Absent when not set. |
+| `interval` | [Duration](#schema-duration) | yes |  |
+| `timeout` | [Duration](#schema-duration) | yes |  |
+| `healthy_threshold` | integer | yes | Consecutive passing checks before the server counts as healthy. |
+| `unhealthy_threshold` | integer | yes | Consecutive failed checks before the server counts as unhealthy. |
+
+No other fields are allowed.
+
+### Schema: ServerHealthCheckRequest
+
+A health check as a client sends it. Every field is optional; a field that is left out uses the node-wide setting (`overwatch.validation`), or keeps its value in a partial update. Nothing is ignored: an unknown field (for example `expected_status`), an unknown type, a number in place of a duration string, `interval` outside 1s to 1h, `timeout` outside 100ms to 1m and a timeout longer than the interval are all rejected with 400. On an overwatch whose external validation is turned off (`overwatch.validation.enabled: false`) a check other than `{"enabled": false}` returns 409.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | no | False turns external validation off for this server. |
+| `type` | string | no | One of: `http`, `https`, `tcp`. |
+| `path` | string | no | Must start with `/`. Not allowed with type tcp. |
+| `host` | string | no | Not allowed with type tcp. |
+| `interval` | [Duration](#schema-duration) | no |  |
+| `timeout` | [Duration](#schema-duration) | no |  |
+| `healthy_threshold` | integer | no | Minimum: `1`. Maximum: `100`. |
+| `unhealthy_threshold` | integer | no | Minimum: `1`. Maximum: `100`. |
 
 No other fields are allowed.
 
@@ -4275,20 +4328,18 @@ No other fields are allowed.
 
 ### Schema: ServerUpdateRequest
 
+Every field is optional. Only the fields in the body are changed.
+
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | no |  |
-| `address` | string | no |  |
-| `port` | integer | no |  |
-| `protocol` | string | no |  |
-| `weight` | integer | no |  |
+| `service` | string | no | Identifies the server. Accepted only when it repeats the current value. |
+| `address` | string | no | Identifies the server. Accepted only when it repeats the current value. |
+| `port` | integer | no | Identifies the server. Accepted only when it repeats the current value. |
+| `weight` | integer | no | Minimum: `0`. Maximum: `1000000`. |
 | `priority` | integer | no |  |
 | `region` | string | no |  |
 | `enabled` | boolean | no |  |
-| `description` | string | no |  |
-| `tags` | array of string | no |  |
-| `metadata` | map of string to string | no |  |
-| `health_check` | [ServerHealthCheck](#schema-serverhealthcheck) | no |  |
+| `health_check` | [ServerHealthCheckRequest](#schema-serverhealthcheckrequest) | no |  |
 
 ### Schema: SimpleHealthResponse
 

@@ -10,18 +10,23 @@ Status of every REST endpoint on both sides, as of `develop` (OpenGSLB v1.1.10) 
 - Overlord columns come from reading its source. The rows where Overlord calls the overwatch are now pinned by
   Overlord's contract suite (`test/contract`), which runs its real client and poller code against an overwatch
   container. Mismatch tests there are named by M-number and fail when the mismatch is fixed.
+- Phase 1 (1E task 3) fixed the Go side of M2 to M8, M15 and M16. Their rows below say what the contract is
+  now. The Overlord columns still describe Overlord `main` (`bc68e5b`); its side of each of these is pending in
+  the paired change, and until then its contract tests for them fail against this overwatch, as designed.
+  The Go status of every endpoint these fixes touched is updated; `cmd/opengslb/api_alignment_test.go` pins
+  each fix by M-number.
 
 ## Summary
 
 | | Count |
 |---|---|
 | Operations in the spec | 107 (71 paths) |
-| Real | 57 |
-| Stub (placeholder, always-empty or no-op) | 22 |
+| Real | 63 |
+| Stub (placeholder, always-empty or no-op) | 17 |
 | Stub that always fails (`not-implemented`) | 16 |
 | Real handler that always answers 503 (`unavailable`, agent certificates) | 5 |
 | Handler never attached by the binary (`unwired`, DNSSEC and `/api/health`) | 6 |
-| Broken (`DELETE /domains/{name}/backends/{id}`) | 1 |
+| Broken | 0 (was 1: `DELETE /domains/{name}/backends/{id}`, fixed in Phase 1) |
 | Spec operations Overlord calls | 17 (3 of them from dead code) |
 | Paths Overlord calls that Go does not serve | 4, plus the Prometheus listener |
 
@@ -32,26 +37,26 @@ actions in the browser.
 
 ## Mismatches
 
-Numbered so Phase 1E task 3 can refer to them. "Side" is where the fix most likely belongs; none is applied in
-Phase 0.
+Numbered so Phase 1E task 3 can refer to them. "Side" is where the fix belongs. Rows marked **Go side fixed**
+describe the contract as it is now; the "Effect" column of those rows is what remains until Overlord follows.
 
 | # | Mismatch | Effect today | Side |
 |---|---|---|---|
 | M1 | Overlord polls `GET /api/v1/health` as a health document. Go returns the list of health endpoints. | Node "healthy" only means the port answered. `version` and `uptime` come back undefined. | Overlord (use `/api/v1/ready` and `/api/v1/version`) |
-| M2 | Overlord reads node region and version from `GET /api/v1/config`. Go returns an empty `region` / `node_id` and the constant version `1.0.0`. | Region is never learned from the node; `1.0.0` can be mistaken for the node version. | Go (populate from the node identity) |
-| M3 | `GET /api/v1/servers`: Overlord reads `domain` / `domain_name`; Go sends `name` and `metadata.service`. | Synced servers are not linked to their domain from this call. | Decide in the spec, then both |
-| M4 | `GET /api/v1/domains/{name}/backends` returns 404 for an API-created domain with no backends, and carries no source (static, agent, api) or health-check fields. | Overlord labels every synced backend `static` and guesses the check type from the port. | Go |
-| M5 | Overlord sends `routing_algorithm` and `regions` on domain create and update. Go reads only `routing_policy`. | Every domain pushed from Overlord is created as `round-robin`; algorithm changes never reach the node. Overlord's poller then reads `routing_policy` back and overwrites its own value. | Decide one field name in the spec, then both |
-| M6 | `POST /api/v1/domains/{name}/backends` ignores the `health_check` Overlord sends. | The health check configured in Overlord is not applied on the node. | Go |
-| M7 | `DELETE /api/v1/domains/{name}/backends/{id}` is unreachable in Go (always 404). | A server deleted in Overlord stays on every node and keeps being returned in DNS. Overlord reports the delete as successful. | Go |
-| M8 | Overlord sends health-check `interval` / `timeout` as seconds; Go's `ServerHealthCheck` decodes integers as nanoseconds and rejects strings such as `"30s"`. Overlord's own guide documents strings. | A 30 second interval pushed from Overlord becomes 30 ns on the node. | Decide the unit in the spec, then both |
-| M9 | `pushServer` (dead code) sends `service`; Go requires `name` or `metadata.service` and answers 500. | None today. Would fail if wired up. | Overlord |
+| M2 | **Go side fixed.** `GET /api/v1/config` (and `/config/system`) returns `config.node_id` and `config.region` from `overwatch.identity`, `config.version` and `config.build_info.version` equal to `GET /api/v1/version`, `config.mode`, `config.start_time` and `config.data_dir`. Was: empty `region` / `node_id` and the constant version `1.0.0`. | None on the node. Overlord's poller already reads `config.region` and `config.version`, so it now learns both; its contract test for M2 pins the old values and fails. | Go: done. Overlord: update the test, pending in the paired change |
+| M3 | **Decided, Go side fixed.** A server carries the name of its domain in `service` (the name the configuration file and the server ID use). `name` and `metadata.service` stay as deprecated aliases with the same value. The objects under `/servers` and under `/domains/{name}/backends` are the same `BackendServer`. There is no `domain` or `domain_name` field. | Overlord still reads `domain` / `domain_name`, so servers synced from `GET /servers` are not linked to their domain until it reads `service`. | Go: done. Overlord: read `service`, pending in the paired change |
+| M4 | **Go side fixed.** `GET /api/v1/domains/{name}/backends` returns 200 with `"backends": []` for a domain without backends (404 only for an unknown domain). Every backend carries `source` (`static`, `agent`, `api`) and `health_check` (the check in effect: `enabled`, `type`, `path`, `host`, `interval`, `timeout`, thresholds). | Overlord still labels every synced backend `static` and guesses the check type from the port until it reads the two fields. | Go: done. Overlord: read `source` and `health_check`, pending in the paired change |
+| M5 | **Decided, Go side fixed.** The canonical field is `routing_algorithm`, the key and the values of the configuration file. `routing_policy` is accepted on input as a deprecated alias (two different values: 400) and is still returned, always equal to `routing_algorithm`. An unknown algorithm is 400. `regions` is not a field of an API domain (its regions are those of its servers) and is ignored on input. | The algorithm Overlord pushes now reaches the node. Overlord's poller reads `routing_policy` back, which still works; it should read `routing_algorithm` and stop sending `regions`. | Go: done. Overlord: pending in the paired change |
+| M6 | **Go side fixed.** The `health_check` of `POST /api/v1/domains/{name}/backends`, `POST /api/v1/servers`, `PUT` / `PATCH /api/v1/servers/{id}` and `PUT` / `PATCH /api/v1/servers/{id}/health-check` is stored and applied: the overwatch probes that server with it. A field the overwatch cannot apply is rejected with 400, not ignored. | Overlord's push is rejected with 400 until it sends durations as strings (M8) and drops fields that are not in the contract. | Go: done. Overlord: pending in the paired change |
+| M7 | **Go side fixed.** `DELETE /api/v1/domains/{name}/backends/{id}` is reachable: 204, and the address leaves DNS answers with the call (`id` is the server ID, `{domain}:{address}:{port}`). 404 for an unknown backend, 409 for a backend of the configuration file. | None once Overlord's contract test for M7, which pins the 404, is updated. | Go: done. Overlord: update the test, pending in the paired change |
+| M8 | **Decided, Go side fixed.** `interval` and `timeout` are duration strings with a unit (`"30s"`, `"500ms"`), as in the configuration file and in Overlord's own guide, in requests and in responses. A bare number is rejected with 400 and a message that shows the string form. Out of range (`interval` 1s to 1h, `timeout` 100ms to 1m) and a timeout longer than the interval are 400. | Overlord still sends numbers of seconds, so its backend and server pushes that carry a health check are rejected with 400 until it sends strings. | Go: done. Overlord: send strings, pending in the paired change |
+| M9 | `pushServer` (dead code) sends `service`. Go now reads `service` as the domain (M3), so that part is resolved on the Go side; the call still fails with 400 because of its numeric health-check durations (M8). Was: Go required `name` or `metadata.service` and answered 500. | None today. | Overlord (durations, with M8) |
 | M10 | Overlord polls `/api/v1/status`, `/api/v1/identity` and `/api/v1/overview`, which do not exist. | Three 404s per node per poll, caught and logged. | Overlord (remove; `/api/v1/metrics/overview` has the data) |
 | M11 | Overlord polls agent nodes over HTTP (`/api/v1/health`, `/api/v1/backends`). Agent mode starts no API server. | Every agent is marked unhealthy. | Overlord (agents are visible through the overwatch) |
 | M12 | Overlord's client assumes plain HTTP on port 8080 with no credentials, and pushes to nodes it has marked unhealthy. Go's default is `127.0.0.1:8080` behind a loopback-only allowlist. | Works only when the operator has opened `api.address` and `api.allowed_networks`. Phase 3A changes this. | Both (Phase 3A) |
 | M13 | Push failures are not errors in Overlord: the Postgres write commits and the route returns 2xx with `_pushResults.failed[]`. | Overlord and the nodes drift silently (M5 and M7 make this the normal case). | Overlord (Phase 4 drift work) |
-| M15 | A backend created with `POST /api/v1/domains/{name}/backends` (how Overlord creates servers) is not a server: it is absent from `GET /api/v1/servers`, and `PUT /api/v1/servers/{service:address:port}` for it returns 404. | Every server update made in Overlord fails on every node for servers Overlord created. | Go (one model for backends and servers), then the spec |
-| M16 | The published container image runs as a non-root user that cannot create the default data directory `/var/lib/opengslb`. The overwatch logs "running without persistence" and then every create, update and delete of domains, backends and regions answers 500 `not implemented`. | With the image as shipped and no `overwatch.data_dir` override, nothing Overlord pushes is accepted. Observed in Overlord's contract container, which sets `data_dir` under `/tmp` to get past it. Not reproduced by the in-process Go test, which uses a writable temp directory. | Go (image and error text) |
+| M15 | **Go side fixed.** One model: a backend created with `POST /api/v1/domains/{name}/backends` is a server (`source: api`). It is listed by `GET /api/v1/servers`, and `GET`, `PUT`, `PATCH` and `DELETE /api/v1/servers/{domain}:{address}:{port}` work on it. A server created with `POST /api/v1/servers` is a backend of the domain in its `service`. Backends stored by 1.1.10 are migrated at startup. | Overlord's server update reaches the node, provided the body is valid (M8). | Go and spec: done. Overlord: update the test, pending in the paired change |
+| M16 | **Go side fixed.** The image creates `/var/lib/opengslb` for its runtime user (UID 1000) and declares it a volume, so the default `overwatch.data_dir` works. An overwatch that still cannot create its store starts read-only, logs `RUNNING WITHOUT PERSISTENCE` at WARN and answers every create, update and delete of domains, servers and regions with 503 and a message that names the directory (was: 500 `not implemented`). An existing store that cannot be opened stops the start. | Overlord's contract container no longer needs its `data_dir` override under `/tmp`; removing it is optional. | Go: done. Overlord: optional cleanup in the paired change |
 | M14 | Overlord's Overrides, Geo, DNSSEC, Gossip, Audit, Routing and Config routes share paths with the overwatch API but serve only Overlord's Postgres or generated data. | An override or geo mapping made in Overlord has no effect on DNS. | Overlord (Phase 1E task 2, Phase 3B task 6) |
 
 Go-side findings that do not involve Overlord are listed under "Found, not fixed" in the Phase 0 pull request.
@@ -103,24 +108,24 @@ broken; missing.
 | `POST /api/v1/geo/mappings` | yes | real | not called | none |  |
 | `DELETE /api/v1/geo/mappings/{cidr}` | yes | real | not called | none |  |
 | `GET /api/v1/geo/test` | yes | real | not called | none |  |
-| `GET /api/v1/domains` | yes | real | `server/services/nodePoller.js` `pollNode` -> `syncDomains` | Domains | None for `name`, `ttl`, `enabled`, `routing_policy`. |
-| `POST /api/v1/domains` | yes | real | `server/services/openGslbClient.js` `pushDomain` (from `routes/domains.js` POST) | Domains | **M5** Overlord sends `routing_algorithm` and `regions`; Go reads `routing_policy` only and ignores both, so every domain pushed by Overlord becomes `round-robin` on the node. A duplicate returns 500. |
+| `GET /api/v1/domains` | yes | real | `server/services/nodePoller.js` `pollNode` -> `syncDomains` | Domains | None for `name`, `ttl`, `enabled`, `routing_policy` (deprecated alias of `routing_algorithm`, still returned). |
+| `POST /api/v1/domains` | yes | real | `server/services/openGslbClient.js` `pushDomain` (from `routes/domains.js` POST) | Domains | **M5** Go side fixed: `routing_algorithm` is read and applied. `regions` is ignored. A duplicate returns 409. |
 | `GET /api/v1/domains/{name}` | yes | real | not called | none |  |
-| `PUT /api/v1/domains/{name}` | yes | real | `server/services/openGslbClient.js` `updateDomainOnNodes` (from `routes/domains.js` PUT) | Domains | **M5** Same: `routing_algorithm` and `regions` are ignored, so an algorithm change in Overlord never reaches the node. |
+| `PUT /api/v1/domains/{name}` | yes | real | `server/services/openGslbClient.js` `updateDomainOnNodes` (from `routes/domains.js` PUT) | Domains | **M5** Go side fixed: an algorithm change reaches the node. A domain of the configuration file returns 409. |
 | `PATCH /api/v1/domains/{name}` | yes | real | not called | none |  |
-| `DELETE /api/v1/domains/{name}` | yes | real | `server/services/openGslbClient.js` `deleteDomainFromNodes` (from `routes/domains.js` DELETE) | Domains | None for API-created domains. Config-file domains return 500. |
-| `GET /api/v1/domains/{name}/backends` | yes | real | `server/services/nodePoller.js` `pollNode` -> `syncServerFromBackend` | Servers, Domains | **M4** Go returns 404 for an API-created domain with no backends. Overlord sets `source='static'` on every row and guesses the health-check type from the port; Go exposes neither a source nor the check on this endpoint. Domain name is not URL-encoded. |
-| `POST /api/v1/domains/{name}/backends` | yes | real | `server/services/openGslbClient.js` `pushBackend` (from `routes/servers.js` POST) | Servers | **M6** The `health_check` object Overlord sends is ignored. An unknown domain returns 500, not 404. |
-| `DELETE /api/v1/domains/{name}/backends/{id}` | yes | broken (always 404) | `server/services/openGslbClient.js` `deleteBackendFromNodes` (from `routes/servers.js` DELETE) | Servers | **M7** Always 404 on the Go side (routing defect), so a server deleted in Overlord stays on every node and keeps being answered in DNS. |
-| `GET /api/v1/servers` | yes | real | `server/services/nodePoller.js` `pollNode` -> `syncServers` | Servers | **M3** Overlord reads `domain` / `domain_name`; Go sends the owning domain in `name` and `metadata.service`, so the domain link is not set from this call. |
-| `POST /api/v1/servers` | yes | real | `server/services/openGslbClient.js` `pushServer` (never called) | none | **M9** Dead code. If called it would fail: it sends `service`, which Go ignores, and Go then returns 500 `service is required`. |
+| `DELETE /api/v1/domains/{name}` | yes | real | `server/services/openGslbClient.js` `deleteDomainFromNodes` (from `routes/domains.js` DELETE) | Domains | None for API-created domains; the servers created for the domain through the API are deleted with it. Config-file domains return 409. |
+| `GET /api/v1/domains/{name}/backends` | yes | real | `server/services/nodePoller.js` `pollNode` -> `syncServerFromBackend` | Servers, Domains | **M4** Go side fixed: an empty list for a domain without backends, and `source` and `health_check` on every backend. Overlord still sets `source='static'` on every row and guesses the health-check type from the port (pending). Domain name is not URL-encoded. |
+| `POST /api/v1/domains/{name}/backends` | yes | real | `server/services/openGslbClient.js` `pushBackend` (from `routes/servers.js` POST) | Servers | **M6**, **M8** Go side fixed: the `health_check` is applied. Overlord sends `interval` / `timeout` as numbers, which is now rejected with 400 (pending). An unknown domain returns 404, a duplicate 409. |
+| `DELETE /api/v1/domains/{name}/backends/{id}` | yes | real | `server/services/openGslbClient.js` `deleteBackendFromNodes` (from `routes/servers.js` DELETE) | Servers | **M7** Go side fixed: 204, and the server leaves DNS answers with the call. |
+| `GET /api/v1/servers` | yes | real | `server/services/nodePoller.js` `pollNode` -> `syncServers` | Servers | **M3** Decided: the owning domain is in `service` (`name` and `metadata.service` are deprecated aliases). Overlord reads `domain` / `domain_name`, so the domain link is not set from this call until it reads `service` (pending). |
+| `POST /api/v1/servers` | yes | real | `server/services/openGslbClient.js` `pushServer` (never called) | none | **M9** Dead code. With the M3 decision the `service` it sends is read as the domain (a missing one is 400, an unknown domain 404). The call still fails, now with 400, because it sends the health-check durations as numbers (M8). |
 | `GET /api/v1/servers/{id}` | yes | real | not called | none |  |
-| `PUT /api/v1/servers/{id}` | yes | real | `server/services/openGslbClient.js` `updateServerOnNodes` (from `routes/servers.js` PUT) | Servers | **M15** Always 404 for servers Overlord created: it creates them with `POST /domains/{name}/backends`, and those do not exist under `/servers`. **M8** It also sends `health_check.interval` / `timeout` as seconds (30, 5); Go decodes them as nanoseconds. `PATCH /servers/:id` and `PUT /servers/:id/health-check` in Overlord are not pushed at all. |
+| `PUT /api/v1/servers/{id}` | yes | real | `server/services/openGslbClient.js` `updateServerOnNodes` (from `routes/servers.js` PUT) | Servers | **M15** Go side fixed: servers Overlord created with `POST /domains/{name}/backends` exist under `/servers` and are updated. **M8** Overlord sends `health_check.interval` / `timeout` as seconds (30, 5), which is now rejected with 400 until it sends `"30s"`, `"5s"` (pending). `PATCH /servers/:id` and `PUT /servers/:id/health-check` in Overlord are not pushed at all. |
 | `PATCH /api/v1/servers/{id}` | yes | real | not called | none |  |
 | `DELETE /api/v1/servers/{id}` | yes | real | `server/services/openGslbClient.js` `deleteServerFromNodes` (never called) | none | Dead code. |
-| `GET /api/v1/servers/{id}/health-check` | yes | stub | not called | none |  |
-| `PUT /api/v1/servers/{id}/health-check` | yes | stub | not called | none |  |
-| `PATCH /api/v1/servers/{id}/health-check` | yes | stub | not called | none |  |
+| `GET /api/v1/servers/{id}/health-check` | yes | real | not called | none |  |
+| `PUT /api/v1/servers/{id}/health-check` | yes | real | not called | none |  |
+| `PATCH /api/v1/servers/{id}/health-check` | yes | real | not called | none |  |
 | `GET /api/v1/regions` | yes | real | `server/services/nodePoller.js` `pollNode` -> `syncRegions` | Servers, Domains (region lists) | None. Overlord also looks for nested `servers[]`, which Go does not send. |
 | `POST /api/v1/regions` | yes | real | `server/services/openGslbClient.js` `pushRegion` (never called) | none | Dead code. Regions created in Overlord are never pushed. |
 | `GET /api/v1/regions/{id}` | yes | real | not called | none |  |
@@ -155,8 +160,8 @@ broken; missing.
 | `GET /api/v1/preferences` | yes | stub | not called | none |  |
 | `PUT /api/v1/preferences` | yes | stub (always fails) | not called | none |  |
 | `PATCH /api/v1/preferences` | yes | stub (always fails) | not called | none |  |
-| `GET /api/v1/config` | yes | stub | `server/services/nodePoller.js` `pollNode` | Nodes (region, version) | **M2** Scanned for `config.region`, `config.identity.region`, `config.version`. Go returns an empty region and the constant `1.0.0`, which is not the node version. |
-| `GET /api/v1/config/system` | yes | stub | not called | none |  |
+| `GET /api/v1/config` | yes | real | `server/services/nodePoller.js` `pollNode` | Nodes (region, version) | **M2** Go side fixed. Scanned for `config.region`, `config.identity.region`, `config.version`; Go now returns the node's region and the version of the running binary. |
+| `GET /api/v1/config/system` | yes | real | not called | none |  |
 | `GET /api/v1/config/dns` | yes | real | not called | none |  |
 | `PUT /api/v1/config/dns` | yes | stub (always fails) | not called | none |  |
 | `PATCH /api/v1/config/dns` | yes | stub (always fails) | not called | none |  |
@@ -244,9 +249,12 @@ Outside `server/routes/`, `server/index.js` serves `/api/push-to-node`, `/api/te
 ## Disagreements between the two repos' own documents
 
 - Overlord's `AI_ASSISTANT_GUIDE.md` documents health-check `interval` and `timeout` as strings (`"30s"`).
-  Overlord's client sends numbers, and Go accepts only integer nanoseconds (M8).
+  Overlord's client sends numbers. Resolved in the spec for the guide: Go accepts and returns strings and
+  rejects numbers (M8). Overlord's client is pending.
 - Overlord's `ALIGNMENT_PLAN.md` describes aligning Overlord's own API shapes with OpenGSLB (wrapped lists,
-  `routing_policy`). Its write client was not updated to match and still sends `routing_algorithm` (M5).
+  `routing_policy`). Its write client still sends `routing_algorithm`. Resolved in the spec for the write
+  client and the configuration file: `routing_algorithm` is canonical and `routing_policy` a deprecated alias
+  (M5). Overlord's plan and its read side are pending.
 - The old `docs/api.md` in this repo documents the DNSSEC and `/api/health` endpoints as available. The
   binary does not serve them.
 - `config/reference-overwatch.yaml` shows `api.address: ":9090"`, which is also the default metrics address;

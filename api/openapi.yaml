@@ -32,6 +32,20 @@ info:
 
     Errors are `{"error": string, "code": int}`. Timestamps are RFC 3339. A Go zero time is serialized as
     `0001-01-01T00:00:00Z` rather than omitted.
+
+    Durations (health-check `interval` and `timeout`) are strings in Go duration syntax with a unit, such as
+    `"30s"`, `"500ms"` or `"1m30s"`, the form the configuration file uses. A bare number is rejected with
+    400: earlier versions decoded it as nanoseconds while clients meant seconds.
+
+    Servers and backends are one model. A server is one backend of one domain: the object returned under
+    `/api/v1/servers` and under `/api/v1/domains/{name}/backends` is the same `BackendServer`, whatever
+    endpoint created it, and its `service` field is the name of its domain. Its `source` says who owns it:
+    `static` (configuration file), `agent` (registered by an agent over gossip) or `api`. Only `api`
+    servers can be changed through the API.
+
+    Writes need the persistent store (`overwatch.data_dir`). An overwatch that could not create its store
+    starts read-only: every request that creates, changes or deletes a domain, server or region is answered
+    with 503 and a message that names the directory, and nothing is changed.
   license:
     name: AGPL-3.0-or-later OR LicenseRef-OpenGSLB-Commercial
 servers:
@@ -1055,7 +1069,9 @@ paths:
       tags:
       - Domains
       summary: Create a domain
-      description: A duplicate name returns 500, not 409. The response omits `id`.
+      description: 'The algorithm is named by `routing_algorithm` (`routing_policy` is accepted as a deprecated
+        alias). An unknown algorithm, or two different values in the two fields, returns 400. A name that exists
+        already, in the configuration file or created through the API, returns 409.'
       requestBody:
         required: true
         content:
@@ -1075,6 +1091,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '405':
           $ref: '#/components/responses/Error405'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
         '503':
@@ -1110,7 +1128,8 @@ paths:
       operationId: updateDomain
       tags:
       - Domains
-      summary: Update a domain (PUT and PATCH are both partial updates)
+      summary: Update an API-created domain (PUT and PATCH are both partial updates)
+      description: A domain of the configuration file cannot be changed through the API and returns 409.
       parameters:
       - name: name
         in: path
@@ -1138,6 +1157,8 @@ paths:
           $ref: '#/components/responses/Error404'
         '405':
           $ref: '#/components/responses/Error405'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
         '503':
@@ -1146,7 +1167,8 @@ paths:
       operationId: patchDomain
       tags:
       - Domains
-      summary: Update a domain (PUT and PATCH are both partial updates)
+      summary: Update an API-created domain (PUT and PATCH are both partial updates)
+      description: A domain of the configuration file cannot be changed through the API and returns 409.
       parameters:
       - name: name
         in: path
@@ -1174,6 +1196,8 @@ paths:
           $ref: '#/components/responses/Error404'
         '405':
           $ref: '#/components/responses/Error405'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
         '503':
@@ -1183,7 +1207,8 @@ paths:
       tags:
       - Domains
       summary: Delete an API-created domain
-      description: Config-file domains cannot be deleted and return 500.
+      description: Deletes the domain and the servers that were created for it through the API. A domain of the
+        configuration file cannot be deleted and returns 409.
       parameters:
       - name: name
         in: path
@@ -1199,6 +1224,8 @@ paths:
           $ref: '#/components/responses/Error404'
         '405':
           $ref: '#/components/responses/Error405'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
         '503':
@@ -1209,7 +1236,10 @@ paths:
       tags:
       - Domains
       summary: List a domain's backends
-      description: Returns 404 `domain not found` for an API-created domain that has no backends yet.
+      description: 'The servers whose `service` is this domain: those of the configuration file, those registered
+        by agents and those created through the API, each with its `source` and the health check in effect.
+        A domain that exists and has no backends returns 200 with an empty list; only an unknown domain returns
+        404.'
       parameters:
       - name: name
         in: path
@@ -1236,7 +1266,10 @@ paths:
       tags:
       - Domains
       summary: Add a backend to a domain
-      description: An unknown domain returns 500, not 404.
+      description: 'Creates a server (`source: api`) whose `service` is the domain. It is the same operation as
+        `POST /api/v1/servers` with `service` set to the domain name, and the new object is listed under both.
+        The `health_check` is applied to this server. An unknown domain returns 404, an address and port that
+        the domain already has returns 409.'
       parameters:
       - name: name
         in: path
@@ -1260,8 +1293,12 @@ paths:
           $ref: '#/components/responses/Error400'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
         '405':
           $ref: '#/components/responses/Error405'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
         '503':
@@ -1272,10 +1309,11 @@ paths:
       tags:
       - Domains
       summary: Remove a backend from a domain
-      description: 'Unreachable today: `HandleDomains` splits the path into at most two parts, so `backends/{id}`
-        never matches `backends` and every request returns 404 `endpoint not found`. The handler behind it (`removeDomainBackend`)
-        would return 204.'
-      x-status: broken
+      description: 'Deletes the server. `id` is the server ID, `{domain}:{address}:{port}`, as returned in the
+        backend listing; an ID of another domain returns 404. The server is taken out of DNS answers with the
+        delete. A backend of the configuration file cannot be deleted and returns 409. A backend registered by
+        an agent is deleted, and registered again by the next heartbeat of its agent for as long as the agent
+        runs. It is the same operation as `DELETE /api/v1/servers/{id}`.'
       parameters:
       - name: name
         in: path
@@ -1288,12 +1326,18 @@ paths:
         schema:
           type: string
       responses:
+        '204':
+          description: No content.
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error404'
         '405':
           $ref: '#/components/responses/Error405'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
         '503':
           $ref: '#/components/responses/Error503'
   /api/v1/servers:
@@ -1302,6 +1346,8 @@ paths:
       tags:
       - Servers
       summary: List servers
+      description: Every server the overwatch knows, sorted by `id`, from the configuration file, from agents and
+        created through the API (under `/api/v1/servers` or under `/api/v1/domains/{name}/backends`).
       parameters:
       - name: region
         in: query
@@ -1337,8 +1383,9 @@ paths:
       operationId: createServer
       tags:
       - Servers
-      summary: Register a server
-      description: The response omits `id`.
+      summary: Create a server
+      description: 'Creates a server (`source: api`) for the domain named in `service`. The domain must exist
+        (404 otherwise). The same service, address and port a second time returns 409.'
       requestBody:
         required: true
         content:
@@ -1356,8 +1403,12 @@ paths:
           $ref: '#/components/responses/Error400'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
         '405':
           $ref: '#/components/responses/Error405'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
         '503':
@@ -1393,7 +1444,12 @@ paths:
       operationId: updateServer
       tags:
       - Servers
-      summary: Update a server (PUT and PATCH are both partial updates)
+      summary: Update an API-created server (PUT and PATCH are both partial updates)
+      description: 'Changes weight, region, priority, the administrative state (`enabled`) and the health check
+        of a server with `source: api`. The change is stored, and reaches DNS answers at once. Only the fields
+        in the body are changed; a `health_check` in the body changes only the health-check fields it names.
+        `service`, `address` and `port` identify the server: a different value returns 400. A server of the
+        configuration file or of an agent returns 409.'
       parameters:
       - name: id
         in: path
@@ -1421,6 +1477,8 @@ paths:
           $ref: '#/components/responses/Error404'
         '405':
           $ref: '#/components/responses/Error405'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
         '503':
@@ -1429,7 +1487,12 @@ paths:
       operationId: patchServer
       tags:
       - Servers
-      summary: Update a server (PUT and PATCH are both partial updates)
+      summary: Update an API-created server (PUT and PATCH are both partial updates)
+      description: 'Changes weight, region, priority, the administrative state (`enabled`) and the health check
+        of a server with `source: api`. The change is stored, and reaches DNS answers at once. Only the fields
+        in the body are changed; a `health_check` in the body changes only the health-check fields it names.
+        `service`, `address` and `port` identify the server: a different value returns 400. A server of the
+        configuration file or of an agent returns 409.'
       parameters:
       - name: id
         in: path
@@ -1457,6 +1520,8 @@ paths:
           $ref: '#/components/responses/Error404'
         '405':
           $ref: '#/components/responses/Error405'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
         '503':
@@ -1466,7 +1531,10 @@ paths:
       tags:
       - Servers
       summary: Delete a server
-      description: An id that is not `service:address:port` returns 500.
+      description: 'The server is taken out of DNS answers with the delete. An unknown `id`, or one that is not
+        `service:address:port`, returns 404. A server of the configuration file cannot be deleted and returns
+        409. A server registered by an agent is deleted, and registered again by the next heartbeat of its
+        agent for as long as the agent runs.'
       parameters:
       - name: id
         in: path
@@ -1482,6 +1550,8 @@ paths:
           $ref: '#/components/responses/Error404'
         '405':
           $ref: '#/components/responses/Error405'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
         '503':
@@ -1492,8 +1562,9 @@ paths:
       tags:
       - Servers
       summary: Get a server's health check
-      description: 'Returns the same fixed document for every server (http, /health, 3 s interval, 5 s timeout); it does not reflect the check actually in use.'
-      x-status: stub
+      description: The health check in effect for the server, the same object as `health_check` in the server.
+        Every field holds the value the overwatch uses, the server's own setting where one was made through the
+        API and the node-wide setting (`overwatch.validation`) otherwise.
       parameters:
       - name: id
         in: path
@@ -1519,9 +1590,11 @@ paths:
       operationId: updateServerHealthCheck
       tags:
       - Servers
-      summary: Replace a server's health check
-      description: 'A no-op: the body is validated and echoed back but nothing is stored or applied. An unknown server returns 500, not 404.'
-      x-status: stub
+      summary: Replace the health check of an API-created server
+      description: 'Sets the health check of a server with `source: api` to the body. A field that is left out
+        goes back to the node-wide setting. The check is stored and the server is probed with it right away.
+        A server of the configuration file or of an agent returns 409, as does a check on an overwatch whose
+        external validation is turned off.'
       parameters:
       - name: id
         in: path
@@ -1533,7 +1606,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ServerHealthCheck'
+              $ref: '#/components/schemas/ServerHealthCheckRequest'
       responses:
         '200':
           description: Success.
@@ -1545,8 +1618,12 @@ paths:
           $ref: '#/components/responses/Error400'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
         '405':
           $ref: '#/components/responses/Error405'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
         '503':
@@ -1555,9 +1632,8 @@ paths:
       operationId: patchServerHealthCheck
       tags:
       - Servers
-      summary: Replace a server's health check
-      description: 'A no-op: the body is validated and echoed back but nothing is stored or applied. An unknown server returns 500, not 404.'
-      x-status: stub
+      summary: Change fields of the health check of an API-created server
+      description: 'Like PUT, except that a field that is left out keeps its value.'
       parameters:
       - name: id
         in: path
@@ -1569,7 +1645,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ServerHealthCheck'
+              $ref: '#/components/schemas/ServerHealthCheckRequest'
       responses:
         '200':
           description: Success.
@@ -1581,8 +1657,12 @@ paths:
           $ref: '#/components/responses/Error400'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error404'
         '405':
           $ref: '#/components/responses/Error405'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
         '503':
@@ -2702,10 +2782,8 @@ paths:
       operationId: getConfigRoot
       tags:
       - Config
-      summary: System configuration (alias of /config/system)
-      description: Only `mode` is real. `version` is the constant `1.0.0` (not the build version) and `node_id`,
-        `region`, `build_info` and `start_time` are empty.
-      x-status: stub
+      summary: Node identity and build (alias of /config/system)
+      description: See `GET /api/v1/config/system`.
       responses:
         '200':
           description: Success.
@@ -2726,10 +2804,12 @@ paths:
       operationId: getSystemConfig
       tags:
       - Config
-      summary: System configuration
-      description: Only `mode` is real. `version` is the constant `1.0.0` (not the build version) and `node_id`,
-        `region`, `build_info` and `start_time` are empty.
-      x-status: stub
+      summary: Node identity and build
+      description: '`node_id` and `region` are the identity of the node (`overwatch.identity` in the configuration
+        file; `node_id` falls back to the host name, as it does everywhere else). `version` is the version of
+        the running binary, the same value as `GET /api/v1/version`. `start_time` is when the process started.
+        `data_dir` is the directory of the persistent store and is left out when the node runs without one.
+        `features` is always null and `build_info.build_date` is always empty: neither is recorded.'
       responses:
         '200':
           description: Success.
@@ -3210,6 +3290,13 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    Error409:
+      description: 'Conflict: the object exists already, or it is owned by the configuration file or by an agent
+        and cannot be changed through the API.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     Error500:
       description: Internal error.
       content:
@@ -3217,7 +3304,9 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     Error503:
-      description: Dependency not configured.
+      description: Dependency not configured. For a request that writes, also returned when the overwatch runs
+        without its persistent store (`overwatch.data_dir` is not writable); the message names the directory
+        and nothing was changed.
       content:
         application/json:
           schema:
@@ -3753,6 +3842,8 @@ components:
     BackendServer:
       type: object
       required:
+      - id
+      - service
       - name
       - address
       - port
@@ -3762,51 +3853,77 @@ components:
       - region
       - enabled
       - healthy
+      - source
       - created_at
       - updated_at
+      - last_check
+      - health_check
       additionalProperties: false
       properties:
         id:
           type: string
+          description: '`{service}:{address}:{port}`. An IPv6 address is written without brackets.'
+        service:
+          type: string
+          description: The name of the domain this server answers for. This is the link between a server and its
+            domain.
         name:
           type: string
+          deprecated: true
+          description: Deprecated alias of `service`; always the same value.
         address:
           type: string
+          description: IPv4 or IPv6 address.
         port:
           type: integer
         protocol:
           type: string
+          deprecated: true
+          description: Deprecated. Always `tcp`. The check protocol is `health_check.type`.
         weight:
           type: integer
         priority:
           type: integer
+          description: Stored and returned. No routing algorithm reads it.
         region:
           type: string
         enabled:
           type: boolean
+          description: Administrative state. A server that is not enabled stays registered and is not answered in
+            DNS.
         healthy:
           type: boolean
-        description:
+          description: True when the effective status of the server is healthy.
+        source:
           type: string
-        tags:
-          type: array
-          items:
-            type: string
+          enum:
+          - static
+          - agent
+          - api
+          description: 'Who owns the server: `static` is the configuration file, `agent` an agent that registered
+            it over gossip, `api` this API. Only `api` servers can be changed through the API.'
         metadata:
           type: object
+          deprecated: true
           additionalProperties:
             type: string
+          description: Deprecated. Status details as strings (`service`, `source`, `effective_status`,
+            `agent_healthy`, `agent_last_seen`, `validation_check`, `smoothed_latency`), kept for existing
+            clients. Use the typed fields.
         created_at:
           type: string
           format: date-time
         updated_at:
           type: string
           format: date-time
+        last_check:
+          type: string
+          format: date-time
+          description: Time of the last health check. The Go zero time when the server was never checked.
         health_check:
           $ref: '#/components/schemas/ServerHealthCheck'
-        status:
-          $ref: '#/components/schemas/ServerStatus'
-      description: '`id` has the form `{service}:{address}:{port}`.'
+      description: A backend server. The same object is returned under `/api/v1/servers` and under
+        `/api/v1/domains/{name}/backends`.
     BackendsResponse:
       type: object
       required:
@@ -4093,6 +4210,7 @@ components:
       required:
       - name
       - ttl
+      - routing_algorithm
       - routing_policy
       - dnssec_enabled
       - enabled
@@ -4106,8 +4224,13 @@ components:
           type: string
         ttl:
           type: integer
+        routing_algorithm:
+          $ref: '#/components/schemas/RoutingAlgorithmName'
         routing_policy:
           type: string
+          deprecated: true
+          description: Deprecated alias of `routing_algorithm`; always the same value. It will be removed in a
+            later API version.
         health_check_id:
           type: string
         dnssec_enabled:
@@ -4132,59 +4255,34 @@ components:
           type: integer
         settings:
           $ref: '#/components/schemas/DomainSettings'
-    DomainBackend:
-      type: object
-      required:
-      - id
-      - address
-      - port
-      - weight
-      - priority
-      - region
-      - healthy
-      - enabled
-      - last_check
-      additionalProperties: false
-      properties:
-        id:
-          type: string
-        address:
-          type: string
-        port:
-          type: integer
-        weight:
-          type: integer
-        priority:
-          type: integer
-        region:
-          type: string
-        healthy:
-          type: boolean
-        enabled:
-          type: boolean
-        last_check:
-          type: string
-          format: date-time
-      description: '`id` has the form `{domain}:{address}:{port}`.'
     DomainBackendCreateRequest:
       type: object
       properties:
         address:
           type: string
+          description: IPv4 or IPv6 address.
         port:
           type: integer
+          minimum: 1
+          maximum: 65535
         weight:
           type: integer
+          minimum: 0
+          maximum: 1000000
+          description: Defaults to 1 when left out or 0.
         priority:
           type: integer
         region:
           type: string
         enabled:
           type: boolean
+          default: true
+        health_check:
+          $ref: '#/components/schemas/ServerHealthCheckRequest'
       required:
       - address
       - port
-      description: A `health_check` object in the body is silently ignored.
+      description: A server create request without `service`, which is the domain in the path.
     DomainBackendResponse:
       type: object
       required:
@@ -4192,7 +4290,7 @@ components:
       additionalProperties: false
       properties:
         backend:
-          $ref: '#/components/schemas/DomainBackend'
+          $ref: '#/components/schemas/BackendServer'
     DomainBackendsResponse:
       type: object
       required:
@@ -4204,7 +4302,7 @@ components:
         backends:
           type: array
           items:
-            $ref: '#/components/schemas/DomainBackend'
+            $ref: '#/components/schemas/BackendServer'
         total:
           type: integer
         generated_at:
@@ -4217,8 +4315,12 @@ components:
           type: string
         ttl:
           type: integer
+        routing_algorithm:
+          $ref: '#/components/schemas/RoutingAlgorithmName'
         routing_policy:
           type: string
+          deprecated: true
+          description: Deprecated alias of `routing_algorithm`, read when `routing_algorithm` is left out.
         dnssec_enabled:
           type: boolean
         enabled:
@@ -4233,8 +4335,10 @@ components:
           $ref: '#/components/schemas/DomainSettings'
       required:
       - name
-      description: Only `routing_policy` selects the algorithm. A `routing_algorithm` or `regions` field is silently
-        ignored (the domain is then created as round-robin).
+      description: '`routing_algorithm` selects the algorithm and defaults to `round-robin`. Sending both names
+        with different values returns 400. `ttl` defaults to 300. `name` must not contain `:`, `/` or white
+        space. A domain has no `regions` of its own in the API: its regions are those of its servers, and a
+        `regions` field in the body is ignored.'
     DomainListResponse:
       type: object
       required:
@@ -4282,8 +4386,12 @@ components:
       properties:
         ttl:
           type: integer
+        routing_algorithm:
+          $ref: '#/components/schemas/RoutingAlgorithmName'
         routing_policy:
           type: string
+          deprecated: true
+          description: Deprecated alias of `routing_algorithm`, read when `routing_algorithm` is left out.
         dnssec_enabled:
           type: boolean
         enabled:
@@ -4296,6 +4404,16 @@ components:
             type: string
         settings:
           $ref: '#/components/schemas/DomainSettings'
+    Duration:
+      type: string
+      pattern: '^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$'
+      examples:
+      - 30s
+      - 500ms
+      - 1m30s
+      description: 'A time span as a string in Go duration syntax: one or more numbers, each with a unit (`ms`,
+        `s`, `m`, `h`), such as `"30s"`, `"500ms"` or `"1m30s"`. Responses use whole seconds (`"90s"`) or, for a
+        fraction of a second, whole milliseconds (`"1500ms"`). A bare number is not a duration and is rejected.'
     EDNS:
       type: object
       additionalProperties: false
@@ -5451,6 +5569,17 @@ components:
           type: boolean
         default:
           type: boolean
+    RoutingAlgorithmName:
+      type: string
+      enum:
+      - round-robin
+      - weighted
+      - failover
+      - geolocation
+      - latency
+      - learned_latency
+      description: The name of a routing algorithm, as in the `routing_algorithm` key of a domain in the
+        configuration file.
     RoutingDecision:
       type: object
       required:
@@ -5677,39 +5806,45 @@ components:
     ServerCreateRequest:
       type: object
       properties:
+        service:
+          type: string
+          description: The name of the domain the server belongs to. The domain must exist.
         name:
           type: string
+          deprecated: true
+          description: Deprecated alias of `service`, read when `service` and `metadata.service` are left out.
         address:
           type: string
+          description: IPv4 or IPv6 address.
         port:
           type: integer
-        protocol:
-          type: string
+          minimum: 1
+          maximum: 65535
         weight:
           type: integer
+          minimum: 0
+          maximum: 1000000
+          description: Defaults to 1 when left out or 0.
         priority:
           type: integer
         region:
           type: string
         enabled:
           type: boolean
-        description:
-          type: string
-        tags:
-          type: array
-          items:
-            type: string
+          default: true
         metadata:
           type: object
+          deprecated: true
           additionalProperties:
             type: string
+          description: Deprecated. Only the key `service` is read, as an alias of the top-level `service`.
         health_check:
-          $ref: '#/components/schemas/ServerHealthCheck'
+          $ref: '#/components/schemas/ServerHealthCheckRequest'
       required:
       - address
       - port
-      description: The owning domain is taken from `name` or `metadata.service`; a top-level `service` field is
-        ignored. If neither is set the request fails with 500.
+      description: '`service` is required in effect: a request that names the domain in none of `service`,
+        `metadata.service` and `name` returns 400.'
     ServerHealthCheck:
       type: object
       required:
@@ -5723,30 +5858,68 @@ components:
       properties:
         enabled:
           type: boolean
+          description: False when the overwatch does not probe the server, because the check was turned off for it
+            or because external validation is turned off on the node.
         type:
           type: string
+          enum:
+          - http
+          - https
+          - tcp
         path:
           type: string
+          description: Request path of an http or https check. Absent for tcp.
+        host:
+          type: string
+          description: Host header and TLS server name of an http or https check. Absent when not set.
         interval:
-          type: integer
-          description: Duration in nanoseconds (Go time.Duration).
+          $ref: '#/components/schemas/Duration'
         timeout:
-          type: integer
-          description: Duration in nanoseconds (Go time.Duration).
+          $ref: '#/components/schemas/Duration'
         healthy_threshold:
           type: integer
+          description: Consecutive passing checks before the server counts as healthy.
         unhealthy_threshold:
           type: integer
-        expected_status:
-          type: integer
-        expected_body:
+          description: Consecutive failed checks before the server counts as unhealthy.
+      description: The health check in effect for a server. Every field holds the value the overwatch uses.
+    ServerHealthCheckRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+          description: False turns external validation off for this server.
+        type:
           type: string
-        headers:
-          type: object
-          additionalProperties:
-            type: string
-      description: '`interval` and `timeout` are Go time.Duration values encoded as integer nanoseconds; a string
-        such as "30s" is rejected with 400.'
+          enum:
+          - http
+          - https
+          - tcp
+        path:
+          type: string
+          description: Must start with `/`. Not allowed with type tcp.
+        host:
+          type: string
+          description: Not allowed with type tcp.
+        interval:
+          $ref: '#/components/schemas/Duration'
+        timeout:
+          $ref: '#/components/schemas/Duration'
+        healthy_threshold:
+          type: integer
+          minimum: 1
+          maximum: 100
+        unhealthy_threshold:
+          type: integer
+          minimum: 1
+          maximum: 100
+      description: 'A health check as a client sends it. Every field is optional; a field that is left out uses the
+        node-wide setting (`overwatch.validation`), or keeps its value in a partial update. Nothing is ignored:
+        an unknown field (for example `expected_status`), an unknown type, a number in place of a duration
+        string, `interval` outside 1s to 1h, `timeout` outside 100ms to 1m and a timeout longer than the
+        interval are all rejected with 400. On an overwatch whose external validation is turned off
+        (`overwatch.validation.enabled: false`) a check other than `{"enabled": false}` returns 409.'
     ServerHealthCheckResponse:
       type: object
       required:
@@ -5845,34 +6018,28 @@ components:
     ServerUpdateRequest:
       type: object
       properties:
-        name:
+        service:
           type: string
+          description: Identifies the server. Accepted only when it repeats the current value.
         address:
           type: string
+          description: Identifies the server. Accepted only when it repeats the current value.
         port:
           type: integer
-        protocol:
-          type: string
+          description: Identifies the server. Accepted only when it repeats the current value.
         weight:
           type: integer
+          minimum: 0
+          maximum: 1000000
         priority:
           type: integer
         region:
           type: string
         enabled:
           type: boolean
-        description:
-          type: string
-        tags:
-          type: array
-          items:
-            type: string
-        metadata:
-          type: object
-          additionalProperties:
-            type: string
         health_check:
-          $ref: '#/components/schemas/ServerHealthCheck'
+          $ref: '#/components/schemas/ServerHealthCheckRequest'
+      description: Every field is optional. Only the fields in the body are changed.
     SimpleHealthResponse:
       type: object
       required:

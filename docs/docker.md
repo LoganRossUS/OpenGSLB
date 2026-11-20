@@ -15,8 +15,11 @@ docker run -d \
   -p 53:53/tcp \
   -p 9090:9090 \
   -v $(pwd)/config.yaml:/etc/opengslb/config.yaml:ro \
+  -v opengslb-data:/var/lib/opengslb \
   ghcr.io/loganrossus/opengslb:latest
 ```
+
+The named volume keeps what is created at runtime (see [Persistent data](#persistent-data)).
 
 ## Image Tags
 
@@ -83,6 +86,63 @@ docker run -d \
 ```
 
 **Note:** The configuration file inside the container must have secure permissions. When mounting, ensure the source file has appropriate permissions (600 or 640).
+
+## Persistent Data
+
+The container runs as the non-root user `appuser` (UID 1000, GID 1000). The image contains the directory
+`/var/lib/opengslb`, owned by that user and declared as a volume. It is the default location of:
+
+- the overwatch store, `overwatch.db` (`overwatch.data_dir`): domains, servers and regions created through
+  the API, agent registrations, overrides and pinned agent certificates;
+- the agent certificate and key (`agent.identity.cert_path` and `key_path`).
+
+Mount a named volume there so that the data outlives the container:
+
+```bash
+docker run -d \
+  --name opengslb \
+  -v $(pwd)/config:/etc/opengslb:ro \
+  -v opengslb-data:/var/lib/opengslb \
+  ghcr.io/loganrossus/opengslb:latest
+```
+
+```yaml
+# docker-compose.yml
+services:
+  opengslb:
+    image: ghcr.io/loganrossus/opengslb:latest
+    volumes:
+      - ./config:/etc/opengslb:ro
+      - opengslb-data:/var/lib/opengslb
+
+volumes:
+  opengslb-data:
+```
+
+Without a `-v` for that path Docker creates an anonymous volume. The data then survives `docker restart`,
+and is lost when the container is removed (`docker rm`, or a recreate by Docker Compose).
+
+A bind mount (`-v /srv/opengslb:/var/lib/opengslb`) keeps the owner the directory has on the host. Make it
+writable for UID 1000 first:
+
+```bash
+sudo mkdir -p /srv/opengslb
+sudo chown 1000:1000 /srv/opengslb
+```
+
+In Kubernetes, mount a volume at `/var/lib/opengslb` and set `securityContext.fsGroup: 1000` on the pod so
+that the volume is writable for the container user.
+
+What happens when the directory is not usable:
+
+| Situation | Overwatch | Agent |
+|-----------|-----------|-------|
+| The directory is not writable and holds no `overwatch.db` | Starts, logs `RUNNING WITHOUT PERSISTENCE` at WARN, serves the configuration file, and answers every API write with `503` | Does not start: the certificate cannot be written |
+| `overwatch.db` exists and cannot be opened (wrong owner, locked by another container, damaged) | Does not start. Starting without the store would silently drop the domains and servers kept in it | Not applicable |
+
+Images up to 1.1.10 did not contain the directory. An overwatch started from them without an
+`overwatch.data_dir` override ran without persistence, and an agent with the default certificate path did not
+start.
 
 ## Port Mappings
 
@@ -452,6 +512,15 @@ sudo systemctl restart systemd-resolved
 docker run -p 5353:53/udp ...
 ```
 
+### API Writes Answer 503, or the Container Exits Because of the Store
+
+```bash
+docker logs opengslb 2>&1 | grep -E "RUNNING WITHOUT PERSISTENCE|cannot be opened"
+```
+
+Both messages name the directory and the cause. The usual cause is a bind mount that UID 1000 cannot write,
+or a second container on the same data directory. See [Persistent Data](#persistent-data).
+
 ### Permission Denied on Config
 
 Ensure the config file has proper permissions:
@@ -476,6 +545,7 @@ chcon -Rt svirt_sandbox_file_t ./config/
 ## Production Checklist
 
 - [ ] Configuration file has secure permissions (640 or 600)
+- [ ] A named volume or a bind mount owned by UID 1000 is mounted at `/var/lib/opengslb`
 - [ ] Health checks configured
 - [ ] Resource limits set
 - [ ] Log rotation configured

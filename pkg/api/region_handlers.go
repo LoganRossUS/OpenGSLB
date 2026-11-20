@@ -8,6 +8,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -227,6 +228,9 @@ func (h *RegionHandlers) createRegion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.provider.CreateRegion(region); err != nil {
+		if h.writeStoreError(w, err) {
+			return
+		}
 		h.logger.Error("failed to create region", "name", req.Name, "error", err)
 		h.writeError(w, http.StatusInternalServerError, "failed to create region: "+err.Error())
 		return
@@ -287,6 +291,9 @@ func (h *RegionHandlers) updateRegion(w http.ResponseWriter, r *http.Request, id
 	existing.UpdatedAt = time.Now().UTC()
 
 	if err := h.provider.UpdateRegion(id, *existing); err != nil {
+		if h.writeStoreError(w, err) {
+			return
+		}
 		h.logger.Error("failed to update region", "id", id, "error", err)
 		h.writeError(w, http.StatusInternalServerError, "failed to update region: "+err.Error())
 		return
@@ -304,6 +311,9 @@ func (h *RegionHandlers) deleteRegion(w http.ResponseWriter, r *http.Request, id
 	}
 
 	if err := h.provider.DeleteRegion(id); err != nil {
+		if h.writeStoreError(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "region not found")
 			return
@@ -324,6 +334,18 @@ func (h *RegionHandlers) writeJSON(w http.ResponseWriter, status int, data inter
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		h.logger.Error("failed to encode response", "error", err)
 	}
+}
+
+// writeStoreError answers a provider error that carries its own status, such
+// as the 503 of a write on an overwatch without a persistent store. It
+// reports whether it wrote the response.
+func (h *RegionHandlers) writeStoreError(w http.ResponseWriter, err error) bool {
+	var apiErr *Error
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	h.writeError(w, apiErr.Status, apiErr.Message)
+	return true
 }
 
 // writeError writes a JSON error response.
