@@ -82,7 +82,10 @@ Start it again with `docker compose start web-us-east-2`.
 
 These are existing issues recorded in `docs/api-alignment.md`, not lab problems:
 
-- Some Overlord pages (Health, Overrides, Geo Mappings, DNSSEC) show empty placeholder data.
+- Some Overlord pages (Health, Overrides, Geo Mappings, DNSSEC) show empty placeholder data (Phase 1E).
+- The Routing page is always empty and the Metrics page's routing chart is a fixed split: Overlord reads a
+  table nothing writes. The overwatches' routing counts are in their Prometheus metrics; per-query routing
+  decisions do not exist yet (Phase 3B).
 - A routing algorithm chosen when creating a domain in Overlord is not applied on the nodes (M5).
 - Deleting a server in Overlord does not remove it from the nodes (M7); editing a server Overlord created
   fails on the nodes (M15).
