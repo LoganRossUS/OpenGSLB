@@ -27,6 +27,8 @@ if [ ! -f "$RUNTIME/.env" ]; then
   umask 022
 fi
 set -a; . "$RUNTIME/.env"; set +a
+# So that plain "docker compose ..." in this directory finds the variables.
+ln -sf runtime/.env "$LAB_DIR/.env"
 
 render() { # template node_id region output
   sed -e "s|__NODE_ID__|$2|" -e "s|__REGION__|$3|" \
@@ -59,7 +61,7 @@ DOCKERFILE
 
 # --- Start -----------------------------------------------------------------------
 echo "==> Starting the lab"
-docker compose --env-file "$RUNTIME/.env" up -d --remove-orphans
+docker compose up -d --remove-orphans
 
 echo "==> Waiting for Overlord"
 for _ in $(seq 1 90); do

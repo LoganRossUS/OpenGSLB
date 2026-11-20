@@ -1,6 +1,8 @@
 # OpenGSLB lab: two overwatches, one agent, seven web backends in three
 # regions, and the Overlord portal with its Postgres database.
 # Started by up.sh, which renders runtime/ and builds the images first.
+# DNS is published on 8053 and 8054, not 5353: 5353 is the multicast DNS
+# port, and home routers and firewalls often drop unicast traffic to it.
 name: opengslb-lab
 
 x-backend: &backend
@@ -23,14 +25,14 @@ services:
     hostname: overwatch-1
     volumes: ["./runtime/overwatch-1.yaml:/config-src/config.yaml:ro"]
     networks: { gslb: { ipv4_address: 172.30.0.11 } }
-    ports: ["5353:5353/udp", "5353:5353/tcp"]
+    ports: ["8053:5353/udp", "8053:5353/tcp"]
 
   overwatch-2:
     <<: *opengslb
     hostname: overwatch-2
     volumes: ["./runtime/overwatch-2.yaml:/config-src/config.yaml:ro"]
     networks: { gslb: { ipv4_address: 172.30.0.12 } }
-    ports: ["5354:5353/udp", "5354:5353/tcp"]
+    ports: ["8054:5353/udp", "8054:5353/tcp"]
 
   agent-ap-1:
     <<: *opengslb

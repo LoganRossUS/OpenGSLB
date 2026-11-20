@@ -92,10 +92,13 @@ DEPLOYER_IP="$(curl -fsS https://api.ipify.org)" || die "could not determine Clo
 step "Creating resource group and network security group"
 az group create -n "$RG" -l "$LOCATION" -o none
 az network nsg create -g "$RG" -n "$NSG" -o none
+# Delete before create so a re-run applies changed addresses and ports.
+az network nsg rule delete -g "$RG" --nsg-name "$NSG" -n allow-lab-user -o none 2>/dev/null || true
 az network nsg rule create -g "$RG" --nsg-name "$NSG" -n allow-lab-user --priority 100 \
-  --source-address-prefixes "$ALLOWED_IP" --destination-port-ranges 22 3001 5353 5354 \
+  --source-address-prefixes "$ALLOWED_IP" --destination-port-ranges 22 3001 8053 8054 \
   --protocol '*' --access Allow --direction Inbound -o none
 # Temporary: lets this Cloud Shell copy the lab to the VM. Removed at the end.
+az network nsg rule delete -g "$RG" --nsg-name "$NSG" -n allow-deployer-ssh -o none 2>/dev/null || true
 az network nsg rule create -g "$RG" --nsg-name "$NSG" -n allow-deployer-ssh --priority 110 \
   --source-address-prefixes "$DEPLOYER_IP/32" --destination-port-ranges 22 \
   --protocol Tcp --access Allow --direction Inbound -o none
@@ -143,8 +146,9 @@ cat <<DONE
  Password:  $ADMIN_PASSWORD
 
  DNS (from your machine, $ALLOWED_IP):
-   dig @$IP -p 5353 app.gslb.lab        # overwatch-1
-   dig @$IP -p 5354 app.gslb.lab        # overwatch-2
+   dig @$IP -p 8053 app.gslb.lab        # overwatch-1
+   dig @$IP -p 8054 app.gslb.lab        # overwatch-2
+   nslookup -type=A -port=8053 app.gslb.lab. $IP   (Windows)
    Domains: app (round-robin), failover, weighted, ap (agent-managed)
 
  Shell on the VM (works from Cloud Shell; SSH itself is only open to $ALLOWED_IP):

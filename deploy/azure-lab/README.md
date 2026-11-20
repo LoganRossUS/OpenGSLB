@@ -8,7 +8,7 @@ features by hand; not hardened and not for production.
 | Component | Detail |
 |---|---|
 | Overlord | Web portal on port 3001, admin account created for you, both overwatches already registered |
-| overwatch-1, overwatch-2 | Two independent overwatch nodes (identities us-east and eu-west). DNS on ports 5353 and 5354 |
+| overwatch-1, overwatch-2 | Two independent overwatch nodes (identities us-east and eu-west). DNS on ports 8053 and 8054 |
 | agent-ap-1 | An agent beside the ap-southeast backend, reporting its health to both overwatches over gossip |
 | Web backends | Seven nginx containers in three regions. Each answers `Hello from <name> (<region>)` |
 
@@ -54,7 +54,13 @@ and the other lab secrets are generated on the VM and kept in `/opt/opengslb-lab
 - **DNS**, from your machine:
 
 ```bash
-dig @<vm-ip> -p 5353 app.gslb.lab +short
+dig @<vm-ip> -p 8053 app.gslb.lab +short
+```
+
+On Windows (`-type=A` and the trailing dot avoid the AAAA lookup and the search-suffix lookups):
+
+```powershell
+nslookup -type=A -port=8053 app.gslb.lab. <vm-ip>
 ```
 
 - **Failover**: stop the primary and watch `failover.gslb.lab` move to eu-west within about 20 seconds:
@@ -78,6 +84,9 @@ These are existing issues recorded in `docs/api-alignment.md`, not lab problems:
 - Overlord polls agents directly, which fails, so agents are not shown as nodes (M11). The agent's backend
   appears under Servers.
 - DNSSEC is not active in this build.
+- An AAAA query for these IPv4-only names answers SERVFAIL instead of an empty answer, and reverse (PTR)
+  lookups answer NOTIMP. Tools that ask for both A and AAAA, such as Windows `nslookup` without `-type=A`,
+  may report an error even though the A answer is fine. Phase 1 fixes this.
 
 ## Remove
 
