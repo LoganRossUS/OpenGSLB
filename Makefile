@@ -1,4 +1,4 @@
-.PHONY: help build build-cli build-all test test-integration test-env-up test-env-down lint clean \
+.PHONY: help build build-cli build-all test test-integration test-env-up test-env-down lint clean api-docs \
 	build-linux-amd64 build-windows-amd64 build-release dist-clean
 
 BINARY_NAME=opengslb
@@ -30,6 +30,9 @@ lint: ## Run linters
 
 lint-fix: ## Run linters and fix issues
 	golangci-lint run --fix
+
+api-docs: ## Regenerate docs/api.md from api/openapi.yaml
+	$(GO) run ./tools/apidocs -spec api/openapi.yaml -out docs/api.md
 
 test-env-up: ## Start integration test environment
 	./scripts/test-env-up.sh

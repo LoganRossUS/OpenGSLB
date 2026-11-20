@@ -74,6 +74,7 @@ nav:
       - Gossip Protocol: docs/gossip.md
   - API Reference:
       - REST API: docs/api.md
+      - API Guide: docs/api-guide.md
       - Metrics: docs/metrics.md
   - Operations:
       - Testing: docs/testing.md

@@ -119,6 +119,7 @@ gossip
 :caption: API Reference
 
 api
+api-guide
 metrics
 ```
 
