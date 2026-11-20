@@ -11,8 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -46,11 +44,13 @@ type Application struct {
 	apiServer     *api.Server
 
 	// Overwatch mode components (Story 3)
-	backendRegistry     *overwatch.Registry
-	overwatchValidator  *overwatch.Validator
-	gossipHandler       *overwatch.GossipHandler
-	gossipReceiver      *gossip.MemberlistReceiver
-	overwatchStore      store.Store
+	backendRegistry    *overwatch.Registry
+	overwatchValidator *overwatch.Validator
+	gossipHandler      *overwatch.GossipHandler
+	gossipReceiver     *gossip.MemberlistReceiver
+	overwatchStore     store.Store
+	// storeUnavailable says why overwatchStore is nil (running without persistence).
+	storeUnavailable    string
 	learnedLatencyTable *overwatch.LearnedLatencyTable // ADR-017: Passive latency learning
 
 	// Agent mode components (Story 2)
@@ -340,24 +340,10 @@ func (a *Application) initializeGeoResolver() error {
 
 // initializeBackendRegistry creates and configures the backend registry for agent registrations.
 func (a *Application) initializeBackendRegistry() error {
-	// Initialize bbolt store for persistence
-	dataDir := a.config.Overwatch.DataDir
-	if dataDir == "" {
-		dataDir = "/var/lib/opengslb"
-	}
-
-	if err := os.MkdirAll(dataDir, 0750); err != nil {
-		a.logger.Warn("failed to create data directory, running without persistence", "error", err)
-		// Continue without persistence - don't fall back to temp dir to avoid conflicts
-	} else {
-		storePath := filepath.Join(dataDir, "overwatch.db")
-		bboltStore, err := store.NewBboltStore(storePath)
-		if err != nil {
-			a.logger.Warn("failed to initialize bbolt store, running without persistence", "error", err)
-			// Continue without persistence
-		} else {
-			a.overwatchStore = bboltStore
-		}
+	// Initialize bbolt store for persistence. Without a store the overwatch
+	// either starts read-only or does not start at all; see openOverwatchStore.
+	if err := a.openOverwatchStore(); err != nil {
+		return err
 	}
 
 	// Configure registry with stale thresholds from config
@@ -385,42 +371,18 @@ func (a *Application) initializeBackendRegistry() error {
 	// Do NOT call methods that acquire locks on the registry (e.g., GetAllBackends)
 	// or you'll get a deadlock. UpdateRegistryMetrics is called asynchronously instead.
 	a.backendRegistry.OnStatusChange(func(backend *overwatch.Backend, oldStatus, newStatus overwatch.BackendStatus) {
-		overwatch.RecordBackendStatusChange(backend.Service, oldStatus, newStatus)
+		if oldStatus != newStatus {
+			overwatch.RecordBackendStatusChange(backend.Service, oldStatus, newStatus)
+		}
 		// Update registry metrics asynchronously to avoid deadlock
 		go overwatch.UpdateRegistryMetrics(a.backendRegistry)
 
 		// v1.1.0: Sync backend registration to DNS registry
-		// This ensures API-registered and agent-registered servers appear in DNS
-		if a.dnsRegistry != nil {
-			// New backend registration (oldStatus is empty)
-			if oldStatus == "" {
-				if err := a.dnsRegistry.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
-					a.logger.Error("failed to register backend in DNS",
-						"service", backend.Service,
-						"address", backend.Address,
-						"port", backend.Port,
-						"error", err)
-				}
-			} else if newStatus == "" {
-				// Backend is being removed (newStatus is empty means deregistration)
-				if err := a.dnsRegistry.DeregisterServer(backend.Service, backend.Address, backend.Port); err != nil {
-					a.logger.Error("failed to deregister backend from DNS",
-						"service", backend.Service,
-						"address", backend.Address,
-						"port", backend.Port,
-						"error", err)
-				}
-			} else if oldStatus != newStatus {
-				// Status changed - update registration (weight might have changed)
-				if err := a.dnsRegistry.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
-					a.logger.Error("failed to update backend in DNS",
-						"service", backend.Service,
-						"address", backend.Address,
-						"port", backend.Port,
-						"error", err)
-				}
-			}
-		}
+		// This ensures API-registered and agent-registered servers appear in DNS.
+		// A new backend (oldStatus empty), a removed one (newStatus empty) and
+		// every change in between (status, weight, region, enabled) end in the
+		// same place: the DNS entry matches the backend.
+		a.syncBackendToDNS(backend, newStatus == "")
 	})
 
 	a.logger.Info("backend registry initialized",
@@ -702,7 +664,34 @@ func (a *Application) initializeAPIServer() error {
 		domainProvider := api.NewRegistryDomainProvider(a.backendRegistry, a.config, a.logger)
 		if a.overwatchStore != nil {
 			domainProvider.SetStore(a.overwatchStore)
+		} else {
+			domainProvider.SetStoreUnavailable(a.storeUnavailable)
 		}
+
+		// Server provider: one model for servers and domain backends. Both
+		// /api/v1/servers and /api/v1/domains/{name}/backends read and write
+		// the backend registry through it.
+		serverProvider := api.NewRegistryServerProvider(a.backendRegistry, api.HealthCheckDefaults{
+			Enabled:            a.overwatchValidator != nil,
+			Interval:           a.config.Overwatch.Validation.CheckInterval,
+			Timeout:            a.config.Overwatch.Validation.CheckTimeout,
+			HealthyThreshold:   a.config.Overwatch.Validation.SuccessThreshold,
+			UnhealthyThreshold: a.config.Overwatch.Validation.FailureThreshold,
+		}, a.logger)
+		serverProvider.SetPersistent(a.overwatchStore != nil)
+		serverProvider.SetStoreUnavailable(a.storeUnavailable)
+		serverProvider.SetDomainLookup(domainProvider.HasDomain)
+		if validator := a.overwatchValidator; validator != nil {
+			// Probe a new server, or one whose check changed, right away.
+			serverProvider.SetProbe(func(service, address string, port int) {
+				go func() {
+					if err := validator.ValidateBackend(service, address, port); err != nil {
+						a.logger.Debug("immediate validation skipped", "service", service, "address", address, "port", port, "error", err)
+					}
+				}()
+			})
+		}
+		domainProvider.SetServerProvider(serverProvider)
 		// Wire DNS registry for dynamic domain registration
 		if a.dnsRegistry != nil {
 			domainProvider.SetDNSRegistry(a.dnsRegistry)
@@ -726,13 +715,13 @@ func (a *Application) initializeAPIServer() error {
 			if err := domainProvider.LoadStoredDomainsIntoDNS(); err != nil {
 				a.logger.Warn("failed to load stored domains into DNS registry", "error", err)
 			}
+			// Agent and API backends that are in the registry already.
+			a.syncDynamicBackendsToDNS()
 		}
 		server.SetDomainHandlers(api.NewDomainHandlers(domainProvider, a.logger))
 		a.logger.Debug("domain API handlers registered")
 
 		// v1.1.0: Server handlers - CRUD operations for servers (static, agent, and API-registered)
-		// Use adapter to avoid circular dependency
-		serverProvider := newBackendRegistryServerProvider(a.backendRegistry)
 		server.SetServerHandlers(api.NewServerHandlers(serverProvider, a.logger))
 		a.logger.Debug("server API handlers registered")
 
@@ -741,6 +730,8 @@ func (a *Application) initializeAPIServer() error {
 		regionProvider := api.NewConfigRegionProvider(a.config, a.backendRegistry, a.logger)
 		if a.overwatchStore != nil {
 			regionProvider.SetStore(a.overwatchStore)
+		} else {
+			regionProvider.SetStoreUnavailable(a.storeUnavailable)
 		}
 		server.SetRegionHandlers(api.NewRegionHandlers(regionProvider, a.logger))
 		a.logger.Debug("region API handlers registered")
@@ -773,6 +764,11 @@ func (a *Application) initializeAPIServer() error {
 
 		// Config handlers - provides system configuration
 		configProvider := api.NewConfigBasedConfigProvider(a.config, a.logger)
+		dataDir := ""
+		if a.overwatchStore != nil {
+			dataDir = a.overwatchDataDir()
+		}
+		configProvider.SetNodeInfo(a.startTime, dataDir)
 		server.SetConfigHandlers(api.NewConfigHandlers(configProvider, a.logger))
 		a.logger.Debug("config API handlers registered")
 

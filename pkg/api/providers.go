@@ -12,13 +12,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"os"
 	"runtime"
+	"runtime/debug"
 	"time"
 
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/health"
 	"github.com/loganrossus/OpenGSLB/pkg/overwatch"
 	"github.com/loganrossus/OpenGSLB/pkg/store"
+	"github.com/loganrossus/OpenGSLB/pkg/version"
 )
 
 // Common errors for providers.
@@ -59,9 +63,13 @@ type RegistryDomainProvider struct {
 	registry      RegistryInterface
 	config        *config.Config
 	store         store.Store
+	persistence   persistence
 	logger        *slog.Logger
 	dnsRegistry   DNSRegistryInterface
 	routerFactory func(string) (interface{}, error)
+	// servers owns the servers of every domain. The backends of a domain are
+	// the servers whose service is the domain name.
+	servers *RegistryServerProvider
 }
 
 // NewRegistryDomainProvider creates a new RegistryDomainProvider.
@@ -79,6 +87,38 @@ func NewRegistryDomainProvider(registry RegistryInterface, cfg *config.Config, l
 // SetStore sets the store for persistence operations.
 func (p *RegistryDomainProvider) SetStore(s store.Store) {
 	p.store = s
+}
+
+// SetStoreUnavailable records why there is no store. The reason is part of
+// the 503 that answers every write while the provider has no store.
+func (p *RegistryDomainProvider) SetStoreUnavailable(reason string) {
+	p.persistence.unavailable = reason
+}
+
+// SetServerProvider sets the provider that owns the servers. The backends of
+// a domain are read from it and written through it, so a backend added to a
+// domain and a server registered for that domain are the same object.
+func (p *RegistryDomainProvider) SetServerProvider(servers *RegistryServerProvider) {
+	p.servers = servers
+}
+
+// HasDomain reports whether name is a domain of the configuration file or a
+// domain created through the API. A service that only has backends (for
+// example from an agent) and no domain is not one: it is not served in DNS.
+func (p *RegistryDomainProvider) HasDomain(name string) bool {
+	if p.config != nil {
+		for _, d := range p.config.Domains {
+			if d.Name == name {
+				return true
+			}
+		}
+	}
+	if p.store != nil {
+		if _, err := p.store.Get(context.Background(), store.PrefixDomains+name); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // SetDNSRegistry sets the DNS registry for dynamic domain registration.
@@ -134,12 +174,14 @@ func (p *RegistryDomainProvider) LoadStoredDomainsIntoDNS() error {
 			continue
 		}
 
+		domain.normalizeRouting()
+
 		// Register domain with DNS registry
 		ttl := uint32(domain.TTL)
 		if ttl == 0 {
 			ttl = uint32(config.DefaultTTL)
 		}
-		algorithm := domain.RoutingPolicy
+		algorithm := domain.RoutingAlgorithm
 		if algorithm == "" {
 			algorithm = config.DefaultRoutingAlgorithm
 		}
@@ -153,27 +195,15 @@ func (p *RegistryDomainProvider) LoadStoredDomainsIntoDNS() error {
 		}
 		loadedDomains++
 
-		// Load backends for this domain
-		backendPrefix := store.PrefixDomainBackends + domain.Name + "/"
-		backendPairs, err := p.store.List(context.Background(), backendPrefix)
-		if err != nil {
-			p.logger.Warn("failed to list backends for stored domain",
-				"domain", domain.Name,
-				"error", err,
-			)
-			continue
-		}
-
-		for _, bp := range backendPairs {
-			var backend DomainBackend
-			if err := json.Unmarshal(bp.Value, &backend); err != nil {
-				p.logger.Warn("failed to unmarshal stored backend",
-					"key", bp.Key,
-					"error", err,
-				)
+		// The servers of the domain live in the backend registry, which keeps
+		// them in the store under backends/. Servers that are in the registry
+		// already (this function may run again after a reload) are put back
+		// into the new DNS entry; the rest follow when the registry loads its
+		// store and reports each one. A disabled server is not answered.
+		for _, backend := range p.registry.GetBackends(domain.Name) {
+			if backend.Source == overwatch.SourceStatic || backend.Disabled {
 				continue
 			}
-
 			if err := p.dnsRegistry.RegisterServer(
 				domain.Name,
 				backend.Address,
@@ -181,9 +211,10 @@ func (p *RegistryDomainProvider) LoadStoredDomainsIntoDNS() error {
 				backend.Weight,
 				backend.Region,
 			); err != nil {
-				p.logger.Warn("failed to register stored backend with DNS",
+				p.logger.Warn("failed to register server of stored domain with DNS",
 					"domain", domain.Name,
-					"backend", backend.ID,
+					"address", backend.Address,
+					"port", backend.Port,
 					"error", err,
 				)
 				continue
@@ -229,13 +260,14 @@ func (p *RegistryDomainProvider) ListDomains() []Domain {
 			}
 
 			domainMap[d.Name] = Domain{
-				ID:              d.Name,
-				Name:            d.Name,
-				TTL:             ttl,
-				RoutingPolicy:   routingPolicy,
-				Enabled:         true,
-				BackendCount:    backendCount,
-				HealthyBackends: backendCount, // Assume healthy until checked
+				ID:               d.Name,
+				Name:             d.Name,
+				TTL:              ttl,
+				RoutingAlgorithm: routingPolicy,
+				RoutingPolicy:    routingPolicy,
+				Enabled:          true,
+				BackendCount:     backendCount,
+				HealthyBackends:  backendCount, // Assume healthy until checked
 			}
 		}
 	}
@@ -247,6 +279,7 @@ func (p *RegistryDomainProvider) ListDomains() []Domain {
 			for _, pair := range pairs {
 				var domain Domain
 				if err := json.Unmarshal(pair.Value, &domain); err == nil {
+					domain.normalizeRouting()
 					// Store domains override config domains
 					domainMap[domain.Name] = domain
 				}
@@ -277,13 +310,14 @@ func (p *RegistryDomainProvider) ListDomains() []Domain {
 			domainMap[service] = existing
 		} else {
 			domainMap[service] = Domain{
-				ID:              service,
-				Name:            service,
-				TTL:             config.DefaultTTL,
-				RoutingPolicy:   config.DefaultRoutingAlgorithm,
-				Enabled:         true,
-				BackendCount:    len(serviceBackends),
-				HealthyBackends: healthyCount,
+				ID:               service,
+				Name:             service,
+				TTL:              config.DefaultTTL,
+				RoutingAlgorithm: config.DefaultRoutingAlgorithm,
+				RoutingPolicy:    config.DefaultRoutingAlgorithm,
+				Enabled:          true,
+				BackendCount:     len(serviceBackends),
+				HealthyBackends:  healthyCount,
 			}
 		}
 	}
@@ -305,6 +339,7 @@ func (p *RegistryDomainProvider) GetDomain(name string) (*Domain, error) {
 		if err == nil {
 			var domain Domain
 			if err := json.Unmarshal(data, &domain); err == nil {
+				domain.normalizeRouting()
 				// Update with backend health info from registry
 				backends := p.registry.GetBackends(name)
 				if len(backends) > 0 {
@@ -360,13 +395,14 @@ func (p *RegistryDomainProvider) GetDomain(name string) (*Domain, error) {
 				}
 
 				return &Domain{
-					ID:              name,
-					Name:            name,
-					TTL:             ttl,
-					RoutingPolicy:   routingPolicy,
-					Enabled:         true,
-					BackendCount:    backendCount,
-					HealthyBackends: healthyCount,
+					ID:               name,
+					Name:             name,
+					TTL:              ttl,
+					RoutingAlgorithm: routingPolicy,
+					RoutingPolicy:    routingPolicy,
+					Enabled:          true,
+					BackendCount:     backendCount,
+					HealthyBackends:  healthyCount,
 				}, nil
 			}
 		}
@@ -386,27 +422,28 @@ func (p *RegistryDomainProvider) GetDomain(name string) (*Domain, error) {
 	}
 
 	return &Domain{
-		ID:              name,
-		Name:            name,
-		TTL:             config.DefaultTTL,
-		RoutingPolicy:   config.DefaultRoutingAlgorithm,
-		Enabled:         true,
-		BackendCount:    len(backends),
-		HealthyBackends: healthyCount,
+		ID:               name,
+		Name:             name,
+		TTL:              config.DefaultTTL,
+		RoutingAlgorithm: config.DefaultRoutingAlgorithm,
+		RoutingPolicy:    config.DefaultRoutingAlgorithm,
+		Enabled:          true,
+		BackendCount:     len(backends),
+		HealthyBackends:  healthyCount,
 	}, nil
 }
 
 // CreateDomain creates a new domain.
 func (p *RegistryDomainProvider) CreateDomain(domain Domain) error {
 	if p.store == nil {
-		return ErrNotImplemented
+		return p.persistence.errNoStore()
 	}
 
 	// Check if domain already exists in config
 	if p.config != nil {
 		for _, d := range p.config.Domains {
 			if d.Name == domain.Name {
-				return fmt.Errorf("domain %q already exists in config", domain.Name)
+				return errConflict("domain %q already exists in the configuration file", domain.Name)
 			}
 		}
 	}
@@ -415,7 +452,7 @@ func (p *RegistryDomainProvider) CreateDomain(domain Domain) error {
 	key := store.PrefixDomains + domain.Name
 	_, err := p.store.Get(context.Background(), key)
 	if err == nil {
-		return fmt.Errorf("domain %q already exists", domain.Name)
+		return errConflict("domain %q already exists", domain.Name)
 	}
 
 	// Set ID and timestamps
@@ -430,8 +467,18 @@ func (p *RegistryDomainProvider) CreateDomain(domain Domain) error {
 	if domain.TTL == 0 {
 		domain.TTL = config.DefaultTTL
 	}
-	if domain.RoutingPolicy == "" {
-		domain.RoutingPolicy = config.DefaultRoutingAlgorithm
+	domain.normalizeRouting()
+	if domain.RoutingAlgorithm == "" {
+		domain.RoutingAlgorithm = config.DefaultRoutingAlgorithm
+		domain.RoutingPolicy = domain.RoutingAlgorithm
+	}
+
+	// An algorithm the router factory cannot build must not be stored: the
+	// domain would exist in the API and never be served.
+	if p.routerFactory != nil {
+		if _, err := p.routerFactory(domain.RoutingAlgorithm); err != nil {
+			return errInvalid("routing_algorithm %q cannot be used: %v", domain.RoutingAlgorithm, err)
+		}
 	}
 
 	// Serialize and store
@@ -449,7 +496,7 @@ func (p *RegistryDomainProvider) CreateDomain(domain Domain) error {
 		if err := p.dnsRegistry.RegisterDomainDynamic(
 			domain.Name,
 			uint32(domain.TTL),
-			domain.RoutingPolicy,
+			domain.RoutingAlgorithm,
 			p.routerFactory,
 		); err != nil {
 			// Log the error but don't fail the domain creation
@@ -470,23 +517,23 @@ func (p *RegistryDomainProvider) CreateDomain(domain Domain) error {
 // UpdateDomain updates an existing domain.
 func (p *RegistryDomainProvider) UpdateDomain(name string, domain Domain) error {
 	if p.store == nil {
-		return ErrNotImplemented
+		return p.persistence.errNoStore()
 	}
 
 	// Check if domain exists in store
 	key := store.PrefixDomains + name
 	existingData, err := p.store.Get(context.Background(), key)
 	if err != nil {
-		// Domain might exist in config but not in store - create store entry
+		// Domain might exist in config but not in store
 		if p.config != nil {
 			for _, d := range p.config.Domains {
 				if d.Name == name {
 					// Can't update config-based domains
-					return fmt.Errorf("cannot update config-based domain %q via API; use config file", name)
+					return errConflict("domain %q is defined in the configuration file and cannot be changed through the API; change the file and reload", name)
 				}
 			}
 		}
-		return fmt.Errorf("domain %q not found", name)
+		return errMissing("domain %q not found", name)
 	}
 
 	// Preserve creation timestamp
@@ -498,6 +545,24 @@ func (p *RegistryDomainProvider) UpdateDomain(name string, domain Domain) error 
 	domain.Name = name // Ensure name matches
 	if domain.ID == "" {
 		domain.ID = name
+	}
+	domain.normalizeRouting()
+	// The counts are computed on read, not stored.
+	domain.BackendCount = 0
+	domain.HealthyBackends = 0
+
+	ttl := uint32(domain.TTL)
+	if ttl == 0 {
+		ttl = uint32(config.DefaultTTL)
+	}
+	algorithm := domain.RoutingAlgorithm
+	if algorithm == "" {
+		algorithm = config.DefaultRoutingAlgorithm
+	}
+	if p.routerFactory != nil {
+		if _, err := p.routerFactory(algorithm); err != nil {
+			return errInvalid("routing_algorithm %q cannot be used: %v", algorithm, err)
+		}
 	}
 
 	// Serialize and store
@@ -512,15 +577,6 @@ func (p *RegistryDomainProvider) UpdateDomain(name string, domain Domain) error 
 
 	// Update DNS registry if available
 	if p.dnsRegistry != nil && p.routerFactory != nil {
-		ttl := uint32(domain.TTL)
-		if ttl == 0 {
-			ttl = uint32(config.DefaultTTL)
-		}
-		algorithm := domain.RoutingPolicy
-		if algorithm == "" {
-			algorithm = config.DefaultRoutingAlgorithm
-		}
-
 		if err := p.dnsRegistry.UpdateDomainSettings(name, ttl, algorithm, p.routerFactory); err != nil {
 			// Log but don't fail - store is already updated
 			p.logger.Warn("failed to update domain in DNS registry",
@@ -540,17 +596,18 @@ func (p *RegistryDomainProvider) UpdateDomain(name string, domain Domain) error 
 	return nil
 }
 
-// DeleteDomain deletes a domain by name.
+// DeleteDomain deletes a domain by name, together with the servers that were
+// created for it through the API.
 func (p *RegistryDomainProvider) DeleteDomain(name string) error {
 	if p.store == nil {
-		return ErrNotImplemented
+		return p.persistence.errNoStore()
 	}
 
 	// Check if domain exists in config
 	if p.config != nil {
 		for _, d := range p.config.Domains {
 			if d.Name == name {
-				return fmt.Errorf("cannot delete config-based domain %q via API; use config file", name)
+				return errConflict("domain %q is defined in the configuration file and cannot be deleted through the API; remove it from the file and reload", name)
 			}
 		}
 	}
@@ -559,10 +616,17 @@ func (p *RegistryDomainProvider) DeleteDomain(name string) error {
 	key := store.PrefixDomains + name
 	_, err := p.store.Get(context.Background(), key)
 	if err != nil {
-		return fmt.Errorf("domain %q not found", name)
+		return errMissing("domain %q not found", name)
 	}
 
-	// Delete associated backends first
+	// Delete the servers created for the domain through the API first. While
+	// the domain is still in the DNS registry each one is also taken out of
+	// its DNS entry.
+	if p.servers != nil {
+		p.servers.deleteAPIServersOf(name)
+	}
+	// Records in the layout of version 1.1.10 and earlier. They are migrated
+	// at startup, so this finds nothing unless the migration failed.
 	backendPrefix := store.PrefixDomainBackends + name + "/"
 	backends, _ := p.store.List(context.Background(), backendPrefix)
 	for _, b := range backends {
@@ -584,530 +648,43 @@ func (p *RegistryDomainProvider) DeleteDomain(name string) error {
 	return nil
 }
 
-// GetDomainBackends returns the backends for a domain.
-func (p *RegistryDomainProvider) GetDomainBackends(name string) ([]DomainBackend, error) {
-	result := make([]DomainBackend, 0)
-
-	// First check config for static backends
-	if p.config != nil {
-		for _, d := range p.config.Domains {
-			if d.Name == name {
-				// Find backends from associated regions
-				for _, regionName := range d.Regions {
-					for _, r := range p.config.Regions {
-						if r.Name == regionName {
-							for _, s := range r.Servers {
-								result = append(result, DomainBackend{
-									ID:      fmt.Sprintf("%s:%s:%d", name, s.Address, s.Port),
-									Address: s.Address,
-									Port:    s.Port,
-									Weight:  s.Weight,
-									Region:  regionName,
-									Healthy: true, // Assume healthy until checked
-									Enabled: true,
-								})
-							}
-						}
-					}
-				}
-				break
-			}
+// GetDomainBackends returns the servers of a domain. A domain that exists and
+// has no servers returns an empty list.
+func (p *RegistryDomainProvider) GetDomainBackends(name string) ([]BackendServer, error) {
+	if p.servers == nil {
+		return nil, &Error{Status: http.StatusServiceUnavailable, Message: "server provider not configured"}
+	}
+	servers := p.servers.listByService(name)
+	if len(servers) == 0 {
+		// No servers: the answer is an empty list when the domain exists and
+		// 404 when it does not.
+		if _, err := p.GetDomain(name); err != nil {
+			return nil, errMissing("domain %q not found", name)
 		}
 	}
-
-	// Add backends from store (API-created)
-	if p.store != nil {
-		backendPrefix := store.PrefixDomainBackends + name + "/"
-		pairs, err := p.store.List(context.Background(), backendPrefix)
-		if err == nil {
-			for _, pair := range pairs {
-				var backend DomainBackend
-				if err := json.Unmarshal(pair.Value, &backend); err == nil {
-					// Check if already in result (from config)
-					found := false
-					for _, existing := range result {
-						if existing.ID == backend.ID {
-							found = true
-							break
-						}
-					}
-					if !found {
-						result = append(result, backend)
-					}
-				}
-			}
-		}
-	}
-
-	// Add/update with dynamic registry data
-	backends := p.registry.GetBackends(name)
-	for _, b := range backends {
-		found := false
-		for i, existing := range result {
-			if existing.Address == b.Address && existing.Port == b.Port {
-				// Update with dynamic health info
-				result[i].Healthy = b.EffectiveStatus == overwatch.StatusHealthy
-				result[i].LastCheck = b.ValidationLastCheck
-				found = true
-				break
-			}
-		}
-		if !found {
-			result = append(result, DomainBackend{
-				ID:        fmt.Sprintf("%s:%s:%d", b.Service, b.Address, b.Port),
-				Address:   b.Address,
-				Port:      b.Port,
-				Weight:    b.Weight,
-				Region:    b.Region,
-				Healthy:   b.EffectiveStatus == overwatch.StatusHealthy,
-				Enabled:   true,
-				LastCheck: b.ValidationLastCheck,
-			})
-		}
-	}
-
-	if len(result) == 0 {
-		return nil, ErrNotFound
-	}
-
-	return result, nil
+	return servers, nil
 }
 
-// AddDomainBackend adds a backend to a domain.
-func (p *RegistryDomainProvider) AddDomainBackend(domainName string, backend DomainBackend) error {
-	if p.store == nil {
-		return ErrNotImplemented
+// AddDomainBackend creates a server for a domain.
+func (p *RegistryDomainProvider) AddDomainBackend(domainName string, spec ServerSpec) (*BackendServer, error) {
+	if p.servers == nil {
+		return nil, &Error{Status: http.StatusServiceUnavailable, Message: "server provider not configured"}
 	}
-
-	// Check if domain exists
-	_, err := p.GetDomain(domainName)
-	if err != nil {
-		return fmt.Errorf("domain %q not found", domainName)
-	}
-
-	// Generate backend ID if not provided
-	if backend.ID == "" {
-		backend.ID = fmt.Sprintf("%s:%s:%d", domainName, backend.Address, backend.Port)
-	}
-
-	// Set default weight if not provided
-	if backend.Weight == 0 {
-		backend.Weight = 1
-	}
-
-	// Check if backend already exists
-	key := store.PrefixDomainBackends + domainName + "/" + backend.ID
-	_, err = p.store.Get(context.Background(), key)
-	if err == nil {
-		return fmt.Errorf("backend %q already exists for domain %q", backend.ID, domainName)
-	}
-
-	// Store the backend
-	data, err := json.Marshal(backend)
-	if err != nil {
-		return fmt.Errorf("failed to marshal backend: %w", err)
-	}
-
-	if err := p.store.Set(context.Background(), key, data); err != nil {
-		return fmt.Errorf("failed to store backend: %w", err)
-	}
-
-	// Register with DNS registry if available
-	if p.dnsRegistry != nil {
-		if err := p.dnsRegistry.RegisterServer(
-			domainName,
-			backend.Address,
-			backend.Port,
-			backend.Weight,
-			backend.Region,
-		); err != nil {
-			// Log the error but don't fail the backend addition
-			// The backend is persisted and will be available after restart
-			p.logger.Warn("failed to register backend with DNS server",
-				"domain", domainName,
-				"backend", backend.ID,
-				"error", err,
-			)
-		} else {
-			p.logger.Info("backend registered with DNS server",
-				"domain", domainName,
-				"backend", backend.ID,
-			)
-		}
-	}
-
-	p.logger.Info("backend added to domain via API", "domain", domainName, "backend", backend.ID)
-	return nil
+	spec.Service = domainName
+	return p.servers.CreateServer(spec)
 }
 
-// RemoveDomainBackend removes a backend from a domain.
+// RemoveDomainBackend deletes a server of a domain. backendID is the server
+// ID, "{domain}:{address}:{port}".
 func (p *RegistryDomainProvider) RemoveDomainBackend(domainName string, backendID string) error {
-	if p.store == nil {
-		return ErrNotImplemented
+	if p.servers == nil {
+		return &Error{Status: http.StatusServiceUnavailable, Message: "server provider not configured"}
 	}
-
-	// Check if backend exists in store
-	key := store.PrefixDomainBackends + domainName + "/" + backendID
-	backendData, err := p.store.Get(context.Background(), key)
-	if err != nil {
-		// Check if it's a config-based backend
-		if p.config != nil {
-			for _, d := range p.config.Domains {
-				if d.Name == domainName {
-					for _, regionName := range d.Regions {
-						for _, r := range p.config.Regions {
-							if r.Name == regionName {
-								for _, s := range r.Servers {
-									configID := fmt.Sprintf("%s:%s:%d", domainName, s.Address, s.Port)
-									if configID == backendID {
-										return fmt.Errorf("cannot remove config-based backend %q via API; use config file", backendID)
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-		return fmt.Errorf("backend %q not found for domain %q", backendID, domainName)
+	service, _, _, err := parseServerID(backendID)
+	if err != nil || service != domainName {
+		return errMissing("backend %q not found for domain %q", backendID, domainName)
 	}
-
-	// Parse backend data to get address and port for DNS deregistration
-	var backend DomainBackend
-	if err := json.Unmarshal(backendData, &backend); err != nil {
-		p.logger.Warn("failed to parse backend data for DNS deregistration",
-			"domain", domainName,
-			"backend", backendID,
-			"error", err,
-		)
-	}
-
-	// Delete the backend
-	if err := p.store.Delete(context.Background(), key); err != nil {
-		return fmt.Errorf("failed to delete backend: %w", err)
-	}
-
-	// Deregister from DNS registry if available
-	if p.dnsRegistry != nil && backend.Address != "" && backend.Port > 0 {
-		if err := p.dnsRegistry.DeregisterServer(domainName, backend.Address, backend.Port); err != nil {
-			// Log the error but don't fail the backend removal
-			p.logger.Warn("failed to deregister backend from DNS server",
-				"domain", domainName,
-				"backend", backendID,
-				"error", err,
-			)
-		} else {
-			p.logger.Info("backend deregistered from DNS server",
-				"domain", domainName,
-				"backend", backendID,
-			)
-		}
-	}
-
-	p.logger.Info("backend removed from domain via API", "domain", domainName, "backend", backendID)
-	return nil
-}
-
-// RegistryServerProvider implements BackendServerProvider using the backend registry.
-type RegistryServerProvider struct {
-	registry RegistryInterface
-	config   *config.Config
-	store    store.Store
-	logger   *slog.Logger
-}
-
-// NewRegistryServerProvider creates a new RegistryServerProvider.
-func NewRegistryServerProvider(registry RegistryInterface, cfg *config.Config, logger *slog.Logger) *RegistryServerProvider {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &RegistryServerProvider{
-		registry: registry,
-		config:   cfg,
-		logger:   logger,
-	}
-}
-
-// SetStore sets the store for persistence operations.
-func (p *RegistryServerProvider) SetStore(s store.Store) {
-	p.store = s
-}
-
-// ListServers returns all configured backend servers.
-func (p *RegistryServerProvider) ListServers() []BackendServer {
-	serverMap := make(map[string]BackendServer)
-
-	// Add servers from config
-	if p.config != nil {
-		for _, r := range p.config.Regions {
-			for _, s := range r.Servers {
-				id := fmt.Sprintf("%s:%d", s.Address, s.Port)
-				serverMap[id] = BackendServer{
-					ID:       id,
-					Name:     fmt.Sprintf("%s-%s", r.Name, s.Address),
-					Address:  s.Address,
-					Port:     s.Port,
-					Protocol: "tcp",
-					Weight:   s.Weight,
-					Region:   r.Name,
-					Enabled:  true,
-					Healthy:  true, // Assume healthy until checked
-				}
-			}
-		}
-	}
-
-	// Add servers from store (API-created)
-	if p.store != nil {
-		pairs, err := p.store.List(context.Background(), store.PrefixServers)
-		if err == nil {
-			for _, pair := range pairs {
-				var server BackendServer
-				if err := json.Unmarshal(pair.Value, &server); err == nil {
-					// Store servers override config servers
-					serverMap[server.ID] = server
-				}
-			}
-		}
-	}
-
-	// Add/update with dynamic registry data
-	backends := p.registry.GetAllBackends()
-	for _, b := range backends {
-		id := fmt.Sprintf("%s:%d", b.Address, b.Port)
-		serverMap[id] = p.backendToServer(b)
-	}
-
-	servers := make([]BackendServer, 0, len(serverMap))
-	for _, s := range serverMap {
-		servers = append(servers, s)
-	}
-
-	return servers
-}
-
-// GetServer returns a server by ID.
-func (p *RegistryServerProvider) GetServer(id string) (*BackendServer, error) {
-	// Check store first for API-created servers
-	if p.store != nil {
-		key := store.PrefixServers + id
-		data, err := p.store.Get(context.Background(), key)
-		if err == nil {
-			var server BackendServer
-			if err := json.Unmarshal(data, &server); err == nil {
-				return &server, nil
-			}
-		}
-	}
-
-	// Check config
-	if p.config != nil {
-		for _, r := range p.config.Regions {
-			for _, s := range r.Servers {
-				configID := fmt.Sprintf("%s:%d", s.Address, s.Port)
-				if configID == id {
-					return &BackendServer{
-						ID:       id,
-						Name:     fmt.Sprintf("%s-%s", r.Name, s.Address),
-						Address:  s.Address,
-						Port:     s.Port,
-						Protocol: "tcp",
-						Weight:   s.Weight,
-						Region:   r.Name,
-						Enabled:  true,
-						Healthy:  true,
-					}, nil
-				}
-			}
-		}
-	}
-
-	// Check registry
-	backends := p.registry.GetAllBackends()
-	for _, b := range backends {
-		serverID := fmt.Sprintf("%s:%s:%d", b.Service, b.Address, b.Port)
-		if serverID == id {
-			server := p.backendToServer(b)
-			return &server, nil
-		}
-	}
-
-	return nil, ErrNotFound
-}
-
-// CreateServer creates a new server.
-func (p *RegistryServerProvider) CreateServer(server BackendServer) error {
-	if p.store == nil {
-		return ErrNotImplemented
-	}
-
-	// Generate ID if not provided
-	if server.ID == "" {
-		server.ID = fmt.Sprintf("%s:%d", server.Address, server.Port)
-	}
-
-	// Check if server already exists in config
-	if p.config != nil {
-		for _, r := range p.config.Regions {
-			for _, s := range r.Servers {
-				configID := fmt.Sprintf("%s:%d", s.Address, s.Port)
-				if configID == server.ID {
-					return fmt.Errorf("server %q already exists in config", server.ID)
-				}
-			}
-		}
-	}
-
-	// Check if server already exists in store
-	key := store.PrefixServers + server.ID
-	_, err := p.store.Get(context.Background(), key)
-	if err == nil {
-		return fmt.Errorf("server %q already exists", server.ID)
-	}
-
-	// Set timestamps
-	now := time.Now().UTC()
-	server.CreatedAt = now
-	server.UpdatedAt = now
-
-	// Serialize and store
-	data, err := json.Marshal(server)
-	if err != nil {
-		return fmt.Errorf("failed to marshal server: %w", err)
-	}
-
-	if err := p.store.Set(context.Background(), key, data); err != nil {
-		return fmt.Errorf("failed to store server: %w", err)
-	}
-
-	p.logger.Info("server created via API", "id", server.ID, "address", server.Address, "port", server.Port)
-	return nil
-}
-
-// UpdateServer updates an existing server.
-func (p *RegistryServerProvider) UpdateServer(id string, server BackendServer) error {
-	if p.store == nil {
-		return ErrNotImplemented
-	}
-
-	// Check if server exists in store
-	key := store.PrefixServers + id
-	existingData, err := p.store.Get(context.Background(), key)
-	if err != nil {
-		// Server might exist in config but not in store
-		if p.config != nil {
-			for _, r := range p.config.Regions {
-				for _, s := range r.Servers {
-					configID := fmt.Sprintf("%s:%d", s.Address, s.Port)
-					if configID == id {
-						return fmt.Errorf("cannot update config-based server %q via API; use config file", id)
-					}
-				}
-			}
-		}
-		return fmt.Errorf("server %q not found", id)
-	}
-
-	// Preserve creation timestamp
-	var existing BackendServer
-	if err := json.Unmarshal(existingData, &existing); err == nil {
-		server.CreatedAt = existing.CreatedAt
-	}
-	server.UpdatedAt = time.Now().UTC()
-	server.ID = id // Ensure ID matches
-
-	// Serialize and store
-	data, err := json.Marshal(server)
-	if err != nil {
-		return fmt.Errorf("failed to marshal server: %w", err)
-	}
-
-	if err := p.store.Set(context.Background(), key, data); err != nil {
-		return fmt.Errorf("failed to update server: %w", err)
-	}
-
-	p.logger.Info("server updated via API", "id", id)
-	return nil
-}
-
-// DeleteServer deletes a server by ID.
-func (p *RegistryServerProvider) DeleteServer(id string) error {
-	if p.store == nil {
-		return ErrNotImplemented
-	}
-
-	// Check if server exists in config
-	if p.config != nil {
-		for _, r := range p.config.Regions {
-			for _, s := range r.Servers {
-				configID := fmt.Sprintf("%s:%d", s.Address, s.Port)
-				if configID == id {
-					return fmt.Errorf("cannot delete config-based server %q via API; use config file", id)
-				}
-			}
-		}
-	}
-
-	// Check if server exists in store
-	key := store.PrefixServers + id
-	_, err := p.store.Get(context.Background(), key)
-	if err != nil {
-		return fmt.Errorf("server %q not found", id)
-	}
-
-	// Delete the server
-	if err := p.store.Delete(context.Background(), key); err != nil {
-		return fmt.Errorf("failed to delete server: %w", err)
-	}
-
-	p.logger.Info("server deleted via API", "id", id)
-	return nil
-}
-
-// GetServerHealthCheck returns the health check configuration for a server.
-func (p *RegistryServerProvider) GetServerHealthCheck(id string) (*ServerHealthCheck, error) {
-	_, err := p.GetServer(id)
-	if err != nil {
-		return nil, err
-	}
-
-	// Return default health check config
-	return &ServerHealthCheck{
-		Enabled:            true,
-		Type:               config.DefaultHealthCheckType,
-		Path:               config.DefaultHealthPath,
-		Interval:           config.DefaultHealthInterval,
-		Timeout:            config.DefaultHealthTimeout,
-		HealthyThreshold:   config.DefaultSuccessThreshold,
-		UnhealthyThreshold: config.DefaultFailureThreshold,
-	}, nil
-}
-
-// UpdateServerHealthCheck updates the health check configuration for a server.
-func (p *RegistryServerProvider) UpdateServerHealthCheck(_ string, _ ServerHealthCheck) error {
-	return ErrNotImplemented
-}
-
-func (p *RegistryServerProvider) backendToServer(b *overwatch.Backend) BackendServer {
-	lastCheck := b.ValidationLastCheck
-	healthy := b.EffectiveStatus == overwatch.StatusHealthy
-
-	return BackendServer{
-		ID:       fmt.Sprintf("%s:%s:%d", b.Service, b.Address, b.Port),
-		Name:     fmt.Sprintf("%s-%s", b.Service, b.Address),
-		Address:  b.Address,
-		Port:     b.Port,
-		Protocol: "http",
-		Weight:   b.Weight,
-		Region:   b.Region,
-		Enabled:  true,
-		Healthy:  healthy,
-		Status: &ServerStatus{
-			Healthy:   healthy,
-			LastCheck: &lastCheck,
-			LastError: b.ValidationError,
-		},
-	}
+	return p.servers.DeleteServer(backendID)
 }
 
 // =============================================================================
@@ -1116,10 +693,11 @@ func (p *RegistryServerProvider) backendToServer(b *overwatch.Backend) BackendSe
 
 // ConfigRegionProvider implements RegionProvider using configuration.
 type ConfigRegionProvider struct {
-	config   *config.Config
-	registry RegistryInterface
-	store    store.Store
-	logger   *slog.Logger
+	config      *config.Config
+	registry    RegistryInterface
+	store       store.Store
+	persistence persistence
+	logger      *slog.Logger
 }
 
 // NewConfigRegionProvider creates a new ConfigRegionProvider.
@@ -1137,6 +715,12 @@ func NewConfigRegionProvider(cfg *config.Config, registry RegistryInterface, log
 // SetStore sets the store for persistence operations.
 func (p *ConfigRegionProvider) SetStore(s store.Store) {
 	p.store = s
+}
+
+// SetStoreUnavailable records why there is no store. The reason is part of
+// the 503 that answers every write while the provider has no store.
+func (p *ConfigRegionProvider) SetStoreUnavailable(reason string) {
+	p.persistence.unavailable = reason
 }
 
 // ListRegions returns all configured regions.
@@ -1268,7 +852,7 @@ func (p *ConfigRegionProvider) GetRegion(id string) (*Region, error) {
 // CreateRegion creates a new region.
 func (p *ConfigRegionProvider) CreateRegion(region Region) error {
 	if p.store == nil {
-		return ErrNotImplemented
+		return p.persistence.errNoStore()
 	}
 
 	// Check if region already exists in config
@@ -1317,7 +901,7 @@ func (p *ConfigRegionProvider) CreateRegion(region Region) error {
 // UpdateRegion updates an existing region.
 func (p *ConfigRegionProvider) UpdateRegion(id string, region Region) error {
 	if p.store == nil {
-		return ErrNotImplemented
+		return p.persistence.errNoStore()
 	}
 
 	// Check if region exists in store
@@ -1363,7 +947,7 @@ func (p *ConfigRegionProvider) UpdateRegion(id string, region Region) error {
 // DeleteRegion deletes a region by ID.
 func (p *ConfigRegionProvider) DeleteRegion(id string) error {
 	if p.store == nil {
-		return ErrNotImplemented
+		return p.persistence.errNoStore()
 	}
 
 	// Check if region exists in config
@@ -1962,8 +1546,10 @@ func getCPUStats() CPUStats {
 
 // ConfigBasedConfigProvider implements ConfigProvider using application config.
 type ConfigBasedConfigProvider struct {
-	config *config.Config
-	logger *slog.Logger
+	config    *config.Config
+	logger    *slog.Logger
+	startTime time.Time
+	dataDir   string
 }
 
 // NewConfigBasedConfigProvider creates a new ConfigBasedConfigProvider.
@@ -1992,12 +1578,56 @@ func (p *ConfigBasedConfigProvider) UpdatePreferences(_ Preferences) error {
 	return ErrNotImplemented
 }
 
-// GetSystemConfig returns the system configuration.
+// SetNodeInfo sets what the configuration does not hold: when the process
+// started and the directory of the persistent store. dataDir is empty when
+// the node runs without persistence.
+func (p *ConfigBasedConfigProvider) SetNodeInfo(startTime time.Time, dataDir string) {
+	p.startTime = startTime
+	p.dataDir = dataDir
+}
+
+// GetSystemConfig returns the identity of the node and the build it runs.
 func (p *ConfigBasedConfigProvider) GetSystemConfig() (*SystemConfig, error) {
-	return &SystemConfig{
-		Mode:    string(p.config.GetEffectiveMode()),
-		Version: "1.0.0",
-	}, nil
+	sys := &SystemConfig{
+		Version: version.GetVersion(),
+		BuildInfo: BuildInfo{
+			Version:   version.GetVersion(),
+			GitCommit: vcsRevision(),
+			GoVersion: runtime.Version(),
+		},
+		Mode:      string(p.config.GetEffectiveMode()),
+		StartTime: p.startTime.UTC(),
+		DataDir:   p.dataDir,
+	}
+	if p.config.GetEffectiveMode() == config.ModeAgent {
+		sys.Region = p.config.Agent.Identity.Region
+	} else {
+		sys.NodeID = p.config.Overwatch.Identity.NodeID
+		sys.Region = p.config.Overwatch.Identity.Region
+	}
+	if sys.NodeID == "" {
+		// overwatch.identity.node_id defaults to the host name.
+		if host, err := os.Hostname(); err == nil {
+			sys.NodeID = host
+		}
+	}
+	sys.NodeName = sys.NodeID
+	return sys, nil
+}
+
+// vcsRevision returns the commit the binary was built from, when the Go
+// toolchain recorded it (a build from a git checkout), and "" otherwise.
+func vcsRevision() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" {
+			return setting.Value
+		}
+	}
+	return ""
 }
 
 // GetDNSConfig returns DNS-specific configuration.
