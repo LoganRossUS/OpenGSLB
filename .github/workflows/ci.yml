@@ -65,6 +65,74 @@ jobs:
       - name: Validate API responses against api/openapi.yaml
         run: go test -race -count=1 -run 'TestAPIContract' -v ./cmd/opengslb
 
+  # Starts the real DNS server in-process and asserts, for a table of queries,
+  # the response code, the AA flag and the answer and authority sections over
+  # UDP and TCP. The package also runs in the Test job; this job makes a DNS
+  # behavior change visible as its own check.
+  dns-conformance:
+    name: DNS Conformance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run the DNS conformance tests
+        run: go test -race -count=1 -v ./test/conformance/...
+
+  # Fuzzes the code that parses input from the network for 60 seconds per
+  # target. The seed corpora already run in the Test job; this job looks for
+  # new failing inputs. go test accepts one -fuzz target per invocation.
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: ./pkg/dns/
+            target: FuzzHandlerServeDNS
+          - package: ./pkg/gossip/
+            target: FuzzReceiverNotifyMsg
+          - package: ./pkg/gossip/
+            target: FuzzReceiverNodeEvents
+          - package: ./pkg/overwatch/
+            target: FuzzGossipHandleMessage
+          - package: ./pkg/overwatch/
+            target: FuzzGossipPayloadRoundTrip
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Fuzz for 60 seconds
+        env:
+          FUZZ_PACKAGE: ${{ matrix.package }}
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: go test -run='^$' -fuzz="^${FUZZ_TARGET}\$" -fuzztime=60s "$FUZZ_PACKAGE"
+
+      # A failing input is written to <package>/testdata/fuzz/<Target>/.
+      # Commit it together with the fix so that it runs as a seed from then on.
+      - name: Upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-failure-${{ matrix.target }}
+          path: pkg/*/testdata/fuzz/
+          if-no-files-found: ignore
+
   # Runs the Overlord portal's contract tests against the overwatch built from
   # this pull request, so a Go or spec change that breaks Overlord fails here.
   # Overlord is a private repository: this job needs a repository secret
