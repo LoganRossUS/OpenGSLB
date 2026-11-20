@@ -1443,3 +1443,21 @@ func TestValidate_OverwatchValidationThresholdNegative(t *testing.T) {
 		t.Errorf("expected success_threshold error, got: %v", err)
 	}
 }
+
+func TestTTLSeconds(t *testing.T) {
+	for _, tc := range []struct {
+		in   int
+		want uint32
+	}{
+		{-1, 0},
+		{0, 0},
+		{30, 30},
+		{1<<31 - 1, 1<<31 - 1},
+		{1 << 31, 1<<31 - 1},
+		{1<<32 + 1, 1<<31 - 1}, // wrapped to 1 before
+	} {
+		if got := TTLSeconds(tc.in); got != tc.want {
+			t.Errorf("TTLSeconds(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}

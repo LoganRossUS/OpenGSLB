@@ -177,9 +177,9 @@ func (p *RegistryDomainProvider) LoadStoredDomainsIntoDNS() error {
 		domain.normalizeRouting()
 
 		// Register domain with DNS registry
-		ttl := uint32(domain.TTL)
+		ttl := config.TTLSeconds(domain.TTL)
 		if ttl == 0 {
-			ttl = uint32(config.DefaultTTL)
+			ttl = config.TTLSeconds(config.DefaultTTL)
 		}
 		algorithm := domain.RoutingAlgorithm
 		if algorithm == "" {
@@ -495,7 +495,7 @@ func (p *RegistryDomainProvider) CreateDomain(domain Domain) error {
 	if p.dnsRegistry != nil && p.routerFactory != nil {
 		if err := p.dnsRegistry.RegisterDomainDynamic(
 			domain.Name,
-			uint32(domain.TTL),
+			config.TTLSeconds(domain.TTL),
 			domain.RoutingAlgorithm,
 			p.routerFactory,
 		); err != nil {
@@ -551,9 +551,9 @@ func (p *RegistryDomainProvider) UpdateDomain(name string, domain Domain) error 
 	domain.BackendCount = 0
 	domain.HealthyBackends = 0
 
-	ttl := uint32(domain.TTL)
+	ttl := config.TTLSeconds(domain.TTL)
 	if ttl == 0 {
-		ttl = uint32(config.DefaultTTL)
+		ttl = config.TTLSeconds(config.DefaultTTL)
 	}
 	algorithm := domain.RoutingAlgorithm
 	if algorithm == "" {
@@ -1508,8 +1508,8 @@ func getMemoryStats() MemoryStats {
 	runtime.ReadMemStats(&m)
 
 	// Calculate used memory
-	used := int64(m.Alloc)
-	total := int64(m.Sys)
+	used := int64(m.Alloc) // #nosec G115 -- a process cannot hold 2^63 bytes of memory
+	total := int64(m.Sys)  // #nosec G115 -- as above
 	available := total - used
 
 	var percent float64

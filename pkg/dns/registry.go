@@ -95,9 +95,9 @@ func BuildRegistry(cfg *config.Config, routerFactory RouterFactory) (*Registry, 
 			}
 		}
 
-		ttl := uint32(domain.TTL)
+		ttl := config.TTLSeconds(domain.TTL)
 		if ttl == 0 {
-			ttl = uint32(cfg.DNS.DefaultTTL)
+			ttl = config.TTLSeconds(cfg.DNS.DefaultTTL)
 		}
 
 		entry := &DomainEntry{

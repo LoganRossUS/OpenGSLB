@@ -262,6 +262,20 @@ func (c *Config) validateDNS() error {
 // section 8: 2^31 - 1 seconds).
 const maxDNSSeconds = 1<<31 - 1
 
+// TTLSeconds converts a TTL held as an int, as configuration files and API
+// requests carry it, to the unsigned 32-bit value DNS records use. Values
+// outside the range of RFC 2181 section 8 are limited to it (a negative TTL
+// becomes 0, one above 2^31 - 1 becomes 2^31 - 1) instead of wrapping around.
+func TTLSeconds(seconds int) uint32 {
+	if seconds <= 0 {
+		return 0
+	}
+	if seconds > maxDNSSeconds {
+		return maxDNSSeconds
+	}
+	return uint32(seconds)
+}
+
 // validateZones validates dns.zones: names, SOA fields and NS sets.
 func (c *Config) validateZones() error {
 	seen := make(map[string]bool, len(c.DNS.Zones))

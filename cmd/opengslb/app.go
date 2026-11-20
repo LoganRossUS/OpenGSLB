@@ -598,7 +598,7 @@ func (a *Application) initializeDNSServer() error {
 		MaxUDPSize:     a.config.DNS.MaxUDPSize,
 		HealthProvider: healthProvider,
 		LeaderChecker:  nil, // Standalone mode - always serve
-		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
+		DefaultTTL:     config.TTLSeconds(a.config.DNS.DefaultTTL),
 		ECSEnabled:     a.config.Overwatch.Geolocation.ECSEnabled, // Demo 4: EDNS Client Subnet for GeoIP
 		Logger:         a.logger,
 
