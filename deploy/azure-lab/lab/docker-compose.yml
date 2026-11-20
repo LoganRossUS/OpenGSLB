@@ -1,0 +1,85 @@
+# OpenGSLB lab: two overwatches, one agent, seven web backends in three
+# regions, and the Overlord portal with its Postgres database.
+# Started by up.sh, which renders runtime/ and builds the images first.
+name: opengslb-lab
+
+x-backend: &backend
+  image: nginx:1.27-alpine
+  restart: unless-stopped
+  # Each backend serves one page that names itself, so DNS answers can be
+  # checked with curl.
+  command: ["/bin/sh", "-c", "printf 'Hello from %s (%s)\\n' \"$$NAME\" \"$$REGION\" > /usr/share/nginx/html/index.html && exec nginx -g 'daemon off;'"]
+
+x-opengslb: &opengslb
+  image: opengslb-lab:latest
+  restart: unless-stopped
+  # The binary refuses config files readable by "other", and the image runs
+  # as a non-root user: copy the mounted file to a 0600 file it owns.
+  entrypoint: ["/bin/sh", "-c", "umask 077 && cp /config-src/config.yaml /tmp/config.yaml && exec ./opengslb --config /tmp/config.yaml"]
+
+services:
+  overwatch-1:
+    <<: *opengslb
+    hostname: overwatch-1
+    volumes: ["./runtime/overwatch-1.yaml:/config-src/config.yaml:ro"]
+    networks: { gslb: { ipv4_address: 172.30.0.11 } }
+    ports: ["5353:5353/udp", "5353:5353/tcp"]
+
+  overwatch-2:
+    <<: *opengslb
+    hostname: overwatch-2
+    volumes: ["./runtime/overwatch-2.yaml:/config-src/config.yaml:ro"]
+    networks: { gslb: { ipv4_address: 172.30.0.12 } }
+    ports: ["5354:5353/udp", "5354:5353/tcp"]
+
+  agent-ap-1:
+    <<: *opengslb
+    hostname: agent-ap-1
+    volumes: ["./runtime/agent.yaml:/config-src/config.yaml:ro"]
+    networks: { gslb: { ipv4_address: 172.30.0.51 } }
+    depends_on: [overwatch-1, overwatch-2, web-ap-1]
+
+  web-us-east-1: { <<: *backend, environment: { NAME: web-us-east-1, REGION: us-east }, networks: { gslb: { ipv4_address: 172.30.0.21 } } }
+  web-us-east-2: { <<: *backend, environment: { NAME: web-us-east-2, REGION: us-east }, networks: { gslb: { ipv4_address: 172.30.0.22 } } }
+  web-us-east-3: { <<: *backend, environment: { NAME: web-us-east-3, REGION: us-east }, networks: { gslb: { ipv4_address: 172.30.0.23 } } }
+  web-eu-west-1: { <<: *backend, environment: { NAME: web-eu-west-1, REGION: eu-west }, networks: { gslb: { ipv4_address: 172.30.0.31 } } }
+  web-eu-west-2: { <<: *backend, environment: { NAME: web-eu-west-2, REGION: eu-west }, networks: { gslb: { ipv4_address: 172.30.0.32 } } }
+  web-eu-west-3: { <<: *backend, environment: { NAME: web-eu-west-3, REGION: eu-west }, networks: { gslb: { ipv4_address: 172.30.0.33 } } }
+  web-ap-1:      { <<: *backend, environment: { NAME: web-ap-1, REGION: ap-southeast }, networks: { gslb: { ipv4_address: 172.30.0.41 } } }
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: overlord
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?}
+      POSTGRES_DB: overlord
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    networks: [gslb]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U overlord -d overlord"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  overlord:
+    image: overlord-lab:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://overlord:${DB_PASSWORD:?}@postgres:5432/overlord
+      NODE_ENV: production
+      PORT: 3001
+      SESSION_SECRET: ${SESSION_SECRET:?}
+      NODE_POLL_INTERVAL: 15
+    ports: ["3001:3001"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: { gslb: { ipv4_address: 172.30.0.5 } }
+
+networks:
+  gslb:
+    ipam:
+      config: [{ subnet: 172.30.0.0/24 }]
+
+volumes:
+  pgdata:

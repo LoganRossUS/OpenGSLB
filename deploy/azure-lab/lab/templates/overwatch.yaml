@@ -1,0 +1,76 @@
+# Overwatch configuration for the OpenGSLB Azure lab.
+# up.sh renders this file once per overwatch, replacing the __PLACEHOLDERS__.
+mode: overwatch
+
+overwatch:
+  identity:
+    node_id: __NODE_ID__
+    region: __REGION__
+  # The image runs as a non-root user that cannot create the default
+  # /var/lib/opengslb; without a writable data_dir every API write fails.
+  # /tmp survives container restarts but not re-creation.
+  data_dir: /tmp/opengslb-data
+  agent_tokens:
+    ap.gslb.lab: "__AGENT_TOKEN__"
+  gossip:
+    bind_address: "0.0.0.0:7946"
+    encryption_key: "__GOSSIP_KEY__"
+  validation:
+    enabled: true
+    check_interval: 10s
+    check_timeout: 3s
+  dnssec:
+    enabled: false
+    security_acknowledgment: "I understand that disabling DNSSEC removes cryptographic authentication of DNS responses"
+
+dns:
+  listen_address: "0.0.0.0:5353"
+  default_ttl: 30
+  zones:
+    - gslb.lab
+
+api:
+  enabled: true
+  address: "0.0.0.0:8080"
+  # Overlord reaches the API over the lab's docker network.
+  allowed_networks:
+    - 127.0.0.0/8
+    - 172.30.0.0/24
+
+regions:
+  - name: us-east
+    countries: ["US", "CA"]
+    continents: ["NA"]
+    servers:
+      - { address: 172.30.0.21, port: 80, weight: 100, service: app.gslb.lab }
+      - { address: 172.30.0.22, port: 80, weight: 100, service: failover.gslb.lab }
+      - { address: 172.30.0.23, port: 80, weight: 300, service: weighted.gslb.lab }
+    health_check: { type: http, path: /, interval: 10s, timeout: 3s, failure_threshold: 2, success_threshold: 1 }
+  - name: eu-west
+    countries: ["GB", "DE", "FR", "NL"]
+    continents: ["EU"]
+    servers:
+      - { address: 172.30.0.31, port: 80, weight: 100, service: app.gslb.lab }
+      - { address: 172.30.0.32, port: 80, weight: 100, service: failover.gslb.lab }
+      - { address: 172.30.0.33, port: 80, weight: 100, service: weighted.gslb.lab }
+    health_check: { type: http, path: /, interval: 10s, timeout: 3s, failure_threshold: 2, success_threshold: 1 }
+  # No config-file servers: its backend is registered by agent-ap-1.
+  - name: ap-southeast
+    countries: ["SG", "AU", "JP"]
+    continents: ["AS", "OC"]
+    servers: []
+    health_check: { type: http, path: /, interval: 10s, timeout: 3s, failure_threshold: 2, success_threshold: 1 }
+
+domains:
+  - { name: app.gslb.lab, routing_algorithm: round-robin, regions: [us-east, eu-west], ttl: 30 }
+  - { name: failover.gslb.lab, routing_algorithm: failover, regions: [us-east, eu-west], ttl: 15 }
+  - { name: weighted.gslb.lab, routing_algorithm: weighted, regions: [us-east, eu-west], ttl: 30 }
+  - { name: ap.gslb.lab, routing_algorithm: round-robin, regions: [ap-southeast], ttl: 30 }
+
+logging:
+  level: info
+  format: text
+
+metrics:
+  enabled: true
+  address: "0.0.0.0:9090"

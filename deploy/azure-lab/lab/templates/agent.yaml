@@ -1,0 +1,27 @@
+# Agent configuration for the OpenGSLB Azure lab: runs beside the ap-southeast
+# backend and reports its health to both overwatches over gossip.
+mode: agent
+
+agent:
+  identity:
+    service_token: "__AGENT_TOKEN__"
+    region: ap-southeast
+    # The default certificate location is not writable by the image's
+    # non-root user; /tmp survives restarts but not re-creation.
+    cert_path: /tmp/opengslb-agent/agent.crt
+    key_path: /tmp/opengslb-agent/agent.key
+  backends:
+    - service: ap.gslb.lab
+      address: 172.30.0.41
+      port: 80
+      weight: 100
+      health_check: { type: http, path: /, interval: 5s, timeout: 2s, failure_threshold: 2, success_threshold: 1 }
+  gossip:
+    encryption_key: "__GOSSIP_KEY__"
+    overwatch_nodes:
+      - "172.30.0.11:7946"
+      - "172.30.0.12:7946"
+
+logging:
+  level: info
+  format: text

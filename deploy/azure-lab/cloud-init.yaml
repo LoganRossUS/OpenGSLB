@@ -1,0 +1,12 @@
+#cloud-config
+# VM bootstrap for the OpenGSLB Azure lab: Docker and the tools up.sh uses.
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - curl
+  - openssl
+  - dnsutils
+runcmd:
+  - systemctl enable --now docker
+  - usermod -aG docker azureuser
