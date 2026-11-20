@@ -15,6 +15,7 @@ import (
 
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/routing"
+	"github.com/miekg/dns"
 )
 
 // RouterFactory is a function type that creates routers by algorithm name.
@@ -145,6 +146,21 @@ func (r *Registry) Lookup(name string) *DomainEntry {
 		)
 	}
 	return entry
+}
+
+// closestDomain returns the registered domain that is name itself or its
+// closest ancestor, or "" when there is none. name must be canonical. It is
+// used to find the implicit zone of a name outside every configured zone and
+// does not log.
+func (r *Registry) closestDomain(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for off, end := 0, false; !end; off, end = dns.NextLabel(name, off) {
+		if _, ok := r.domains[name[off:]]; ok {
+			return name[off:]
+		}
+	}
+	return ""
 }
 
 // Remove deletes a domain from the registry.

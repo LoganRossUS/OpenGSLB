@@ -608,8 +608,15 @@ func (a *Application) initializeDNSServer() error {
 		logger:          a.logger,
 	}
 
+	// Zone table: SOA and NS at each apex, SOA for negative answers.
+	zones, err := dns.BuildZones(a.config)
+	if err != nil {
+		return fmt.Errorf("failed to build DNS zones: %w", err)
+	}
+
 	handler := dns.NewHandler(dns.HandlerConfig{
 		Registry:       registry,
+		Zones:          zones,
 		HealthProvider: healthProvider,
 		LeaderChecker:  nil, // Standalone mode - always serve
 		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
@@ -1190,6 +1197,10 @@ func (a *Application) reloadOverwatchMode(newCfg *config.Config) error {
 		return fmt.Errorf("failed to reload health manager: %w", err)
 	}
 
+	if err := a.reloadDNSSettings(newCfg); err != nil {
+		return fmt.Errorf("failed to reload DNS settings: %w", err)
+	}
+
 	return nil
 }
 
@@ -1312,6 +1323,20 @@ func (r *regionMapper) GetServerRegion(address string, port int) string {
 		}
 	}
 	return ""
+}
+
+// reloadDNSSettings applies the dns section settings that the DNS handler
+// holds outside the registry: the zone table (dns.zones).
+func (a *Application) reloadDNSSettings(newCfg *config.Config) error {
+	if a.dnsHandler == nil {
+		return nil
+	}
+	zones, err := dns.BuildZones(newCfg)
+	if err != nil {
+		return err
+	}
+	a.dnsHandler.SetZones(zones)
+	return nil
 }
 
 // combinedHealthProvider implements dns.HealthProvider by checking both

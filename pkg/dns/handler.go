@@ -8,7 +8,6 @@ package dns
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net"
 	"sync"
@@ -24,6 +23,7 @@ import (
 type Handler struct {
 	mu            sync.RWMutex
 	registry      *Registry
+	zones         *ZoneTable
 	health        HealthProvider
 	dnssecSigner  DNSSECSigner
 	dnssecEnabled bool
@@ -40,14 +40,44 @@ func NewHandler(cfg HandlerConfig) *Handler {
 		logger = slog.Default()
 	}
 
+	zones := cfg.Zones
+	if zones == nil {
+		zones = &ZoneTable{}
+	}
+
 	return &Handler{
 		registry:      cfg.Registry,
+		zones:         zones,
 		health:        cfg.HealthProvider,
 		dnssecSigner:  cfg.DNSSECSigner,
 		dnssecEnabled: cfg.DNSSECEnabled,
 		ecsEnabled:    cfg.ECSEnabled,
 		defaultTTL:    cfg.DefaultTTL,
 		logger:        logger,
+	}
+}
+
+// handlerState is the part of the handler configuration that can change at
+// runtime (reload, DNSSEC signer wiring). ServeDNS takes one consistent copy
+// per query so that no lock is held while a response is routed and written.
+type handlerState struct {
+	registry      *Registry
+	zones         *ZoneTable
+	health        HealthProvider
+	dnssecSigner  DNSSECSigner
+	dnssecEnabled bool
+}
+
+// state returns a consistent copy of the mutable handler configuration.
+func (h *Handler) state() handlerState {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return handlerState{
+		registry:      h.registry,
+		zones:         h.zones,
+		health:        h.health,
+		dnssecSigner:  h.dnssecSigner,
+		dnssecEnabled: h.dnssecEnabled,
 	}
 }
 
@@ -84,46 +114,70 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		"clientIP", clientIP,
 	)
 
-	switch q.Qtype {
-	case dns.TypeA:
-		h.handleAQuery(m, qname, q, clientIP)
-	case dns.TypeAAAA:
-		h.handleAAAAQuery(m, qname, q, clientIP)
-	case dns.TypeDNSKEY:
-		h.handleDNSKEYQuery(m, qname, q)
+	st := h.state()
+	zone, entry := st.resolve(qname)
+
+	switch {
+	case q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA:
+		h.handleAddressQuery(st, m, q, qname, entry, clientIP)
+	case q.Qtype == dns.TypeDNSKEY:
+		h.handleDNSKEYQuery(m, qname, entry)
+	case (q.Qtype == dns.TypeSOA || q.Qtype == dns.TypeNS) && zone != nil && qname == zone.Name:
+		h.handleApexQuery(m, q, zone)
 	default:
 		h.logger.Debug("unsupported query type", "name", qname, "type", qtype)
 		m.SetRcode(m, dns.RcodeNotImplemented)
 	}
 
 	// Sign the response if DNSSEC is enabled
-	signed := h.signResponse(m)
+	signed := h.signResponse(st, m)
 
 	status := dns.RcodeToString[signed.Rcode]
 	h.writeResponse(w, signed, start, status, qname)
 }
 
-// handleAQuery processes A record queries (IPv4).
-func (h *Handler) handleAQuery(m *dns.Msg, qname string, q dns.Question, clientIP net.IP) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+// resolve finds the zone that is authoritative for qname and the GSLB domain
+// registered at qname. Either can be nil. qname must be canonical.
+//
+// The zone is the configured zone (dns.zones) with the longest matching
+// suffix. A name outside every configured zone belongs to the implicit zone
+// of the closest registered GSLB domain at or above it, so that domains keep
+// resolving when dns.zones does not list their zone or is empty.
+func (st handlerState) resolve(qname string) (*Zone, *DomainEntry) {
+	entry := st.registry.Lookup(qname)
 
-	// Debug: log handler's registry pointer
-	h.logger.Debug("handler lookup using registry",
-		"query_name", qname,
-		"registry_ptr", fmt.Sprintf("%p", h.registry),
-	)
+	zone := st.zones.Find(qname)
+	if zone == nil {
+		if apex := st.registry.closestDomain(qname); apex != "" {
+			zone = st.zones.Implicit(apex)
+		}
+	}
+	return zone, entry
+}
 
-	entry := h.registry.Lookup(qname)
+// handleApexQuery answers SOA and NS queries at a zone apex.
+func (h *Handler) handleApexQuery(m *dns.Msg, q dns.Question, zone *Zone) {
+	switch q.Qtype {
+	case dns.TypeSOA:
+		m.Answer = append(m.Answer, zone.soa(q.Name, zone.TTL))
+	case dns.TypeNS:
+		m.Answer = append(m.Answer, zone.ns(q.Name)...)
+	}
+	h.logger.Debug("resolved apex query", "zone", zone.Name, "type", dns.TypeToString[q.Qtype])
+}
+
+// handleAddressQuery processes A (IPv4) and AAAA (IPv6) queries.
+func (h *Handler) handleAddressQuery(st handlerState, m *dns.Msg, q dns.Question, qname string, entry *DomainEntry, clientIP net.IP) {
 	if entry == nil {
 		h.logger.Debug("domain not found", "name", qname)
 		m.SetRcode(m, dns.RcodeNameError) // NXDOMAIN
 		return
 	}
 
-	servers := h.getHealthyIPv4Servers(entry)
+	wantIPv4 := q.Qtype == dns.TypeA
+	servers := healthyServers(st.health, entry, wantIPv4)
 	if len(servers) == 0 {
-		h.logger.Debug("no healthy IPv4 servers", "domain", qname)
+		h.logger.Debug("no healthy servers", "domain", qname, "type", dns.TypeToString[q.Qtype])
 		m.SetRcode(m, dns.RcodeServerFailure)
 		return
 	}
@@ -149,116 +203,55 @@ func (h *Handler) handleAQuery(m *dns.Msg, qname string, q dns.Question, clientI
 		return
 	}
 
-	h.addARecord(m, q, selected, entry.TTL)
+	if wantIPv4 {
+		h.addARecord(m, q, selected, entry.TTL)
+	} else {
+		h.addAAAARecord(m, q, selected, entry.TTL)
+	}
 	metrics.RecordRoutingDecision(qname, entry.Router.Algorithm(), selected.Address)
 
-	h.logger.Debug("resolved A query",
+	h.logger.Debug("resolved address query",
 		"domain", qname,
+		"type", dns.TypeToString[q.Qtype],
 		"selected", selected.Address,
 		"algorithm", entry.Router.Algorithm(),
 	)
 }
 
-// handleAAAAQuery processes AAAA record queries (IPv6).
-func (h *Handler) handleAAAAQuery(m *dns.Msg, qname string, q dns.Question, clientIP net.IP) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+// healthyServers returns the servers of the entry that belong to the wanted
+// address family (IPv4 when wantIPv4 is true, IPv6 otherwise) and are healthy
+// according to the provider. A nil provider treats every server as healthy.
+func healthyServers(health HealthProvider, entry *DomainEntry, wantIPv4 bool) []*routing.Server {
+	var servers []*routing.Server
 
-	entry := h.registry.Lookup(qname)
-	if entry == nil {
-		h.logger.Debug("domain not found", "name", qname)
-		m.SetRcode(m, dns.RcodeNameError) // NXDOMAIN
-		return
+	for _, server := range entry.Servers {
+		if (server.Address.To4() != nil) != wantIPv4 {
+			continue
+		}
+
+		if health != nil && !health.IsHealthy(server.Address.String(), server.Port) {
+			continue
+		}
+
+		servers = append(servers, &routing.Server{
+			Address: server.Address.String(),
+			Port:    server.Port,
+			Weight:  server.Weight,
+			Region:  server.Region,
+		})
 	}
 
-	servers := h.getHealthyIPv6Servers(entry)
-	if len(servers) == 0 {
-		h.logger.Debug("no healthy IPv6 servers", "domain", qname)
-		m.SetRcode(m, dns.RcodeServerFailure)
-		return
-	}
-
-	// Create context with client IP for geolocation routing
-	// and domain name for learned latency routing (ADR-017)
-	ctx := context.Background()
-	if clientIP != nil {
-		ctx = routing.WithClientIP(ctx, clientIP)
-	}
-	// Use entry.Name which is normalized, strip trailing dot for service name format
-	domainName := entry.Name
-	if len(domainName) > 0 && domainName[len(domainName)-1] == '.' {
-		domainName = domainName[:len(domainName)-1]
-	}
-	ctx = routing.WithDomain(ctx, domainName)
-
-	pool := routing.NewSimpleServerPool(servers)
-	selected, err := entry.Router.Route(ctx, pool)
-	if err != nil {
-		h.logger.Error("routing failed", "domain", qname, "error", err)
-		m.SetRcode(m, dns.RcodeServerFailure)
-		return
-	}
-
-	h.addAAAARecord(m, q, selected, entry.TTL)
-	metrics.RecordRoutingDecision(qname, entry.Router.Algorithm(), selected.Address)
-
-	h.logger.Debug("resolved AAAA query",
-		"domain", qname,
-		"selected", selected.Address,
-		"algorithm", entry.Router.Algorithm(),
-	)
+	return servers
 }
 
 // getHealthyIPv4Servers returns healthy IPv4 servers from the entry.
 func (h *Handler) getHealthyIPv4Servers(entry *DomainEntry) []*routing.Server {
-	var servers []*routing.Server
-
-	for _, server := range entry.Servers {
-		// Check if IPv4
-		if server.Address.To4() == nil {
-			continue
-		}
-
-		// Check health
-		if h.health != nil && !h.health.IsHealthy(server.Address.String(), server.Port) {
-			continue
-		}
-
-		servers = append(servers, &routing.Server{
-			Address: server.Address.String(),
-			Port:    server.Port,
-			Weight:  server.Weight,
-			Region:  server.Region,
-		})
-	}
-
-	return servers
+	return healthyServers(h.state().health, entry, true)
 }
 
 // getHealthyIPv6Servers returns healthy IPv6 servers from the entry.
 func (h *Handler) getHealthyIPv6Servers(entry *DomainEntry) []*routing.Server {
-	var servers []*routing.Server
-
-	for _, server := range entry.Servers {
-		// Check if IPv6 (not IPv4)
-		if server.Address.To4() != nil {
-			continue
-		}
-
-		// Check health
-		if h.health != nil && !h.health.IsHealthy(server.Address.String(), server.Port) {
-			continue
-		}
-
-		servers = append(servers, &routing.Server{
-			Address: server.Address.String(),
-			Port:    server.Port,
-			Weight:  server.Weight,
-			Region:  server.Region,
-		})
-	}
-
-	return servers
+	return healthyServers(h.state().health, entry, false)
 }
 
 // addARecord adds an A record to the response.
@@ -345,13 +338,25 @@ func (h *Handler) UpdateRegistry(registry *Registry) {
 	h.logger.Info("DNS handler registry updated")
 }
 
-// handleDNSKEYQuery processes DNSKEY record queries.
-func (h *Handler) handleDNSKEYQuery(m *dns.Msg, qname string, q dns.Question) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+// SetZones replaces the handler's zone table (configuration reload).
+func (h *Handler) SetZones(zones *ZoneTable) {
+	if zones == nil {
+		zones = &ZoneTable{}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.zones = zones
+	h.logger.Info("DNS handler zones updated", "zones", len(zones.zones))
+}
 
+// Zones returns the configured zones with every SOA and NS default resolved.
+func (h *Handler) Zones() []Zone {
+	return h.state().zones.Zones()
+}
+
+// handleDNSKEYQuery processes DNSKEY record queries.
+func (h *Handler) handleDNSKEYQuery(m *dns.Msg, qname string, entry *DomainEntry) {
 	// Check if the domain exists in our registry
-	entry := h.registry.Lookup(qname)
 	if entry == nil {
 		h.logger.Debug("domain not found for DNSKEY query", "name", qname)
 		m.SetRcode(m, dns.RcodeNameError) // NXDOMAIN
@@ -365,13 +370,13 @@ func (h *Handler) handleDNSKEYQuery(m *dns.Msg, qname string, q dns.Question) {
 
 // signResponse signs the DNS response if DNSSEC is enabled.
 // Returns the original message if DNSSEC is disabled or signing fails.
-func (h *Handler) signResponse(m *dns.Msg) *dns.Msg {
-	if !h.dnssecEnabled || h.dnssecSigner == nil {
+func (h *Handler) signResponse(st handlerState, m *dns.Msg) *dns.Msg {
+	if !st.dnssecEnabled || st.dnssecSigner == nil {
 		return m
 	}
 
 	// Call the signer - it handles all DNSSEC signing
-	signed, err := h.dnssecSigner.SignResponse(m)
+	signed, err := st.dnssecSigner.SignResponse(m)
 	if err != nil {
 		h.logger.Warn("failed to sign DNS response",
 			"error", err,

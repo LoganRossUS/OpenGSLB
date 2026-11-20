@@ -78,4 +78,8 @@ type HandlerConfig struct {
 	ECSEnabled     bool          // Whether to use EDNS Client Subnet for geolocation
 	DefaultTTL     uint32
 	Logger         *slog.Logger
+
+	// Zones is the table of authoritative zones (see BuildZones). When nil,
+	// no zone is configured and every GSLB domain is served as its own zone.
+	Zones *ZoneTable
 }
