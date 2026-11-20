@@ -311,10 +311,20 @@ type DNSSECKeySyncConfig struct {
 
 // DNSConfig defines the DNS server settings (overwatch mode).
 type DNSConfig struct {
-	ListenAddress     string   `yaml:"listen_address"`
-	DefaultTTL        int      `yaml:"default_ttl"`
-	ReturnLastHealthy bool     `yaml:"return_last_healthy"`
-	Zones             []string `yaml:"zones"`
+	ListenAddress     string `yaml:"listen_address"`
+	DefaultTTL        int    `yaml:"default_ttl"`
+	ReturnLastHealthy bool   `yaml:"return_last_healthy"`
+
+	// Zones lists the zones this overwatch is authoritative for. Each entry is
+	// a zone name or a mapping with SOA and NS settings (see Zone).
+	Zones []Zone `yaml:"zones"`
+
+	// MaxUDPSize is the largest DNS response sent over UDP, in bytes, and the
+	// UDP payload size advertised in EDNS responses. A requester that
+	// advertises less gets less. Larger answers are truncated (TC bit) and
+	// the client retries over TCP.
+	// Default: 1232 (DNS Flag Day 2020). Allowed: 512 to 4096.
+	MaxUDPSize int `yaml:"max_udp_size"`
 }
 
 // Region defines a geographic region with its servers and health check configuration.

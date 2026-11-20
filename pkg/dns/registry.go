@@ -7,13 +7,16 @@
 package dns
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/loganrossus/OpenGSLB/pkg/config"
 	"github.com/loganrossus/OpenGSLB/pkg/routing"
+	"github.com/miekg/dns"
 )
 
 // RouterFactory is a function type that creates routers by algorithm name.
@@ -23,12 +26,18 @@ type RouterFactory func(algorithm string) (routing.Router, error)
 type Registry struct {
 	mu      sync.RWMutex
 	domains map[string]*DomainEntry
+	// below counts, for every proper ancestor of a registered domain, how
+	// many registered domains lie beneath it. A name with a non-zero count
+	// exists in the DNS tree even when it is not registered itself (an
+	// "empty non-terminal") and must not be answered with NXDOMAIN.
+	below map[string]int
 }
 
 // NewRegistry creates a new empty registry.
 func NewRegistry() *Registry {
 	r := &Registry{
 		domains: make(map[string]*DomainEntry),
+		below:   make(map[string]int),
 	}
 	slog.Debug("DNS registry created", "registry_ptr", fmt.Sprintf("%p", r))
 	return r
@@ -111,6 +120,9 @@ func (r *Registry) Register(entry *DomainEntry) {
 	defer r.mu.Unlock()
 	name := normalizeDomain(entry.Name)
 	entry.Name = name
+	if _, exists := r.domains[name]; !exists {
+		countAncestors(r.below, name, 1)
+	}
 	r.domains[name] = entry
 	// Log registry state after registration (INFO level for runtime visibility)
 	slog.Info("domain registered in DNS registry",
@@ -122,35 +134,76 @@ func (r *Registry) Register(entry *DomainEntry) {
 
 // Lookup retrieves a domain entry by name.
 // Returns nil if the domain is not registered.
+//
+// Lookup runs for every DNS query, so it only logs at DEBUG: a miss is an
+// ordinary event (any query for an unknown name) and logging it at INFO
+// floods the log under load. The level check comes first so that the log
+// arguments cost nothing when debug logging is off.
 func (r *Registry) Lookup(name string) *DomainEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	normalizedName := normalizeDomain(name)
 	entry := r.domains[normalizedName]
-	// Log lookup details at appropriate level
-	if entry == nil {
-		// Log at INFO level when not found - helps diagnose issues
-		slog.Info("DNS registry lookup - domain not found",
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		msg := "DNS registry lookup - found"
+		if entry == nil {
+			msg = "DNS registry lookup - domain not found"
+		}
+		slog.Debug(msg,
 			"query_name", name,
 			"normalized_name", normalizedName,
 			"registry_count", len(r.domains),
-			"registry_ptr", fmt.Sprintf("%p", r),
-		)
-	} else {
-		slog.Debug("DNS registry lookup - found",
-			"query_name", name,
-			"normalized_name", normalizedName,
 			"registry_ptr", fmt.Sprintf("%p", r),
 		)
 	}
 	return entry
 }
 
+// closestDomain returns the registered domain that is name itself or its
+// closest ancestor, or "" when there is none. name must be canonical. It is
+// used to find the implicit zone of a name outside every configured zone and
+// does not log.
+func (r *Registry) closestDomain(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for off, end := 0, false; !end; off, end = dns.NextLabel(name, off) {
+		if _, ok := r.domains[name[off:]]; ok {
+			return name[off:]
+		}
+	}
+	return ""
+}
+
 // Remove deletes a domain from the registry.
 func (r *Registry) Remove(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.domains, normalizeDomain(name))
+	name = normalizeDomain(name)
+	if _, exists := r.domains[name]; exists {
+		countAncestors(r.below, name, -1)
+		delete(r.domains, name)
+	}
+}
+
+// hasDescendant reports whether a registered domain lies beneath name.
+// name must be canonical.
+func (r *Registry) hasDescendant(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.below[name] > 0
+}
+
+// countAncestors adds delta to the count of every proper ancestor of name,
+// up to but not including the root, and drops counts that reach zero.
+func countAncestors(below map[string]int, name string, delta int) {
+	for off, end := dns.NextLabel(name, 0); !end; off, end = dns.NextLabel(name, off) {
+		ancestor := name[off:]
+		if n := below[ancestor] + delta; n > 0 {
+			below[ancestor] = n
+		} else {
+			delete(below, ancestor)
+		}
+	}
 }
 
 // Domains returns a list of all registered domain names.
@@ -176,6 +229,7 @@ func (r *Registry) Clear() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.domains = make(map[string]*DomainEntry)
+	r.below = make(map[string]int)
 }
 
 // ReplaceAll atomically replaces all domain entries in the registry.
@@ -187,8 +241,13 @@ func (r *Registry) ReplaceAll(entries []*DomainEntry) {
 		entry.Name = name
 		newDomains[name] = entry
 	}
+	newBelow := make(map[string]int)
+	for name := range newDomains {
+		countAncestors(newBelow, name, 1)
+	}
 	r.mu.Lock()
 	r.domains = newDomains
+	r.below = newBelow
 	r.mu.Unlock()
 }
 
@@ -371,11 +430,17 @@ func (r *Registry) UpdateDomainSettings(name string, ttl uint32, algorithm strin
 	return nil
 }
 
-// normalizeDomain ensures domain names are in a consistent format.
+// normalizeDomain returns the canonical form used as the registry key:
+// lower case with a trailing dot. DNS names compare without regard to case
+// (RFC 1035 section 2.3.3, RFC 4343), so "APP.Example.COM" and
+// "app.example.com." are the same name.
 func normalizeDomain(name string) string {
 	if len(name) == 0 {
 		return name
 	}
+	// strings.ToLower returns its argument unchanged (no allocation) when the
+	// name is already lower case, which is the common case on the query path.
+	name = strings.ToLower(name)
 	if name[len(name)-1] != '.' {
 		return name + "."
 	}

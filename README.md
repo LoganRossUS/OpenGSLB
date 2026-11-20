@@ -25,7 +25,9 @@ See [LICENSE](LICENSE) for full terms.
 - **A and AAAA Records**: Full IPv4 and IPv6 support with automatic address family filtering
 - **UDP and TCP**: Handles both transport protocols
 - **Configurable TTL**: Per-domain TTL settings with global default fallback
-- **Authoritative Responses**: Returns proper NXDOMAIN, SERVFAIL, and NOERROR responses
+- **Authoritative Responses**: Case-insensitive lookups that echo the querier's spelling (0x20-safe), NXDOMAIN and empty NOERROR answers with the zone SOA for negative caching (RFC 2308), REFUSED for names outside the served zones, SERVFAIL only when every server of the queried address family is down
+- **Zone Apex Records**: SOA and NS at each zone apex, configurable per zone in `dns.zones` with defaults derived from the node identity
+- **EDNS(0)**: OPT record in the response when the query has one, UDP responses limited to the requester's size and capped at 1232 bytes by default, truncation with the TC bit and full answers over TCP
 - **DNSSEC**: Automatic key management with zone signing and DS record generation
 
 ### Routing Algorithms

@@ -42,9 +42,10 @@ dns:
   # Default: 60
   default_ttl: 60
   
-  # When all servers are unhealthy, return last known good IP instead of SERVFAIL
+  # What to answer when every server of a domain is unhealthy
   # false = return SERVFAIL (default, more correct DNS behavior)
-  # true = return last healthy IP (degraded service over no service)
+  # true = answer as if the configured servers were healthy (degraded service
+  #        over no service; the address may be dead)
   # Default: false
   return_last_healthy: false
 

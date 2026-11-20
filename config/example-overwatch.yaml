@@ -68,7 +68,7 @@ overwatch:
 dns:
   listen_address: "0.0.0.0:53"
   default_ttl: 30
-  return_last_healthy: false  # Return SERVFAIL when all backends unhealthy
+  return_last_healthy: false  # false: SERVFAIL when all backends are unhealthy. true: answer from the configured servers anyway
   zones:
     - gslb.example.com
     - internal.example.com

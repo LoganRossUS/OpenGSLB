@@ -284,6 +284,12 @@ func (r *LearnedLatencyRouter) Algorithm() string {
 	return "learned_latency"
 }
 
+// UsesClientIP implements ClientAware: latency is looked up by the client's
+// subnet.
+func (r *LearnedLatencyRouter) UsesClientIP() bool {
+	return true
+}
+
 // SetProvider sets or updates the learned latency provider.
 func (r *LearnedLatencyRouter) SetProvider(provider LearnedLatencyProvider) {
 	r.mu.Lock()

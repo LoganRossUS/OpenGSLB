@@ -608,13 +608,24 @@ func (a *Application) initializeDNSServer() error {
 		logger:          a.logger,
 	}
 
+	// Zone table: SOA and NS at each apex, SOA for negative answers.
+	zones, err := dns.BuildZones(a.config)
+	if err != nil {
+		return fmt.Errorf("failed to build DNS zones: %w", err)
+	}
+
 	handler := dns.NewHandler(dns.HandlerConfig{
 		Registry:       registry,
+		Zones:          zones,
+		MaxUDPSize:     a.config.DNS.MaxUDPSize,
 		HealthProvider: healthProvider,
 		LeaderChecker:  nil, // Standalone mode - always serve
 		DefaultTTL:     uint32(a.config.DNS.DefaultTTL),
 		ECSEnabled:     a.config.Overwatch.Geolocation.ECSEnabled, // Demo 4: EDNS Client Subnet for GeoIP
 		Logger:         a.logger,
+
+		// When every server of a name is down, answer anyway (ADR-009).
+		ReturnLastHealthy: a.config.DNS.ReturnLastHealthy,
 	})
 	a.dnsHandler = handler
 	a.logger.Debug("DNS handler created with registry",
@@ -1190,6 +1201,10 @@ func (a *Application) reloadOverwatchMode(newCfg *config.Config) error {
 		return fmt.Errorf("failed to reload health manager: %w", err)
 	}
 
+	if err := a.reloadDNSSettings(newCfg); err != nil {
+		return fmt.Errorf("failed to reload DNS settings: %w", err)
+	}
+
 	return nil
 }
 
@@ -1314,6 +1329,23 @@ func (r *regionMapper) GetServerRegion(address string, port int) string {
 	return ""
 }
 
+// reloadDNSSettings applies the dns section settings that the DNS handler
+// holds outside the registry: the zone table (dns.zones), the UDP response
+// size cap (dns.max_udp_size) and dns.return_last_healthy.
+func (a *Application) reloadDNSSettings(newCfg *config.Config) error {
+	if a.dnsHandler == nil {
+		return nil
+	}
+	zones, err := dns.BuildZones(newCfg)
+	if err != nil {
+		return err
+	}
+	a.dnsHandler.SetZones(zones)
+	a.dnsHandler.SetMaxUDPSize(newCfg.DNS.MaxUDPSize)
+	a.dnsHandler.SetReturnLastHealthy(newCfg.DNS.ReturnLastHealthy)
+	return nil
+}
+
 // combinedHealthProvider implements dns.HealthProvider by checking both
 // the health manager (HTTP checks) and the backend registry (draining status).
 // A backend is only considered healthy if:
@@ -1331,39 +1363,37 @@ type combinedHealthProvider struct {
 func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
 	// v1.1.0: Check backend registry first (unified health for static, agent, and API backends)
 	if p.backendRegistry != nil {
-		// The registry stores backends by service:address:port, but we only have address:port
-		// So we need to search all backends for a matching address:port
-		allBackends := p.backendRegistry.GetAllBackends()
-
-		for _, backend := range allBackends {
-			if backend.Address == address && backend.Port == port {
-				// Backend is draining - exclude from DNS
-				if backend.Draining {
-					if p.logger != nil {
-						p.logger.Info("DNS excluding draining backend",
-							"address", address,
-							"port", port,
-							"reason", backend.DrainingReason,
-							"cpu_percent", backend.CPUPercent,
-							"effective_status", backend.EffectiveStatus,
-						)
-					}
-					return false
+		// The registry stores backends by service:address:port, but we only
+		// have address:port. This runs for every candidate server of every
+		// query, so it uses the registry's address:port index and never
+		// copies or scans the backend list.
+		if backend, found := p.backendRegistry.GetBackendByEndpoint(address, port); found {
+			// Backend is draining - exclude from DNS
+			if backend.Draining {
+				if p.debugEnabled() {
+					p.logger.Debug("DNS excluding draining backend",
+						"address", address,
+						"port", port,
+						"reason", backend.DrainingReason,
+						"cpu_percent", backend.CPUPercent,
+						"effective_status", backend.EffectiveStatus,
+					)
 				}
-				// Check effective status - only healthy backends should be in DNS
-				if backend.EffectiveStatus != overwatch.StatusHealthy {
-					if p.logger != nil {
-						p.logger.Info("DNS excluding unhealthy backend",
-							"address", address,
-							"port", port,
-							"effective_status", backend.EffectiveStatus,
-						)
-					}
-					return false
-				}
-				// Backend found in registry and is healthy
-				return true
+				return false
 			}
+			// Check effective status - only healthy backends should be in DNS
+			if backend.EffectiveStatus != overwatch.StatusHealthy {
+				if p.debugEnabled() {
+					p.logger.Debug("DNS excluding unhealthy backend",
+						"address", address,
+						"port", port,
+						"effective_status", backend.EffectiveStatus,
+					)
+				}
+				return false
+			}
+			// Backend found in registry and is healthy
+			return true
 		}
 	}
 
@@ -1374,6 +1404,12 @@ func (p *combinedHealthProvider) IsHealthy(address string, port int) bool {
 
 	// No health information available
 	return false
+}
+
+// debugEnabled reports whether the provider has a logger that emits DEBUG
+// records, so that the query path builds no log arguments otherwise.
+func (p *combinedHealthProvider) debugEnabled() bool {
+	return p.logger != nil && p.logger.Enabled(context.Background(), slog.LevelDebug)
 }
 
 // backendRegistryLatencyProvider implements routing.LatencyProvider using the backend registry.

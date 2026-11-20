@@ -463,7 +463,7 @@ scrape_configs:
 rate(opengslb_dns_queries_total[5m])
 
 # DNS error rate
-sum(rate(opengslb_dns_queries_total{status!="success"}[5m])) / sum(rate(opengslb_dns_queries_total[5m]))
+sum(rate(opengslb_dns_queries_total{status="SERVFAIL"}[5m])) / sum(rate(opengslb_dns_queries_total[5m]))
 
 # Healthy backends
 opengslb_overwatch_backends_healthy

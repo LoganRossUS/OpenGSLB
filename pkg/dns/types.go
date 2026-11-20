@@ -78,4 +78,27 @@ type HandlerConfig struct {
 	ECSEnabled     bool          // Whether to use EDNS Client Subnet for geolocation
 	DefaultTTL     uint32
 	Logger         *slog.Logger
+
+	// Zones is the table of authoritative zones (see BuildZones). When nil,
+	// no zone is configured and every GSLB domain is served as its own zone.
+	Zones *ZoneTable
+
+	// MaxUDPSize caps the size of UDP responses and is the UDP payload size
+	// advertised in EDNS responses. 0 means DefaultMaxUDPSize.
+	MaxUDPSize int
+
+	// ReturnLastHealthy is dns.return_last_healthy: when every server of the
+	// queried address family is unhealthy, answer as if all of them were
+	// healthy instead of SERVFAIL.
+	ReturnLastHealthy bool
 }
+
+// Limits for the size of UDP responses.
+const (
+	// DefaultMaxUDPSize is the default cap on UDP responses (DNS Flag Day
+	// 2020: 1232 bytes avoids IP fragmentation on almost every path).
+	DefaultMaxUDPSize = 1232
+	// minUDPSize is the size every requester accepts (RFC 1035 section
+	// 4.2.1) and the floor for advertised sizes (RFC 6891 section 6.2.5).
+	minUDPSize = 512
+)

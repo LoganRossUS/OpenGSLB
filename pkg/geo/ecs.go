@@ -22,6 +22,18 @@ type ECSResult struct {
 
 	// Found indicates whether ECS was present in the query
 	Found bool
+
+	// Option is the ECS option exactly as received, for echoing in the
+	// response (see ECSResponseOption). Nil when Found is false.
+	Option *dns.EDNS0_SUBNET
+}
+
+// Usable reports whether the option carries a client subnet that may be used
+// to tailor the response. A SOURCE PREFIX-LENGTH of 0 means the sender does
+// not want any client address used (RFC 7871 section 7.1.2); the server then
+// falls back to the address the query came from.
+func (r *ECSResult) Usable() bool {
+	return r != nil && r.Found && r.IP != nil && r.SourceNetmask > 0
 }
 
 // ParseECS extracts the EDNS Client Subnet option from a DNS message.
@@ -58,6 +70,7 @@ func ParseECS(msg *dns.Msg) *ECSResult {
 				IP:            subnet.Address,
 				SourceNetmask: subnet.SourceNetmask,
 				Found:         true,
+				Option:        subnet,
 			}
 		}
 	}
@@ -67,8 +80,9 @@ func ParseECS(msg *dns.Msg) *ECSResult {
 
 // GetClientIP extracts the best available client IP from a DNS query.
 // Priority:
-// 1. EDNS Client Subnet IP (if enabled and present)
-// 2. Source IP from the request
+//  1. EDNS Client Subnet IP (if enabled, present and with a source prefix
+//     length greater than 0)
+//  2. Source IP from the request
 //
 // Parameters:
 // - msg: the DNS query message
@@ -77,8 +91,7 @@ func ParseECS(msg *dns.Msg) *ECSResult {
 func GetClientIP(msg *dns.Msg, sourceAddr net.Addr, ecsEnabled bool) net.IP {
 	// Try ECS first if enabled
 	if ecsEnabled {
-		ecs := ParseECS(msg)
-		if ecs.Found && ecs.IP != nil {
+		if ecs := ParseECS(msg); ecs.Usable() {
 			return ecs.IP
 		}
 	}
@@ -100,6 +113,24 @@ func GetClientIP(msg *dns.Msg, sourceAddr net.Addr, ecsEnabled bool) net.IP {
 			return nil
 		}
 		return net.ParseIP(host)
+	}
+}
+
+// ECSResponseOption returns the ECS option for a response to a query that
+// carried the given option. FAMILY, SOURCE PREFIX-LENGTH and ADDRESS are
+// copied from the query, as RFC 7871 section 7.2.1 requires, and SCOPE
+// PREFIX-LENGTH is set to scope: the prefix length the answer is valid for,
+// 0 when it is valid for every client.
+func ECSResponseOption(query *dns.EDNS0_SUBNET, scope uint8) *dns.EDNS0_SUBNET {
+	if query == nil {
+		return nil
+	}
+	return &dns.EDNS0_SUBNET{
+		Code:          dns.EDNS0SUBNET,
+		Family:        query.Family,
+		SourceNetmask: query.SourceNetmask,
+		SourceScope:   scope,
+		Address:       query.Address,
 	}
 }
 
