@@ -221,6 +221,9 @@ func (r *Registry) RegisterServer(service string, address string, port int, weig
 		Region:  region,
 	}
 
+	// Work on a copy: query handlers read the published entry without a lock.
+	entry = cloneEntry(entry, 1)
+
 	// Check if server already exists, update if so
 	serverKey := fmt.Sprintf("%s:%d", address, port)
 	found := false
@@ -238,7 +241,22 @@ func (r *Registry) RegisterServer(service string, address string, port int, weig
 		entry.Servers = append(entry.Servers, serverInfo)
 	}
 
+	r.domains[domainName] = entry
 	return nil
+}
+
+// cloneEntry returns a copy of entry with its own server slice, with room for
+// extra more servers.
+//
+// Lookup hands out the entry pointer and its callers read the entry after the
+// registry lock is released, so a published entry must never be written to.
+// Every change to a domain is made on a copy that then replaces the published
+// entry under the write lock.
+func cloneEntry(entry *DomainEntry, extra int) *DomainEntry {
+	clone := *entry
+	clone.Servers = make([]ServerInfo, len(entry.Servers), len(entry.Servers)+extra)
+	copy(clone.Servers, entry.Servers)
+	return &clone
 }
 
 // DeregisterServer removes a server from the DNS registry.
@@ -261,9 +279,12 @@ func (r *Registry) DeregisterServer(service string, address string, port int) er
 	for i, server := range entry.Servers {
 		existingKey := fmt.Sprintf("%s:%d", server.Address.String(), server.Port)
 		if existingKey == serverKey {
-			// Remove by swapping with last element and truncating
+			// Remove by swapping with last element and truncating, on a
+			// copy (see cloneEntry)
+			entry = cloneEntry(entry, 0)
 			entry.Servers[i] = entry.Servers[len(entry.Servers)-1]
 			entry.Servers = entry.Servers[:len(entry.Servers)-1]
+			r.domains[domainName] = entry
 			return nil
 		}
 	}
@@ -288,7 +309,9 @@ func (r *Registry) UpdateServerWeight(service string, address string, port int, 
 	for i, server := range entry.Servers {
 		existingKey := fmt.Sprintf("%s:%d", server.Address.String(), server.Port)
 		if existingKey == serverKey {
+			entry = cloneEntry(entry, 0)
 			entry.Servers[i].Weight = weight
+			r.domains[domainName] = entry
 			return nil
 		}
 	}
@@ -358,9 +381,11 @@ func (r *Registry) UpdateDomainSettings(name string, ttl uint32, algorithm strin
 		return fmt.Errorf("router factory returned non-Router type: %T", result)
 	}
 
-	// Update settings while preserving servers
+	// Update settings while preserving servers, on a copy (see cloneEntry)
+	existing = cloneEntry(existing, 0)
 	existing.TTL = ttl
 	existing.Router = router
+	r.domains[domainName] = existing
 
 	slog.Info("domain settings updated in DNS registry",
 		"name", domainName,
