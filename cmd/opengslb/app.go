@@ -41,6 +41,8 @@ type Application struct {
 	dnsServer     *dns.Server
 	dnsHandler    *dns.Handler
 	dnsRegistry   *dns.Registry
+	dnsSync       *dnsStateSync    // write path to dnsRegistry at runtime (see dns_state.go)
+	routerFactory *routing.Factory // shared by startup, reload and API-created domains
 	healthManager *health.Manager
 	metricsServer *metrics.Server
 	apiServer     *api.Server
@@ -394,7 +396,7 @@ func (a *Application) initializeBackendRegistry() error {
 		if a.dnsRegistry != nil {
 			// New backend registration (oldStatus is empty)
 			if oldStatus == "" {
-				if err := a.dnsRegistry.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
+				if err := a.dnsSync.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
 					a.logger.Error("failed to register backend in DNS",
 						"service", backend.Service,
 						"address", backend.Address,
@@ -403,8 +405,10 @@ func (a *Application) initializeBackendRegistry() error {
 				}
 			} else if newStatus == "" {
 				// Backend is being removed (newStatus is empty means deregistration)
-				if err := a.dnsRegistry.DeregisterServer(backend.Service, backend.Address, backend.Port); err != nil {
-					a.logger.Error("failed to deregister backend from DNS",
+				// An error here means the server (or its domain) is already
+				// absent from DNS, which is the state a removal asks for.
+				if err := a.dnsSync.DeregisterServer(backend.Service, backend.Address, backend.Port); err != nil {
+					a.logger.Debug("backend already absent from DNS",
 						"service", backend.Service,
 						"address", backend.Address,
 						"port", backend.Port,
@@ -412,7 +416,7 @@ func (a *Application) initializeBackendRegistry() error {
 				}
 			} else if oldStatus != newStatus {
 				// Status changed - update registration (weight might have changed)
-				if err := a.dnsRegistry.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
+				if err := a.dnsSync.RegisterServer(backend.Service, backend.Address, backend.Port, backend.Weight, backend.Region); err != nil {
 					a.logger.Error("failed to update backend in DNS",
 						"service", backend.Service,
 						"address", backend.Address,
@@ -433,20 +437,22 @@ func (a *Application) initializeBackendRegistry() error {
 
 	// v1.1.0: Register static servers from config into backend registry
 	// This unifies validation - static servers use same validation as agent servers
-	if err := a.registerStaticServers(); err != nil {
+	if err := a.registerStaticServers(a.config); err != nil {
 		return fmt.Errorf("failed to register static servers: %w", err)
 	}
 
 	return nil
 }
 
-// registerStaticServers registers all static servers from config into backend registry.
+// registerStaticServers registers all static servers from cfg into backend registry.
+// It is called at startup and on reload; registering a server that is already
+// present updates it.
 // v1.1.0: Unified architecture - static servers use same validation system as agents.
 // v1.1.1: Pass health check type to fix latency routing with TCP health checks.
-func (a *Application) registerStaticServers() error {
+func (a *Application) registerStaticServers(cfg *config.Config) error {
 	staticCount := 0
 
-	for _, region := range a.config.Regions {
+	for _, region := range cfg.Regions {
 		// Get health check type from region config (defaults to "http" in RegisterStatic)
 		healthCheckType := region.HealthCheck.Type
 
@@ -565,7 +571,9 @@ func (a *Application) initializeDNSServer() error {
 		learnedLatencyProvider = &learnedLatencyTableAdapter{table: a.learnedLatencyTable}
 	}
 
-	routerFactory := routing.NewFactory(routing.FactoryConfig{
+	// One factory builds every router: for configuration file domains at
+	// startup and on reload, and for domains created through the API.
+	a.routerFactory = routing.NewFactory(routing.FactoryConfig{
 		LatencyProvider:        latencyProvider,
 		LearnedLatencyProvider: learnedLatencyProvider, // ADR-017: Passive latency learning
 		MinLatencySamples:      1,                      // Backend registry tracks latency from external validation
@@ -573,11 +581,14 @@ func (a *Application) initializeDNSServer() error {
 		Logger:                 a.logger,
 	})
 
-	registry, err := dns.BuildRegistry(a.config, routerFactory.NewRouter)
+	// Merge configuration file, store and backend registry state. A reload
+	// calls the same function (reloadDNSRegistry).
+	registry, err := a.buildDNSRegistry(a.config, true)
 	if err != nil {
-		return fmt.Errorf("failed to build DNS registry: %w", err)
+		return err
 	}
 	a.dnsRegistry = registry
+	a.dnsSync = newDNSStateSync(registry)
 	a.logger.Debug("DNS registry initialized",
 		"dns_registry_ptr", fmt.Sprintf("%p", a.dnsRegistry),
 		"domains", registry.Count(),
@@ -585,7 +596,7 @@ func (a *Application) initializeDNSServer() error {
 
 	// v1.1.0: Wire up DNS registry to gossip handler for dynamic agent registration
 	if a.gossipHandler != nil {
-		a.gossipHandler.SetDNSRegistry(registry)
+		a.gossipHandler.SetDNSRegistry(a.dnsSync)
 		a.logger.Info("wired DNS registry to gossip handler for dynamic registration")
 	}
 
@@ -703,29 +714,14 @@ func (a *Application) initializeAPIServer() error {
 		if a.overwatchStore != nil {
 			domainProvider.SetStore(a.overwatchStore)
 		}
-		// Wire DNS registry for dynamic domain registration
+		// Wire DNS registry for dynamic domain registration. Stored domains
+		// and backends were already merged into it by buildDNSRegistry.
 		if a.dnsRegistry != nil {
-			domainProvider.SetDNSRegistry(a.dnsRegistry)
-			// Create router factory for dynamic domain creation
-			latencyProvider := &backendRegistryLatencyProvider{registry: a.backendRegistry}
-			routerFactory := routing.NewFactory(routing.FactoryConfig{
-				LatencyProvider:   latencyProvider,
-				MinLatencySamples: 1,
-				GeoResolver:       a.geoResolver,
-				Logger:            a.logger,
-			})
-			// Wrap router factory to return interface{} for the provider
-			domainProvider.SetRouterFactory(func(algorithm string) (interface{}, error) {
-				return routerFactory.NewRouter(algorithm)
-			})
+			domainProvider.SetDNSRegistry(a.dnsSync)
+			domainProvider.SetRouterFactory(a.newDynamicRouter)
 			a.logger.Debug("domain provider wired to DNS registry",
 				"dns_registry_ptr", fmt.Sprintf("%p", a.dnsRegistry),
 			)
-
-			// Load stored domains and backends into DNS registry on startup
-			if err := domainProvider.LoadStoredDomainsIntoDNS(); err != nil {
-				a.logger.Warn("failed to load stored domains into DNS registry", "error", err)
-			}
 		}
 		server.SetDomainHandlers(api.NewDomainHandlers(domainProvider, a.logger))
 		a.logger.Debug("domain API handlers registered")
@@ -1193,30 +1189,40 @@ func (a *Application) reloadOverwatchMode(newCfg *config.Config) error {
 	return nil
 }
 
-// reloadDNSRegistry updates the DNS registry with new domain configuration.
+// reloadDNSRegistry replaces the DNS registry contents with the state merged
+// from the new configuration file, the store and the backend registry. It is
+// the reload counterpart of the startup sequence and uses the same functions:
+// registerStaticServers, buildDNSRegistry and pruneStaticBackends.
 func (a *Application) reloadDNSRegistry(newCfg *config.Config) error {
-	// v1.1.0: Use backend registry for latency (unified for static, agent, and API servers)
-	latencyProvider := &backendRegistryLatencyProvider{registry: a.backendRegistry}
-	routerFactory := routing.NewFactory(routing.FactoryConfig{
-		LatencyProvider:   latencyProvider,
-		MinLatencySamples: 1,             // Backend registry tracks latency from external validation
-		GeoResolver:       a.geoResolver, // Demo 4: GeoIP-based routing
-		Logger:            a.logger,
-	})
-
-	newRegistry, err := dns.BuildRegistry(newCfg, routerFactory.NewRouter)
-	if err != nil {
+	// Reject a configuration the registry cannot be built from before any
+	// live state is touched.
+	if _, err := dns.BuildRegistry(newCfg, a.routerFactory.NewRouter); err != nil {
 		return fmt.Errorf("failed to build new registry: %w", err)
 	}
 
-	var entries []*dns.DomainEntry
-	for _, name := range newRegistry.Domains() {
-		if entry := newRegistry.Lookup(name); entry != nil {
-			entries = append(entries, entry)
-		}
+	// Static servers of the new file join the backend registry first, so that
+	// they are validated and merged like the ones present at startup.
+	if err := a.registerStaticServers(newCfg); err != nil {
+		a.pruneStaticBackends(a.config)
+		return err
 	}
 
-	a.dnsRegistry.ReplaceAll(entries)
+	// Build the merged state and swap it in atomically.
+	if err := a.dnsSync.rebuild(func() (*dns.Registry, error) {
+		return a.buildDNSRegistry(newCfg, false)
+	}); err != nil {
+		a.pruneStaticBackends(a.config)
+		return err
+	}
+
+	// Static servers that left the file leave the backend registry and the
+	// store. They are already out of the DNS registry.
+	removed := a.pruneStaticBackends(newCfg)
+
+	a.logger.Info("DNS registry reloaded",
+		"domains", a.dnsRegistry.Count(),
+		"static_servers_removed", removed,
+	)
 	return nil
 }
 
