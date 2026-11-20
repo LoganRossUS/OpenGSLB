@@ -1,4 +1,4 @@
-.PHONY: help build build-cli build-all test test-integration test-env-up test-env-down lint clean api-docs \
+.PHONY: help build build-cli build-all test test-conformance test-integration test-env-up test-env-down lint clean api-docs \
 	build-linux-amd64 build-windows-amd64 build-release dist-clean
 
 BINARY_NAME=opengslb
@@ -24,6 +24,9 @@ test: ## Run unit tests
 test-coverage: ## Run tests with coverage
 	$(GO) test -race -coverprofile=coverage.out -covermode=atomic ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
+
+test-conformance: ## Run the DNS conformance tests (in-process server, UDP and TCP)
+	$(GO) test -race -count=1 ./test/conformance/...
 
 lint: ## Run linters
 	golangci-lint run
